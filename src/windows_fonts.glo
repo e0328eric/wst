@@ -50,6 +50,7 @@ Read_Fragment :: #fn_ptr(
 ) -> s32 #c_call;
 Release_Fragment :: #fn_ptr(object: usize, fragment_context: usize) #c_call;
 Get_Metrics :: #fn_ptr(object: usize, result: *Metrics) #c_call;
+Get_Glyphs :: #fn_ptr(object: usize, codepoints: *const u32, count: u32, indices: *u16) -> s32 #c_call;
 Decode_File :: #fn_ptr(
     object: usize,
     name: cstring16,
@@ -253,6 +254,10 @@ native_retain_face :: (face: usize) {
 native_release_face :: (face: usize) {
     release(face);
 }
+native_has_glyph :: (face: usize, cp: u32) -> bool {
+    glyph: u16;
+    return face != 0 && method(Get_Glyphs, face, 11)(face, &cp, 1, &glyph) >= 0 && glyph != 0;
+}
 native_free :: (data: *Font_Data) {
     if data.bytes > 0 mem_free_raw(cast(*void) data.data, Layout.bytes(cast(ssize) data.bytes));
     empty: Font_Data;
@@ -298,20 +303,8 @@ native_font :: (family: str, bold: s32, result: *Font_Data, face_result: ?*usize
     font_family: usize;
     font: usize;
     face: usize;
-    file: usize;
-    loader: usize;
-    stream: usize;
-    fragment: usize;
-    key: usize;
-    fragment_context: usize;
-    key_bytes: u32;
     index: u32;
-    bytes: u64;
     defer {
-        if fragment_context != 0 method(Release_Fragment, stream, 4)(stream, fragment_context);
-        release(stream);
-        release(loader);
-        release(file);
         release(face);
         release(font);
         release(font_family);
@@ -341,6 +334,30 @@ native_font :: (family: str, bold: s32, result: *Font_Data, face_result: ?*usize
     if hr < 0 return failed("Matching installed font", hr);
     hr = method(Create_Object, font, 13)(font, &face);
     if hr < 0 return failed("Reading installed font face", hr);
+    success := native_face_data(face, result);
+    if success != 0 if #pattern ?destination = face_result {
+        native_retain_face(face);
+        destination.* = face;
+    }
+    return success;
+}
+
+// Reopen bytes from the same retained face for the optional glyph-index font.
+native_face_data :: (face: usize, result: *Font_Data) -> s32 {
+    file: usize;
+    loader: usize;
+    stream: usize;
+    fragment: usize;
+    key: usize;
+    fragment_context: usize;
+    key_bytes: u32;
+    bytes: u64;
+    defer {
+        if fragment_context != 0 method(Release_Fragment, stream, 4)(stream, fragment_context);
+        release(stream);
+        release(loader);
+        release(file);
+    }
     metrics: Metrics;
     method(Get_Metrics, face, 8)(face, &metrics);
     result.units = metrics.units;
@@ -349,7 +366,7 @@ native_font :: (family: str, bold: s32, result: *Font_Data, face_result: ?*usize
     result.line_gap = metrics.gap;
     if (method(Get_Index, face, 6)(face) & 1) != 0 result.simulated_bold = 1;
     files: u32 = 1;
-    hr = method(Get_Files, face, 4)(face, &files, &file);
+    hr := method(Get_Files, face, 4)(face, &files, &file);
     if hr < 0     return failed("Reading installed font file", hr);
     if files != 1 return failed("Installed font uses multiple files", E_FAIL);
     hr = method(Get_Key, file, 3)(file, &key, &key_bytes);
@@ -363,17 +380,12 @@ native_font :: (family: str, bold: s32, result: *Font_Data, face_result: ?*usize
     if bytes > 128 * 1024 * 1024 return failed("Installed font file is too large", E_FAIL);
     hr = method(Read_Fragment, stream, 3)(stream, &fragment, 0, bytes, &fragment_context);
     if hr < 0 return failed("Reading installed font bytes", hr);
-    success := sfnt_copy(
+    return sfnt_copy(
         cast([*]const u8) fragment,
         bytes,
         method(Get_Index, face, 5)(face),
         result
     );
-    if success != 0 if #pattern ?destination = face_result {
-        native_retain_face(face);
-        destination.* = face;
-    }
-    return success;
 }
 
 // std/Gui captures PNG. Existing --capture output also supports top-down BGRA BMP.

@@ -4,6 +4,7 @@ I :: #import "gui_input.glo";
 R :: #import "gui_render.glo";
 N :: #import "native.glo";
 T :: #import "platform_types.glo";
+Kitty :: #import "kitty_store.glo";
 Config_Paths :: #import "config_paths.glo";
 #import "app_icon.glo";
 #import "Strings/Utf8";
@@ -289,7 +290,9 @@ grid_clipped :: (
     visible: s32,
     color: u32,
     width: s32,
-    height: s32
+    height: s32,
+    graphics: ?*Kitty.Store = null,
+    view_offset: s32 = 0
 ) {
     R.grid_clipped(
         x,
@@ -304,7 +307,9 @@ grid_clipped :: (
         visible,
         color,
         width,
-        height
+        height,
+        graphics,
+        view_offset
     );
 }
 grid_context :: (id: s32) -> s32 {

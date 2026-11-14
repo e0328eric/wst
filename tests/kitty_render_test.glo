@@ -1,0 +1,110 @@
+G :: #import "Gui";
+R :: #import "../src/gui_render.glo";
+T :: #import "../src/terminal.glo";
+P :: #import "../src/platform_types.glo";
+#import "File_System/File";
+#import "Io";
+#import "Os";
+
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
+}
+
+read_bitmap :: (path: str) -> str {
+    if read_file(path, 16 * 1024 * 1024) == {
+    case .Ok(data);
+        return data;
+    case .Err;
+        print("Could not open {}\n", path);
+        exit(1);
+    }
+    return "";
+}
+
+little32 :: (data: str, at: ssize) -> u32 {
+    return cast(u32) data[at] | (cast(u32) data[at + 1] << 8) |
+        (cast(u32) data[at + 2] << 16) | (cast(u32) data[at + 3] << 24);
+}
+
+pixel :: (bmp: str, x: s32, y: s32) -> u32 {
+    width := cast(ssize) little32(bmp, 18);
+    start := cast(ssize) little32(bmp, 10);
+    return little32(bmp, start + (width * cast(ssize) y + cast(ssize) x) * 4) & 16#ffffff;
+}
+
+main :: () {
+    window := G.create_window(300, 150, "wst Kitty rendering test", .Hidden | .High_Dpi);
+    check(G.window_valid(window), "create hidden window");
+    defer G.destroy_window(window);
+    R.bind_window(window);
+    defer R.close();
+    prepared: R.Prepared;
+    check(R.prepare("Consolas", 12, G.content_scale(window), &prepared), R.error_message());
+    R.commit(&prepared);
+    check(G.update_window_events(window), "pump input");
+
+    t: T.Terminal;
+    T.init(&t, 6, 1, 0, 16#ffffff, 0);
+    defer T.release(&t);
+    T.set_cell_size(&t, 16, 16);
+    // Each grid cell occupies 16x16 physical pixels, beginning at (32,32).
+    // Deep negative red spans two cells: default black and explicit yellow.
+    T.feed(&t, "\x1b[1;2H\x1b[43m \x1b[0m\x1b[1;4HXX");
+    T.feed(&t, "\x1b[H\x1b_Ga=T,i=1,C=1,f=24,s=2,v=1,c=2,r=1,z=-1073741825;/wAA/wAA\x1b\\");
+    // Draw the same blue image below and above text, then crop a two-color image.
+    T.feed(&t, "\x1b[1;3H\x1b_Ga=T,i=2,C=1,f=32,s=1,v=1,c=1,r=1;AP8AgA==\x1b\\");
+    T.feed(&t, "\x1b[1;4H\x1b_Ga=T,i=3,C=1,f=24,s=1,v=1,c=1,r=1,z=-1;AAD/\x1b\\");
+    T.feed(&t, "\x1b[1;5H\x1b_Ga=p,i=3,C=1,c=1,r=1,z=2\x1b\\");
+    T.feed(&t, "\x1b[1;6H\x1b_Ga=T,i=4,C=1,f=24,s=2,v=1,x=1,w=1,c=1,r=1;AAAA/wD/\x1b\\");
+
+    check(R.frame_begin(16#112233), "begin image frame");
+    R.grid_clipped(
+        32,
+        32,
+        6,
+        1,
+        16,
+        16,
+        cast([*]const P.Render_Cell) &t.cells[0],
+        0,
+        0,
+        0,
+        0,
+        88,
+        16,
+        &t.graphics,
+        t.view_offset
+    );
+    check(R.snapshot("build/kitty-render-active.bmp") != 0, R.error_message());
+    R.frame_end();
+    // Wipe the terminal's pixel storage before replaying the recorded frame.
+    T.feed(&t, "\x1bc");
+    check(G.update_window_events(window), "pump replay input");
+    check(R.snapshot("build/kitty-render-replay.bmp") != 0, R.error_message());
+    active := read_bitmap("build/kitty-render-active.bmp");
+    defer active.free();
+    replay := read_bitmap("build/kitty-render-replay.bmp");
+    defer replay.free();
+    check(active == replay, "snapshot replay owns the displayed image after terminal reset");
+    check(pixel(active, 40, 40) == 16#ff0000, "deep negative image over default background");
+    check(pixel(active, 56, 40) == t.palette[3], "explicit cell background covers deep image");
+    blended := pixel(active, 72, 40);
+    check(
+        (blended & 16#ff00ff) == 0 && blended >= 16#007e00 && blended < 16#00fe00,
+        "semi-transparent green mixes with the black background"
+    );
+    ink: ssize;
+    for y: cast(s32) 32..48 for x: cast(s32) 80..96 {
+        if pixel(active, x, y) != 16#0000ff ink += 1;
+        check(pixel(active, x + 16, y) == 16#0000ff, "positive z covers glyph ink");
+    }
+    check(ink > 0 && pixel(active, 81, 33) == 16#0000ff, "negative z allows text above blue");
+    check(
+        pixel(active, 116, 40) == 16#ff00ff && pixel(active, 120, 40) == 16#112233,
+        "source crop displays magenta and destination clips at the pane boundary"
+    );
+    print("Kitty graphics renderer tests passed.\n");
+}

@@ -61,6 +61,22 @@ main :: () {
     quiet();
     send("echo %WST_GLOSSO_PTY_TOKEN%_ORIGINAL\r");
     until("FIRST_ORIGINAL", "SECOND_ORIGINAL");
+    // A single send larger than a worker read must still be accepted atomically.
+    // Check every variable, so a missing command in the burst changes the reply.
+    burst: [..]u8;
+    defer burst.free();
+    for i: 0..6 {
+        for c: tprint("set WST_BURST_{}=", i).bytes() burst.push(c);
+        for 0..3000 burst.push(#char "x");
+        for c: tprint("{}\r", i).bytes() burst.push(c);
+    }
+    for c: "echo BURST_".bytes() burst.push(c);
+    for i: 0..6 for c: tprint("%WST_BURST_{}:~-1%", i).bytes() burst.push(c);
+    burst.push(13);
+    send(cast(str) burst.view());
+    until("BURST_012345");
+    burst.resize(4 * 1024 * 1024 + 1);
+    check(P.pty_send(burst.data, cast(s32) burst.count) == 0, "reject input above 4 MiB");
     check(
         P.pty_prepare("cmd.exe /d /q /k set WST_GLOSSO_PTY_TOKEN=REPLACED_FIRST", 80, 24) != 0,
         "stage first replacement"

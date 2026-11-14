@@ -5,6 +5,8 @@ GN :: #import "Gui/Native";
 Types :: #import "platform_types.glo";
 S :: #import "windows_shaping.glo";
 Glyph_Font :: #import "glyph_font.glo";
+Kitty :: #import "kitty_store.glo";
+Terminal :: #import "terminal.glo";
 #import "windows_fonts.glo";
 #import "Format";
 #import "Io";
@@ -37,7 +39,7 @@ error_storage: [1024]u8;
 error_count: ssize;
 
 Command :: struct {
-    kind: s32; // rectangle, terminal glyph, UI string, rounded rectangle, stroke
+    kind: s32; // rectangle, terminal glyph, UI string, rounded rectangle, stroke, image
     x: s32;
     y: s32;
     width: s32;
@@ -52,8 +54,26 @@ Command :: struct {
     geometry: f32;
     offset_x: f32;
     offset_y: f32;
+    image_index: ssize;
 }
 commands: [..]Command;
+
+// Snapshots replay immutable GPU textures. The parser can release or replace
+// the source pixels as soon as the grid has been drawn.
+Image_Command :: struct {
+    texture: G.Texture;
+    destination: GN.Native_Rect;
+    source: GN.Native_Rect;
+    clip: GN.Native_Rect;
+}
+image_commands: [..]Image_Command;
+Image_Texture :: struct {
+    token: u64;
+    texture: G.Texture;
+    context_id: s32;
+    in_frame: bool;
+}
+image_textures: [..]Image_Texture;
 
 // Bounded, direct-mapped cache. Entries own their source and shaping buffers;
 // replay commands contain only glyph IDs and positions, never borrowed runs.
@@ -66,6 +86,18 @@ Shape_Cache :: struct {
 shape_cache: [256]Shape_Cache;
 
 #public {
+
+Font_Face :: struct {
+    face: usize;
+    // A cell repaint usually asks about the same handful of codepoints.
+    checked: [128]u32;
+}
+Fallback_Chain :: struct {
+    fonts: [3]G.Font;
+    faces: [3]usize;
+    attempted: s32;
+    tail: G.Font;
+}
 
 Prepared :: struct {
     changed: bool;
@@ -83,8 +115,14 @@ Prepared :: struct {
     bold_glyphs: G.Font;
     regular_shaper: S.Shaper;
     bold_shaper: S.Shaper;
-    fallback: [9]G.Font;
-    fallback_count: s32;
+    regular_glyphs_tried: bool;
+    bold_glyphs_tried: bool;
+    regular_face: Font_Face;
+    bold_face: Font_Face;
+    ui_face: Font_Face;
+    small_face: Font_Face;
+    // Terminal, 16-DIP label, and 13-DIP chrome fallbacks are loaded on demand.
+    fallback: [3]Fallback_Chain;
 }
 
 bind_window :: (value: G.Window) {
@@ -141,8 +179,7 @@ prepare :: (family: str, size: s32, scale: f32, result: *Prepared) -> bool {
         0,
         &metrics,
         0,
-        &next.regular_shaper,
-        &next.regular_glyphs
+        &next.regular_face.face
     );
     if !G.font_valid(next.regular) {
         discard(&next);
@@ -152,56 +189,24 @@ prepare :: (family: str, size: s32, scale: f32, result: *Prepared) -> bool {
     line_units := metrics.ascent + metrics.descent + metrics.line_gap;
     if line_units < metrics.ascent + metrics.descent line_units = metrics.ascent + metrics.descent;
     next.ch = positive_ceil(cast(f32) size * cast(f32) line_units / cast(f32) metrics.units * scale);
-    next.bold = load_face(family, size, scale, 1, &metrics, 0, &next.bold_shaper, &next.bold_glyphs);
+    next.bold = load_face(family, size, scale, 1, &metrics, 0, &next.bold_face.face);
     next.bold_simulated = metrics.simulated_bold != 0;
     if !G.font_valid(next.bold) {
         discard(&next);
         return false;
     }
-    next.ui = load_face("Segoe UI", 16, scale, 0, &metrics);
+    next.ui = load_face("Segoe UI", 16, scale, 0, &metrics, 0, &next.ui_face.face);
     if !G.font_valid(next.ui) {
         discard(&next);
         return false;
     }
-    next.ui_small = load_face("Segoe UI", 13, scale, 0, &metrics);
+    next.ui_small = load_face("Segoe UI", 13, scale, 0, &metrics, 0, &next.small_face.face);
     if !G.font_valid(next.ui_small) {
         discard(&next);
         return false;
     }
-    names: [3]str = .["Malgun Gothic", "Yu Gothic", "Segoe UI Emoji"];
-    for name: names {
-        limit: s32;
-        if name == "Segoe UI Emoji" limit = 2 * next.cw;
-        font := load_face(name, size, scale, 0, &metrics, limit);
-        if G.font_valid(font) {
-            next.fallback[next.fallback_count] = font;
-            next.fallback_count += 1;
-        }
-    }
-    body_count := next.fallback_count;
-    link_fallback(next.regular, next.bold, &next, 0, body_count);
-    if size == 16 {
-        if body_count > 0 _ := G.set_font_fallback(next.ui, next.fallback[0]);
-    } else {
-        for name: names {
-            font := load_face(name, 16, scale, 0, &metrics);
-            if G.font_valid(font) {
-                next.fallback[next.fallback_count] = font;
-                next.fallback_count += 1;
-            }
-        }
-        ui_count := next.fallback_count - body_count;
-        link_fallback(next.ui, .{}, &next, body_count, ui_count);
-    }
-    small_start := next.fallback_count;
-    for name: names {
-        font := load_face(name, 13, scale, 0, &metrics);
-        if G.font_valid(font) {
-            next.fallback[next.fallback_count] = font;
-            next.fallback_count += 1;
-        }
-    }
-    link_fallback(next.ui_small, .{}, &next, small_start, next.fallback_count - small_start);
+    _ := S.open(next.regular_face.face, &next.regular_shaper);
+    _ := S.open(next.bold_face.face, &next.bold_shaper);
     result.* = next;
     return true;
 }
@@ -225,7 +230,14 @@ discard :: (prepared: *Prepared) {
     G.release_font(prepared.bold);
     G.release_font(prepared.ui);
     G.release_font(prepared.ui_small);
-    for i: 0..prepared.fallback_count G.release_font(prepared.fallback[i]);
+    native_release_face(prepared.regular_face.face);
+    native_release_face(prepared.bold_face.face);
+    native_release_face(prepared.ui_face.face);
+    native_release_face(prepared.small_face.face);
+    for chain: prepared.fallback for i: 0..chain.attempted {
+        G.release_font(chain.fonts[i]);
+        native_release_face(chain.faces[i]);
+    }
     prepared.family.free();
     empty: Prepared;
     prepared.* = empty;
@@ -256,7 +268,16 @@ grid_context :: (id: s32) -> s32 {
     return 1;
 }
 forget_context :: (id: s32) {
-    if id == current_context invalidate_frame();
+    has_images := false;
+    i := image_textures.count;
+    while i > 0 {
+        i -= 1;
+        if image_textures[i].context_id == id {
+            G.release_texture(image_textures.swap_remove(i).texture);
+            has_images = true;
+        }
+    }
+    if id == current_context || has_images invalidate_frame();
 }
 
 frame_begin :: (color: u32) -> bool {
@@ -268,6 +289,7 @@ frame_begin :: (color: u32) -> bool {
         active = true;
     }
     clear_commands();
+    for i: 0..image_textures.count image_textures[i].in_frame = false;
     background = color;
     dimensions := G.render_dimensions(window);
     rect(0, 0, cast(s32) dimensions.x, cast(s32) dimensions.y, color);
@@ -278,12 +300,16 @@ frame_end :: () {
     if !active return;
     G.present_frame(window);
     active = false;
+    _ := discard_unused_textures();
 }
 
 close :: () {
     frame_end();
     clear_commands();
     commands.reset();
+    image_commands.reset();
+    for entry: image_textures G.release_texture(entry.texture);
+    image_textures.reset();
     clear_shape_cache();
     discard(&current);
     ligatures = true;
@@ -342,6 +368,7 @@ draw_ui_label :: (x: s32, y: s32, width: s32, height: s32, text: str, color: u32
 
 measure_ui :: (text: str) -> s32 {
     if text.count == 0 return 0;
+    ensure_text_fonts(current.ui_small, text);
     return positive_ceil(G.measure_text(current.ui_small, text) * current.scale);
 }
 
@@ -358,6 +385,7 @@ label_with_font :: (
     chrome: bool
 ) {
     if !active || width <= 0 || height <= 0 return;
+    ensure_text_fonts(font, text);
     shown: str;
     if chrome shown = fit_ui_label(text, width);
     else      shown = fit_label(font, text, width);
@@ -433,7 +461,9 @@ grid_clipped :: (
     visible: s32,
     color: u32,
     width: s32,
-    height: s32
+    height: s32,
+    graphics: ?*Kitty.Store = null,
+    view_offset: s32 = 0
 ) {
     draw_grid(
         x,
@@ -448,7 +478,9 @@ grid_clipped :: (
         visible,
         color,
         true,
-        .{ cast(f32) x, cast(f32) y, cast(f32) positive(width), cast(f32) positive(height) }
+        .{ cast(f32) x, cast(f32) y, cast(f32) positive(width), cast(f32) positive(height) },
+        graphics,
+        view_offset
     );
 }
 
@@ -507,8 +539,7 @@ load_face :: (
     bold: s32,
     metrics: *Font_Data,
     width_limit: s32 = 0,
-    shaper: ?*S.Shaper = null,
-    glyph_font: ?*G.Font = null
+    face_result: ?*usize = null
 ) -> G.Font {
     data: Font_Data;
     face: usize;
@@ -527,16 +558,6 @@ load_face :: (
     }
     height := cast(f32) size * cast(f32)(data.ascent + data.descent) / cast(f32) data.units;
     font := G.font_from_bytes(bytes_view(data.data, cast(ssize) data.bytes), height, scale);
-    if G.font_valid(font) {
-        if #pattern ?target = shaper {
-            if #pattern ?glyphs = glyph_font {
-                if S.open(face, target) {
-                    glyphs.* = Glyph_Font.create(&data, height, scale);
-                    if !G.font_valid(glyphs.*) S.close(target);
-                }
-            }
-        }
-    }
     if G.font_valid(font) && width_limit > 0 {
         // Emoji faces can use wider advances than a terminal's two-cell span.
         // Keep the complete fallback glyph inside that span rather than clipping.
@@ -551,20 +572,68 @@ load_face :: (
         }
     }
     if !G.font_valid(font) remember("Gui could not load the installed font data");
+    else if #pattern ?target = face_result {
+        native_retain_face(face);
+        target.* = face;
+    }
     return font;
 }
-link_fallback :: (first: G.Font, second: G.Font, prepared: *Prepared, start: s32, count: s32) {
-    if count <= 0 return;
-    _ := G.set_font_fallback(first, prepared.fallback[start]);
-    if G.font_valid(second) _ := G.set_font_fallback(second, prepared.fallback[start]);
-    for i: 0..count - 1 _ := G.set_font_fallback(
-        prepared.fallback[start + cast(s32) i],
-        prepared.fallback[start + cast(s32) i + 1]
-    );
+
+ensure_glyph_font :: (font: G.Font, cp: u32) {
+    if font.id == 0 return;
+    face := &current.regular_face;
+    group: s32;
+    size := current.size;
+    if font.id == current.bold.id face = &current.bold_face;
+    else if font.id == current.ui.id {
+        face = &current.ui_face;
+        size = 16;
+        if current.size != 16 group = 1;
+    } else if font.id == current.ui_small.id {
+        face = &current.small_face;
+        size = 13;
+        group = 2;
+    }
+    chain := &current.fallback[group];
+    slot := cp % 128;
+    if face.checked[slot] == cp || chain.attempted == 3 return;
+    face.checked[slot] = cp;
+    if native_has_glyph(face.face, cp) return;
+    for i: 0..chain.attempted if native_has_glyph(chain.faces[i], cp) return;
+    names: [3]str = .["Malgun Gothic", "Yu Gothic", "Segoe UI Emoji"];
+    while chain.attempted < 3 {
+        i := chain.attempted;
+        chain.attempted += 1;
+        width_limit: s32;
+        if group == 0 && i == 2 width_limit = 2 * current.cw;
+        metrics: Font_Data;
+        fallback := load_face(names[i], size, current.scale, 0, &metrics, width_limit, &chain.faces[i]);
+        if !G.font_valid(fallback) continue;
+        chain.fonts[i] = fallback;
+        if G.font_valid(chain.tail) _ := G.set_font_fallback(chain.tail, fallback);
+        else if group == 0 {
+            _ := G.set_font_fallback(current.regular, fallback);
+            _ := G.set_font_fallback(current.bold, fallback);
+            if current.size == 16 _ := G.set_font_fallback(current.ui, fallback);
+        } else _ := G.set_font_fallback(font, fallback);
+        chain.tail = fallback;
+        if native_has_glyph(chain.faces[i], cp) return;
+    }
+}
+
+ensure_text_fonts :: (font: G.Font, text: str) {
+    offset: ssize;
+    while offset < text.count {
+        cp := text.rune_at(offset).unwrap_or(#char "�");
+        ensure_glyph_font(font, cast(u32) cp);
+        offset += 1;
+        while offset < text.count && (text[offset] & 16#c0) == 16#80 offset += 1;
+    }
 }
 clear_commands :: () {
     for i: 0..commands.count commands[i].text.free();
     commands.clear();
+    image_commands.clear();
 }
 color :: (rgb: u32) -> GN.Native_Color {
     return .{
@@ -633,6 +702,11 @@ draw :: (command: Command) {
         draw_rounded(command);
     } else if command.kind == 4 {
         draw_stroke(command);
+    } else if command.kind == 5 {
+        placement := image_commands[command.image_index];
+        G.set_clip(logical_rect(placement.clip));
+        if !G.draw_texture(placement.texture, logical_rect(placement.destination), placement.source)
+            remember(G.last_error());
     }
     G.reset_clip();
 }
@@ -841,6 +915,7 @@ draw_cell :: (
     if cp != 0 && cp != 32 && (flags & 16) == 0 {
         font := current.regular;
         if (flags & 1) != 0 font = current.bold;
+        ensure_glyph_font(font, cp);
         ink_height := G.font_height(font) * current.scale;
         top := y + (height - cast(s32) ink_height) / 2;
         emit(
@@ -994,9 +1069,7 @@ draw_shaped :: (
     clip: GN.Native_Rect
 ) -> bool {
     bold := (cells[0].flags & 1) != 0;
-    font := current.regular_glyphs;
-    if bold                                           font = current.bold_glyphs;
-    if !ligatures || count < 2 || !G.font_valid(font) return false;
+    if !ligatures || count < 2 return false;
     storage: [512]u8;
     for i: 0..count storage[i] = cast(u8) cells[i].codepoint;
     text := cast(str) bytes_view(cast([*]const u8) &storage, cast(ssize) count);
@@ -1005,6 +1078,28 @@ draw_shaped :: (
     // The private glyph font has no Unicode fallback chain. Keep missing
     // characters on the ordinary per-cell path instead of drawing .notdef.
     for glyph: run.glyphs if glyph == 0 return false;
+    font := &current.regular_glyphs;
+    tried := &current.regular_glyphs_tried;
+    face := current.regular_face.face;
+    base := current.regular;
+    if bold {
+        font = &current.bold_glyphs;
+        tried = &current.bold_glyphs_tried;
+        face = current.bold_face.face;
+        base = current.bold;
+    }
+    // The private cmap needs its own copy of the face. Ordinary text only uses
+    // the Unicode handle, even with ligatures enabled.
+    if !tried.* {
+        tried.* = true;
+        data: Font_Data;
+        if native_face_data(face, &data) != 0 {
+            defer native_free(&data);
+            if current.family == "Segoe UI Emoji" include_vertical_ink(&data);
+            font.* = Glyph_Font.create(&data, G.font_height(base), current.scale);
+        }
+    }
+    if !G.font_valid(font.*) return false;
     first: s32;
     while first < count {
         selected := (cells[first].flags & 16#80000000) != 0;
@@ -1020,7 +1115,7 @@ draw_shaped :: (
             cast(f32) ch
         };
         if clipped bounds = intersect(bounds, clip);
-        shaped_ink(run, font, x, y, cw, ch, fg, bold, bounds);
+        shaped_ink(run, font.*, x, y, cw, ch, fg, bold, bounds);
         if (cells[first].flags & 2) != 0
             emit(
                 .{
@@ -1052,7 +1147,7 @@ draw_shaped :: (
                 .clip = bounds
             }
         );
-        shaped_ink(run, font, x, y, cw, ch, cursor_ink, bold, bounds);
+        shaped_ink(run, font.*, x, y, cw, ch, cursor_ink, bold, bounds);
         if (cells[cursor_column].flags & 2) != 0
             emit(
                 .{
@@ -1070,6 +1165,114 @@ draw_shaped :: (
     return true;
 }
 
+discard_unused_textures :: () -> bool {
+    original := image_textures.count;
+    i := image_textures.count;
+    while i > 0 {
+        i -= 1;
+        if !image_textures[i].in_frame G.release_texture(image_textures.swap_remove(i).texture);
+    }
+    return image_textures.count != original;
+}
+
+image_texture :: (view: *Kitty.View) -> G.Texture {
+    for i: 0..image_textures.count {
+        if image_textures[i].token == view.token {
+            image_textures[i].in_frame = true;
+            return image_textures[i].texture;
+        }
+    }
+    length := cast(ssize) view.width * cast(ssize) view.height * 4;
+    // A placement may enlarge a single pixel cropped from the middle of an
+    // image. Point sampling keeps neighboring pixels outside that crop.
+    pixels := bytes_view(view.rgba, length);
+    texture := G.create_texture(view.width, view.height, pixels, .Nearest);
+    // Replacements and tab switches can exhaust Gui's texture slots while
+    // unused textures from the preceding frame still reside in the cache.
+    if !G.texture_valid(texture) && discard_unused_textures()
+        texture = G.create_texture(view.width, view.height, pixels, .Nearest);
+    if G.texture_valid(texture) {
+        image_textures.push(
+            .{
+                .token = view.token,
+                .texture = texture,
+                .in_frame = true,
+                .context_id = current_context
+            }
+        );
+    } else remember(G.last_error());
+    return texture;
+}
+
+Image_Layers :: struct {
+    first: ssize;
+    above_background: ssize;
+    above_text: ssize;
+    end: ssize;
+}
+
+prepare_images :: (
+    graphics: ?*Kitty.Store,
+    view_offset: s32,
+    x: s32,
+    y: s32,
+    cw: s32,
+    ch: s32,
+    viewport: GN.Native_Rect
+) -> Image_Layers {
+    first := image_commands.count;
+    layers: Image_Layers = .{ first, first, first, first };
+    #pattern ?store := graphics else {
+        return layers;
+    }
+    for i: 0..Kitty.count(store) {
+        view: Kitty.View;
+        if !Kitty.view(store, cast(s32) i, cw, ch, view_offset, &view) continue;
+        destination: GN.Native_Rect = .{
+            cast(f32) x + cast(f32) view.dx,
+            cast(f32) y + cast(f32) view.dy,
+            cast(f32) view.dw,
+            cast(f32) view.dh
+        };
+        bounds := intersect(destination, viewport);
+        top := cast(f32) y + cast(f32) view.clip_top;
+        bottom := cast(f32) y + cast(f32) view.clip_bottom;
+        if bounds.y > top                     top = bounds.y;
+        if bounds.y + bounds.height < bottom  bottom = bounds.y + bounds.height;
+        if bounds.width <= 0 || bottom <= top continue;
+        bounds.y = top;
+        bounds.height = bottom - top;
+        texture := image_texture(&view);
+        if !G.texture_valid(texture) continue;
+        image_commands.push(
+            .{
+                .texture = texture,
+                .clip = bounds,
+                .destination = destination,
+                .source = .{
+                    cast(f32) view.sx,
+                    cast(f32) view.sy,
+                    cast(f32) view.sw,
+                    cast(f32) view.sh
+                }
+            }
+        );
+        // The store enumerates placements in ascending (z, image ID) order.
+        if view.z < -1073741824 layers.above_background += 1;
+        if view.z < 0           layers.above_text += 1;
+        layers.end += 1;
+    }
+    return layers;
+}
+
+draw_images :: (first: ssize, end: ssize) {
+    for i: first..end emit(.{ .kind = 5, .image_index = i });
+}
+
+default_background :: (cell: Types.Render_Cell) -> bool {
+    return (cell.flags & (4 | 16#80000000)) == 0 && (cell.flags & Terminal.CELL_DEFAULT_BG) != 0;
+}
+
 draw_grid :: (
     x: s32,
     y: s32,
@@ -1083,34 +1286,57 @@ draw_grid :: (
     visible: s32,
     cursor_color: u32,
     clipped: bool,
-    clip: GN.Native_Rect
+    clip: GN.Native_Rect,
+    graphics: ?*Kitty.Store = null,
+    view_offset: s32 = 0
 ) {
     if !active || cols <= 0 || cols > 512 || rows <= 0 || rows > 256 || cw <= 0 || ch <= 0 return;
+    viewport: GN.Native_Rect = .{
+        cast(f32) x,
+        cast(f32) y,
+        cast(f32)(cols * cw),
+        cast(f32)(rows * ch)
+    };
+    if clipped viewport = intersect(viewport, clip);
+    layers := prepare_images(graphics, view_offset, x, y, cw, ch, viewport);
+    deep_images := layers.above_background > layers.first;
+    // With deeply negative z, only cells with explicit backgrounds cover
+    // the image. Paint default backgrounds first, then those placements.
+    passes: s32 = 1;
+    if deep_images passes = 2;
+    for pass: 0..passes {
+        for yi: 0..rows {
+            row := cast(s32) yi;
+            column: s32;
+            while column < cols {
+                c := cells[row * cols + column];
+                span: s32 = 1;
+                if (c.flags & 8) != 0 && column + 1 < cols span = 2;
+                if !deep_images || default_background(c) == (pass == 0) {
+                    draw_cell(
+                        x + column * cw,
+                        y + row * ch,
+                        span * cw,
+                        ch,
+                        0,
+                        c.fg,
+                        c.bg,
+                        c.flags & ~cast(u32) 2,
+                        (c.flags & 16#80000000) != 0,
+                        clipped,
+                        clip
+                    );
+                }
+                column += span;
+            }
+        }
+        if deep_images && pass == 0 draw_images(layers.first, layers.above_background);
+    }
+    draw_images(layers.above_background, layers.above_text);
     shaped_cursor: bool;
     for yi: 0..rows {
         row := cast(s32) yi;
         column: s32;
-        // Paint the complete row before any overhanging ligature ink.
-        while column < cols {
-            c := cells[row * cols + column];
-            span: s32 = 1;
-            if (c.flags & 8) != 0 && column + 1 < cols span = 2;
-            draw_cell(
-                x + column * cw,
-                y + row * ch,
-                span * cw,
-                ch,
-                0,
-                c.fg,
-                c.bg,
-                c.flags & ~cast(u32) 2,
-                (c.flags & 16#80000000) != 0,
-                clipped,
-                clip
-            );
-            column += span;
-        }
-        column = 0;
         while column < cols {
             c := cells[row * cols + column];
             end := column + 1;
@@ -1240,10 +1466,12 @@ draw_grid :: (
             );
         }
     }
+    draw_images(layers.above_text, layers.end);
 }
 fit_label :: (font: G.Font, text: str, width: s32) -> str {
     if G.measure_text(font, text) * current.scale <= cast(f32) width return text;
     ellipsis: str = "…";
+    ensure_text_fonts(font, ellipsis);
     available := cast(f32) width / current.scale - G.measure_text(font, ellipsis);
     offset: ssize;
     used: f32;
@@ -1266,6 +1494,7 @@ fit_ui_label :: (text: str, width: s32) -> str {
     font := current.ui_small;
     if G.measure_text(font, text) * current.scale <= cast(f32) width return text;
     ellipsis: str = "…";
+    ensure_text_fonts(font, ellipsis);
     available := cast(f32) width / current.scale - G.measure_text(font, ellipsis);
     if available < 0 return "";
     offset: ssize;

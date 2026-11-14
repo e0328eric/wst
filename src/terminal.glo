@@ -2,6 +2,13 @@
 //! Coordinates are zero based; callers consume replies then call replies.clear().
 #import "Format";
 Colors :: #import "colors.glo";
+Kitty :: #import "kitty_store.glo";
+
+// An APC carries at most 4096 base64 bytes plus its control keys.
+KITTY_FRAME_LIMIT :: 8192;
+APC_SELECTOR :: 8;
+APC_GRAPHICS :: 9;
+APC_GRAPHICS_ESC :: 10;
 
 #public {
 
@@ -26,6 +33,9 @@ Cell :: struct #c_call {
 Terminal :: struct {
     cols: s32;
     rows: s32;
+    cell_width: s32 = 8;
+    cell_height: s32 = 16;
+    graphics: Kitty.Store;
     cursor_x: s32;
     cursor_y: s32;
     cursor_visible: bool = true;
@@ -89,6 +99,14 @@ init :: (t: *Terminal, cols: s32, rows: s32, scrollback: s32, fg: u32, bg: u32) 
     t.autowrap = true;
     resize(t, cols, rows);
     term_save(t);
+}
+
+set_cell_size :: (t: *Terminal, width: s32, height: s32) {
+    if width <= 0 || height <= 0                        return;
+    if t.cell_width == width && t.cell_height == height return;
+    t.cell_width = width;
+    t.cell_height = height;
+    Kitty.metrics(&t.graphics, width, height);
 }
 
 /// Change configured default colors without changing text, cursor/parser state,
@@ -173,6 +191,7 @@ set_history_limit :: (t: *Terminal, limit: s32) {
     t.history_count = retained;
     t.history_start = 0;
     t.view_offset = term_clamp(t.view_offset, 0, retained);
+    Kitty.trim(&t.graphics, retained);
 }
 
 /// Start a replacement shell on a clean terminal while retaining old output.
@@ -198,9 +217,12 @@ begin_session :: (t: *Terminal) {
     t.title.clear();
     t.replies.clear();
     t.osc.clear();
+    Kitty.release(&t.graphics);
     next: Terminal;
     next.cols = t.cols;
     next.rows = t.rows;
+    next.cell_width = t.cell_width;
+    next.cell_height = t.cell_height;
     next.default_fg = t.default_fg;
     next.default_bg = t.default_bg;
     next.palette = t.palette;
@@ -229,6 +251,7 @@ begin_session :: (t: *Terminal) {
 }
 
 release :: (t: *Terminal) {
+    Kitty.release(&t.graphics);
     t.cells.reset();
     t.alt_cells.reset();
     t.history.reset();
@@ -241,6 +264,7 @@ resize :: (t: *Terminal, cols: s32, rows: s32) {
     width := term_clamp(cols, 2, 512);
     height := term_clamp(rows, 1, 256);
     if width == t.cols && height == t.rows return;
+    if height < t.rows                     Kitty.resize(&t.graphics, height);
     next: [..]Cell;
     next_alt: [..]Cell;
     next.reserve(cast(ssize)(width * height));
@@ -396,10 +420,6 @@ term_clear :: (t: *Terminal, first: s32, last: s32) {
         i += 1;
     }
 }
-term_history :: (t: *Terminal) {
-    if t.alternate || t.history_limit <= 0 return;
-    term_history_row(t, 0);
-}
 term_history_row :: (t: *Terminal, row: s32) {
     if t.history_limit <= 0 return;
     slot: s32 = 0;
@@ -428,9 +448,10 @@ term_history_row :: (t: *Terminal, row: s32) {
 }
 term_scroll_up :: (t: *Terminal, top: s32, bottom: s32, count: s32, save: bool) {
     n := term_clamp(count, 1, bottom - top + 1);
+    to_history := save && top == 0 && bottom == t.rows - 1 && !t.alternate;
     k: s32 = 0;
     while k < n {
-        if save && top == 0 && bottom == t.rows - 1 term_history(t);
+        if to_history term_history_row(t, 0);
         y := top;
         while y < bottom {
             x: s32 = 0;
@@ -443,6 +464,9 @@ term_scroll_up :: (t: *Terminal, top: s32, bottom: s32, count: s32, save: bool) 
         term_clear(t, bottom * t.cols, (bottom + 1) * t.cols - 1);
         k += 1;
     }
+    retained: s32 = -1;
+    if to_history retained = t.history_count;
+    Kitty.scroll(&t.graphics, top, bottom, -n, retained);
 }
 term_scroll_down :: (t: *Terminal, top: s32, bottom: s32, count: s32) {
     n := term_clamp(count, 1, bottom - top + 1);
@@ -460,6 +484,7 @@ term_scroll_down :: (t: *Terminal, top: s32, bottom: s32, count: s32) {
         term_clear(t, top * t.cols, (top + 1) * t.cols - 1);
         k += 1;
     }
+    Kitty.scroll(&t.graphics, top, bottom, n, -1);
 }
 term_move :: (t: *Terminal, x: s32, y: s32) {
     t.cursor_x = term_clamp(x, 0, t.cols - 1);
@@ -662,6 +687,7 @@ term_sgr :: (t: *Terminal) {
 }
 term_alt :: (t: *Terminal, enable: bool) {
     if enable == t.alternate return;
+    Kitty.alt(&t.graphics, enable);
     t.top = 0;
     t.bottom = t.rows - 1;
     if enable {
@@ -740,12 +766,15 @@ term_csi :: (t: *Terminal, final: u8) {
     } else if final == 74 {
         if t.args[0] == 0 term_clear(t, y * t.cols + x, t.rows * t.cols - 1);
         else if t.args[0] == 1 term_clear(t, 0, y * t.cols + x);
-        else if t.args[0] == 2 term_clear(t, 0, t.rows * t.cols - 1);
-        else if t.args[0] == 3 {
+        else if t.args[0] == 2 {
+            term_clear(t, 0, t.rows * t.cols - 1);
+            Kitty.clear(&t.graphics, t.rows);
+        } else if t.args[0] == 3 {
             t.history.clear();
             t.history_count = 0;
             t.history_start = 0;
             t.view_offset = 0;
+            Kitty.trim(&t.graphics, 0);
         }
     } else if final == 75 {
         if      t.args[0] == 0 term_clear(t, y * t.cols + x, (y + 1) * t.cols - 1);
@@ -804,7 +833,14 @@ term_csi :: (t: *Terminal, final: u8) {
     } else if final == 115 term_save(t);
     else if final == 117 term_restore(t);
     else if final == 99 && !t.private_mode term_reply(t, "\x1b[?1;2c");
-    else if final == 110 && !t.private_mode {
+    else if final == 116 && !t.private_mode {
+        if t.args[0] == 14
+            term_reply(t, tprint("\x1b[4;{};{}t", t.rows * t.cell_height, t.cols * t.cell_width));
+        else if t.args[0] == 16
+            term_reply(t, tprint("\x1b[6;{};{}t", t.cell_height, t.cell_width));
+        else if t.args[0] == 18
+            term_reply(t, tprint("\x1b[8;{};{}t", t.rows, t.cols));
+    } else if final == 110 && !t.private_mode {
         if      t.args[0] == 5 term_reply(t, "\x1b[0n");
         else if t.args[0] == 6 term_reply(t, tprint("\x1b[{};{}R", y + 1, x + 1));
     } else if final == 98 && t.last_codepoint != 0 {
@@ -830,6 +866,7 @@ term_osc_finish :: (t: *Terminal) {
 }
 term_reset :: (t: *Terminal) {
     if t.alternate term_alt(t, false);
+    Kitty.release(&t.graphics);
     t.fg = t.default_fg;
     t.bg = t.default_bg;
     t.attributes = CELL_DEFAULT_FG | CELL_DEFAULT_BG;
@@ -845,8 +882,62 @@ term_reset :: (t: *Terminal) {
     term_clear(t, 0, t.rows * t.cols - 1);
     term_save(t);
 }
+term_graphics_finish :: (t: *Terminal) {
+    columns: s32;
+    rows: s32;
+    Kitty.command(
+        &t.graphics,
+        cast(str) t.osc.view(),
+        t.cursor_x,
+        t.cursor_y,
+        t.cols,
+        t.rows,
+        t.cell_width,
+        t.cell_height,
+        &columns,
+        &rows,
+        &t.replies
+    );
+    if columns > 0 {
+        for i: 1..rows term_newline(t);
+        x := t.cursor_x + columns;
+        if x >= t.cols {
+            x = 0;
+            term_newline(t);
+        }
+        term_move(t, x, t.cursor_y);
+    }
+    t.osc.clear();
+    t.state = 0;
+}
 term_byte :: (t: *Terminal, b: u8) {
-    // OSC and ignored string payloads are bounded and never reach the grid.
+    // Store only recognized Kitty APCs. Reuse the OSC buffer because control
+    // strings cannot nest. A cancelled or oversized frame invalidates any
+    // in-progress image upload, and none of its payload reaches the grid.
+    if t.state == APC_SELECTOR {
+        if b == 71 {
+            t.osc.clear();
+            t.state = APC_GRAPHICS;
+        } else if b == 27 t.state = 6;
+        else if b == 24 || b == 26 t.state = 0;
+        else t.state = 5;
+        return;
+    }
+    if t.state == APC_GRAPHICS || t.state == APC_GRAPHICS_ESC {
+        if t.state == APC_GRAPHICS_ESC && b == 92 term_graphics_finish(t);
+        else if b == 24 || b == 26 {
+            Kitty.cancel(&t.graphics);
+            t.osc.clear();
+            t.state = 0;
+        } else if t.state == APC_GRAPHICS_ESC || (t.osc.count >= KITTY_FRAME_LIMIT && b != 27) {
+            Kitty.cancel(&t.graphics);
+            t.osc.clear();
+            t.state = 5;
+            if b == 27 t.state = 6;
+        } else if b == 27 t.state = APC_GRAPHICS_ESC;
+        else t.osc.push(b);
+        return;
+    }
     if t.state == 3 {
         if b == 7 {
             term_osc_finish(t);
@@ -879,8 +970,8 @@ term_byte :: (t: *Terminal, b: u8) {
         return;
     }
     if t.state == 6 {
-        if b == 92 t.state = 0;
-        else       t.state = 5;
+        if      b == 92 || b == 24 || b == 26 t.state = 0;
+        else if b != 27                       t.state = 5;
         return;
     }
     if b == 27 {
@@ -923,7 +1014,8 @@ term_byte :: (t: *Terminal, b: u8) {
         } else if b == 93 {
             t.state = 3;
             t.osc.clear();
-        } else if b == 80 || b == 94 || b == 95 t.state = 5;
+        } else if b == 95 t.state = APC_SELECTOR;
+        else if b == 80 || b == 94 t.state = 5;
         else if b == 40 || b == 41 || b == 42 || b == 43 || b == 35 || b == 37 t.state = 7;
         else if b == 55 term_save(t);
         else if b == 56 term_restore(t);

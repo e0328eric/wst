@@ -1,0 +1,388 @@
+//! From Glosso std/Archive/Deflate.glo, copyright 2026 Glosso contributors.
+//! MIT license, reproduced in THIRD_PARTY_NOTICES. The standard library
+//! keeps its raw RFC 1951 decoder private. This copy exposes inflate_exact.
+#import "Memory/Raw";
+
+__Deflate_Bits :: struct {
+    data: []const u8;
+    pos: ssize;
+    bits: u32;
+    count: ssize;
+    failed: bool;
+}
+// Ten-bit prefix lookup handles common codes in one step. Longer and final
+// short codes retain the canonical decoder, so lookahead never needs padding.
+__Deflate_Huffman :: struct {
+    counts: [16]ssize;
+    symbols: [320]ssize;
+    quick: [1024]u16;
+}
+
+__deflate_bits :: (reader: *__Deflate_Bits, count: ssize) -> ssize #inline,always {
+    while reader.count < count {
+        if reader.pos >= reader.data.count {
+            reader.failed = true;
+            return 0;
+        }
+        reader.bits = reader.bits | (cast(u32) reader.data[reader.pos] << cast(u32) reader.count);
+        reader.pos += 1;
+        reader.count += 8;
+    }
+    value := reader.bits & ((cast(u32) 1 << cast(u32) count) - 1);
+    reader.bits >>= cast(u32) count;
+    reader.count -= count;
+    return cast(ssize) value;
+}
+__deflate_huffman :: (
+    table: *__Deflate_Huffman,
+    lengths: []ssize,
+    allow_empty: bool = false,
+    allow_single: bool = true
+) -> bool {
+    table.* = .{};
+    for length: lengths {
+        if length < 0 || length > 15 return false;
+        table.counts[length] += 1;
+    }
+    available: ssize = 1;
+    for length: 1..16 {
+        available = available * 2 - table.counts[length];
+        if available < 0 return false;
+    }
+    used := lengths.count - table.counts[0];
+    if used == 0                                                              return allow_empty;
+    if available != 0 && !(allow_single && used == 1 && table.counts[1] == 1) return false;
+    // RFC 1951 permits an unused distance tree and a one-symbol tree.
+    offsets: [16]ssize;
+    for length: 1..15 offsets[length + 1] = offsets[length] + table.counts[length];
+    for symbol: 0..lengths.count {
+        length := lengths[symbol];
+        if length != 0 {
+            table.symbols[offsets[length]] = symbol;
+            offsets[length] += 1;
+        }
+    }
+    // Canonical codes are emitted most-significant bit first, while the
+    // DEFLATE byte stream is read least-significant bit first.
+    next: [16]ssize;
+    code: ssize = 0;
+    for length: 1..16 {
+        if length > 1 code = (code + table.counts[length - 1]) << 1;
+        next[length] = code;
+    }
+    for symbol: 0..lengths.count {
+        length := lengths[symbol];
+        if length == 0 continue;
+        canonical := next[length];
+        next[length] += 1;
+        if length > 10 continue;
+        reversed: ssize = 0;
+        for _: 0..length {
+            reversed = (reversed << 1) | (canonical & 1);
+            canonical >>= 1;
+        }
+        entry := cast(u16)((symbol << 4) | length);
+        index := reversed;
+        while index < 1024 {
+            table.quick[index] = entry;
+            index += cast(ssize) 1 << length;
+        }
+    }
+    return true;
+}
+__deflate_symbol_slow :: (reader: *__Deflate_Bits, table: *__Deflate_Huffman) -> ssize {
+    code: ssize = 0;
+    first: ssize = 0;
+    index: ssize = 0;
+    for length: 1..16 {
+        code = (code << 1) | __deflate_bits(reader, 1);
+        count := table.counts[length];
+        if code >= first && code - first < count return table.symbols[index + code - first];
+        index += count;
+        first = (first + count) << 1;
+    }
+    reader.failed = true;
+    return -1;
+}
+__deflate_symbol :: (reader: *__Deflate_Bits, table: *__Deflate_Huffman) -> ssize #inline,always {
+    if reader.count < 15 {
+        if reader.data.count - reader.pos >= 2 {
+            // Refill two bytes at a time. At most 30 bits are live, and
+            // the single-byte tail never reads beyond the DEFLATE stream.
+            value := cast(u32) reader.data[reader.pos] | (
+                cast(u32) reader.data[reader.pos + 1] << 8
+            );
+            reader.bits |= value << cast(u32) reader.count;
+            reader.pos += 2;
+            reader.count += 16;
+        } else if reader.pos < reader.data.count {
+            reader.bits |= cast(u32) reader.data[reader.pos] << cast(u32) reader.count;
+            reader.pos += 1;
+            reader.count += 8;
+        }
+    }
+    entry := table.quick[cast(ssize)(reader.bits & 1023)];
+    count := cast(ssize)(entry & 15);
+    if count != 0 && count <= reader.count {
+        reader.bits >>= cast(u32) count;
+        reader.count -= count;
+        return cast(ssize)(entry >> 4);
+    }
+    return __deflate_symbol_slow(reader, table);
+}
+/// Inflates the raw DEFLATE stream at the start of `source` into exactly
+/// `output.count` bytes. Returns the offset in `source` just past the byte
+/// holding the final block's last bit, or -1 for a malformed or truncated
+/// stream or a different output length. The reader may prefetch past the
+/// final block; those whole bytes are not counted as consumed.
+__deflate_inflate :: (source: []const u8, output: []u8) -> ssize {
+    expected := output.count;
+    written: ssize = 0;
+    reader: __Deflate_Bits = .{ .data = source };
+    length_base: [29]ssize = .[
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        13,
+        15,
+        17,
+        19,
+        23,
+        27,
+        31,
+        35,
+        43,
+        51,
+        59,
+        67,
+        83,
+        99,
+        115,
+        131,
+        163,
+        195,
+        227,
+        258
+    ];
+    length_extra: [29]ssize = .[
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        2,
+        3,
+        3,
+        3,
+        3,
+        4,
+        4,
+        4,
+        4,
+        5,
+        5,
+        5,
+        5,
+        0
+    ];
+    distance_base: [30]ssize = .[
+        1,
+        2,
+        3,
+        4,
+        5,
+        7,
+        9,
+        13,
+        17,
+        25,
+        33,
+        49,
+        65,
+        97,
+        129,
+        193,
+        257,
+        385,
+        513,
+        769,
+        1025,
+        1537,
+        2049,
+        3073,
+        4097,
+        6145,
+        8193,
+        12289,
+        16385,
+        24577
+    ];
+    distance_extra: [30]ssize = .[
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        2,
+        2,
+        3,
+        3,
+        4,
+        4,
+        5,
+        5,
+        6,
+        6,
+        7,
+        7,
+        8,
+        8,
+        9,
+        9,
+        10,
+        10,
+        11,
+        11,
+        12,
+        12,
+        13,
+        13
+    ];
+    last := false;
+    while !last {
+        last = __deflate_bits(&reader, 1) != 0;
+        kind := __deflate_bits(&reader, 2);
+        if reader.failed return -1;
+        if kind == 0 {
+            // Discard alignment padding, retaining whole bytes prefetched
+            // while decoding the preceding Huffman block.
+            padding := reader.count & 7;
+            reader.bits >>= cast(u32) padding;
+            reader.count -= padding;
+            count := __deflate_bits(&reader, 16);
+            inverse := __deflate_bits(&reader, 16);
+            if reader.failed || (count ^ inverse) != 65535 || count > expected - written return -1;
+            // The length fields consumed any complete prefetched bytes.
+            if reader.count != 0 || count > reader.data.count - reader.pos return -1;
+            if count > 0
+                _ := mem_copy(
+                    cast(*void)(output.data + written),
+                    cast(*const void)(reader.data.data + reader.pos),
+                    count
+                );
+            written += count;
+            reader.pos += count;
+            continue;
+        }
+        if kind == 3 return -1;
+        lit_lengths: [288]ssize;
+        dist_lengths: [32]ssize;
+        lit: __Deflate_Huffman;
+        dist: __Deflate_Huffman;
+        if kind == 1 {
+            for i: 0..288 {
+                if      i < 144 lit_lengths[i] = 8;
+                else if i < 256 lit_lengths[i] = 9;
+                else if i < 280 lit_lengths[i] = 7;
+                else            lit_lengths[i] = 8;
+            }
+            for i: 0..32 dist_lengths[i] = 5;
+        } else {
+            nlit := __deflate_bits(&reader, 5) + 257;
+            ndist := __deflate_bits(&reader, 5) + 1;
+            ncode := __deflate_bits(&reader, 4) + 4;
+            // RFC 1951 defines at most 286 literal/length and 30 distance
+            // codes; HLIT and HDIST can spell 288 and 32.
+            if reader.failed || nlit > 286 || ndist > 30 return -1;
+            order: [19]ssize = .[16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+            code_lengths: [19]ssize;
+            for i: 0..ncode code_lengths[order[i]] = __deflate_bits(&reader, 3);
+            codes: __Deflate_Huffman;
+            if reader.failed || !__deflate_huffman(&codes, code_lengths.view(), false, false)
+                return -1;
+            all: [320]ssize;
+            index: ssize = 0;
+            while index < nlit + ndist {
+                value := __deflate_symbol(&reader, &codes);
+                if reader.failed return -1;
+                if value <= 15 {
+                    all[index] = value;
+                    index += 1;
+                    continue;
+                }
+                repeated: ssize = 0;
+                count: ssize = 0;
+                if value == 16 {
+                    if index == 0 return -1;
+                    repeated = all[index - 1];
+                    count = __deflate_bits(&reader, 2) + 3;
+                } else if value == 17 count = __deflate_bits(&reader, 3) + 3;
+                else if value == 18 count = __deflate_bits(&reader, 7) + 11;
+                else return -1;
+                if reader.failed || count > nlit + ndist - index return -1;
+                for _: 0..count {
+                    all[index] = repeated;
+                    index += 1;
+                }
+            }
+            for i: 0..nlit lit_lengths[i] = all[i];
+            for i: 0..ndist dist_lengths[i] = all[nlit + i];
+            if lit_lengths[256] == 0 return -1;
+        }
+        if !__deflate_huffman(&lit, lit_lengths.view()) ||
+           !__deflate_huffman(&dist, dist_lengths.view(), true)
+            return -1;
+        while true {
+            symbol := __deflate_symbol(&reader, &lit);
+            if reader.failed return -1;
+            if symbol == 256 break;
+            if symbol < 256 {
+                if written >= expected return -1;
+                output[written] = cast(u8) symbol;
+                written += 1;
+                continue;
+            }
+            if symbol > 285 return -1;
+            length := length_base[symbol - 257] + __deflate_bits(
+                &reader,
+                length_extra[symbol - 257]
+            );
+            distance_symbol := __deflate_symbol(&reader, &dist);
+            if reader.failed || distance_symbol < 0 || distance_symbol >= 30 return -1;
+            distance := distance_base[distance_symbol] + __deflate_bits(
+                &reader,
+                distance_extra[distance_symbol]
+            );
+            if reader.failed || distance > written || length > expected - written return -1;
+            // A forward copy is required for overlapping LZ77 matches:
+            // each produced byte may become the source of the next one.
+            for i: 0..length output[written + i] = output[written + i - distance];
+            written += length;
+        }
+    }
+    if written != expected return -1;
+    return reader.pos - reader.count / 8;
+}
+
+/// Inflates a raw DEFLATE stream that must fill `output` exactly and end with
+/// the last byte of `source`, as a ZIP entry does.
+#public inflate_exact :: (source: []const u8, output: []u8) -> bool {
+    return __deflate_inflate(source, output) == source.count;
+}

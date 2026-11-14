@@ -50,26 +50,32 @@ main :: () {
     releases := Paths.path_join(build, "releases");
     defer releases.free();
     check(FS.create_directory(build).is_ok(), "create fixture build directory");
-    names: [5]str = .[
+    names := .[
         "wst.exe",
         "LICENSE",
         "THIRD_PARTY_NOTICES",
         "README.md",
-        "config.example.lua"
+        "config.example.lua",
+        "conpty.dll",
+        "OpenConsole.exe"
     ];
-    relative: [5]str = .[
+    relative := .[
         "build/wst.exe",
         "build/LICENSE",
         "build/THIRD_PARTY_NOTICES",
         "README.md",
-        "config.example.lua"
+        "config.example.lua",
+        "build/conpty.dll",
+        "build/OpenConsole.exe"
     ];
-    payload: [5]str = .[
+    payload := .[
         "\0MZ\xff\x80\0fake executable\xfe",
         "wst MIT notice\n",
         "all copyright holders: © 글로소\n",
         "readme\n",
-        "return {}\n"
+        "return {}\n",
+        "ConPTY DLL fixture",
+        "OpenConsole fixture"
     ];
     for i: 0..relative.count {
         path := Paths.path_join(workspace, relative[i]);
@@ -78,7 +84,7 @@ main :: () {
     }
     archive_path := Paths.path_join(releases, "wst-test-windows-x64.zip");
     defer archive_path.free();
-    check(R.package(workspace, "test"), "package all five files without a shell");
+    check(R.package(workspace, "test"), "package the app and its runtime files");
     original := snapshot_file(archive_path);
     defer original.free();
     if Z.Zip_Archive.zip_read_file(archive_path) == {
@@ -87,8 +93,8 @@ main :: () {
         exit(1);
     case .Ok(archive);
         defer archive.destroy();
-        check(archive.entries.count == 5, "archive contains only the five public release files");
-        for i: 0..5 {
+        check(archive.entries.count == names.count, "archive contains the expected release files");
+        for i: 0..names.count {
             check(
                 archive.entries[i].name == names[i] && archive.entries[i].compression_method == 0,
                 "root entry names and stored ZIP method are exact"

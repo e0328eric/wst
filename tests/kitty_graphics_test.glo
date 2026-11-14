@@ -1,0 +1,221 @@
+#import "Io";
+#import "Os";
+T :: #import "../src/terminal.glo";
+K :: #import "../src/kitty_store.glo";
+
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
+}
+
+reply :: (t: *T.Terminal, expected: str) {
+    actual := cast(str) t.replies.view();
+    if actual != expected {
+        print("Expected reply '{}', got '{}'\n", expected, actual);
+        exit(1);
+    }
+    t.replies.clear();
+}
+
+error_reply :: (t: *T.Terminal, prefix: str) {
+    actual := cast(str) t.replies.view();
+    check(
+        actual.count >= prefix.count + 2 && actual[..prefix.count] == prefix && actual[actual.count - 2..] == "\x1b\\",
+        "error reply has the image id and status"
+    );
+    t.replies.clear();
+}
+
+placement :: (t: *T.Terminal) -> K.View {
+    check(K.count(&t.graphics) == 1, "one placement");
+    v: K.View;
+    check(K.view(&t.graphics, 0, t.cell_width, t.cell_height, t.view_offset, &v), "read placement");
+    return v;
+}
+
+probe :: () {
+    sample := "A\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[cB";
+    for split: 0..sample.count + 1 {
+        t: T.Terminal;
+        T.init(&t, 20, 5, 5, 16#ffffff, 0);
+        T.feed(&t, sample[..split]);
+        T.feed(&t, sample[split..]);
+        reply(&t, "\x1b_Gi=31;OK\x1b\\\x1b[?1;2c");
+        check(
+            t.cursor_x == 2 && t.cursor_y == 0 && T.visible_cell(&t, 1, 0).codepoint == 66,
+            "APC bytes leave only the surrounding text at every input split"
+        );
+        T.feed(&t, "\x1b_Ga=p,i=31\x1b\\");
+        error_reply(&t, "\x1b_Gi=31;ENOENT");
+        T.release(&t);
+    }
+}
+
+discarded_frames :: () {
+    t: T.Terminal;
+    T.init(&t, 12, 2, 2, 16#ffffff, 0);
+    defer T.release(&t);
+    T.feed(&t, "\x1b_unknown APC\x1b\\A\x1b_Ga=T,f=24,s=1,v=1;AA\x18B");
+    T.feed(&t, "\x1b_Ga=T,f=24,s=1,v=1;");
+    for i: 0..1025 T.feed(&t, "AAAAAAAA");
+    T.feed(&t, "\x1b\\C");
+    check(
+        t.cursor_x == 3 && T.visible_cell(&t, 0, 0).codepoint == 65 && T.visible_cell(&t, 1, 0).codepoint == 66 && T.visible_cell(
+            &t,
+            2,
+            0
+        ).codepoint == 67 && K.count(&t.graphics) == 0,
+        "discarded, cancelled and oversized APC payloads never print"
+    );
+    T.feed(&t, "\x1b_Ga=q,i=1,f=24,s=1,v=1;AAAA\x1b\\");
+    reply(&t, "\x1b_Gi=1;OK\x1b\\");
+}
+
+chunks_and_placements :: () {
+    t: T.Terminal;
+    T.init(&t, 20, 8, 8, 16#ffffff, 0);
+    defer T.release(&t);
+    T.set_cell_size(&t, 8, 16);
+    T.feed(&t, "\x1b[14t\x1b[16t\x1b[18t");
+    reply(&t, "\x1b[4;128;160t\x1b[6;16;8t\x1b[8;8;20t");
+    T.feed(&t, "\x1b_Ga=T,i=42,p=9,f=24,s=2,v=1,C=1,m=1;AQID\x1b\\");
+    reply(&t, "");
+    check(K.count(&t.graphics) == 0, "pending upload is invisible");
+    T.feed(&t, "\x1b_Ga=q,i=6,e=T,U=1,C=1\x1b\\\x1b_Ga=q,i=7,e=f\x1b\\");
+    reply(&t, "\x1b_Gi=6,e=T,C=1;OK\x1b\\\x1b_Gi=7;OK\x1b\\");
+    T.feed(&t, "\x1b[2;3H\x1b_Gm=0;BAUG\x1b\\");
+    reply(&t, "\x1b_Gi=42,p=9;OK\x1b\\");
+    check(t.cursor_x == 2 && t.cursor_y == 1, "C=1 preserves the final cursor position");
+    v := placement(&t);
+    check(
+        v.dx == 16 && v.dy == 16 && v.dw == 2 && v.dh == 1,
+        "chunked placement uses the cursor at the final chunk and natural pixel size"
+    );
+    for i: 0..2 {
+        for channel: 0..3
+            check(
+                v.rgba[4 * i + channel] == cast(u8)(3 * i + channel + 1),
+                "RGB chunks decoded in order"
+            );
+        check(v.rgba[4 * i + 3] == 255, "RGB converted to opaque RGBA");
+    }
+
+    T.feed(&t, "\x1b[3;4H\x1b_Ga=p,i=42,p=9,x=1,w=1,X=2,Y=3,z=-7,C=1\x1b\\");
+    reply(&t, "\x1b_Gi=42,p=9;OK\x1b\\");
+    v = placement(&t);
+    check(
+        v.sx == 1 && v.sw == 1 && v.dx == 26 && v.dy == 35 && v.z == -7,
+        "replacing a placement updates crop, offsets, location and depth"
+    );
+    T.feed(&t, "\x1b_Ga=d,d=i,i=42,p=9\x1b\\");
+    check(K.count(&t.graphics) == 0, "lowercase deletion releases the placement");
+    T.feed(&t, "\x1b_Ga=p,i=42,c=3,r=2,q=1\x1b\\");
+    reply(&t, "");
+    check(
+        K.count(&t.graphics) == 1 && t.cursor_x == 6 && t.cursor_y == 3,
+        "saved pixels can be placed again, advancing the cursor"
+    );
+    T.feed(&t, "\x1b[2;20H\x1b_Ga=p,i=42,c=1,r=1,q=1\x1b\\");
+    check(
+        t.cursor_x == 0 && t.cursor_y == 2,
+        "placement at the right edge advances to the next row"
+    );
+    T.feed(&t, "\x1b_Ga=d,d=I,i=42\x1b\\\x1b_Ga=p,i=42\x1b\\");
+    error_reply(&t, "\x1b_Gi=42;ENOENT");
+}
+
+decoding_and_recovery :: () {
+    t: T.Terminal;
+    T.init(&t, 16, 4, 4, 16#ffffff, 0);
+    defer T.release(&t);
+
+    // Two distinct RGB pixels compressed with RFC 1950 zlib.
+    T.feed(&t, "\x1b_Ga=T,i=5,f=24,s=2,v=1,o=z,C=1;eJxr+MDDLnIHAAj/AnQ=\x1b\\");
+    reply(&t, "\x1b_Gi=5;OK\x1b\\");
+    v := placement(&t);
+    check(
+        v.rgba[0] == 128 && v.rgba[1] == 240 && v.rgba[2] == 12 && v.rgba[3] == 255 && v.rgba[4] == 7 && v.rgba[5] == 20 && v.rgba[6] == 220 && v.rgba[7] == 255,
+        "zlib raw RGB pixel values"
+    );
+
+    // PNG with the same pixels and a half-transparent second pixel.
+    T.feed(
+        &t,
+        "\x1b_Ga=T,i=5,f=100,C=1;iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGNo+MDzn13kTgMAEmwD85D0zfsAAAAASUVORK5CYII=\x1b\\"
+    );
+    reply(&t, "\x1b_Gi=5;OK\x1b\\");
+    v = placement(&t);
+    check(
+        v.width == 2 && v.height == 1 && v.rgba[0] == 128 && v.rgba[4] == 7 && v.rgba[5] == 20 && v.rgba[6] == 220 && v.rgba[7] == 128,
+        "PNG replacement supplies intrinsic dimensions, color and straight alpha"
+    );
+    T.feed(&t, "\x1b_Ga=T,i=8,f=32,s=1,v=1;!!!!\x1b\\Z");
+    error_reply(&t, "\x1b_Gi=8;");
+    check(
+        K.count(&t.graphics) == 1 && T.visible_cell(&t, 0, 0).codepoint == 90,
+        "bad base64 leaves existing placements and the following printable text intact"
+    );
+    T.feed(&t, "\x1b_Ga=T,i=8,f=24,s=1,v=2,q=1;AAAA\x1b\\");
+    error_reply(&t, "\x1b_Gi=8;");
+    T.feed(&t, "\x1b_Ga=T,i=8,f=24,s=1,v=2,q=2;AAAA\x1b\\");
+    reply(&t, "");
+    T.feed(&t, "\x1b_Ga=T,i=8,f=24,s=1,v=1,o=z;QUJD\x1b\\");
+    error_reply(&t, "\x1b_Gi=8;");
+    T.feed(&t, "\x1b_Ga=q,i=10,f=32,s=4294967295,v=4294967295;AAAA\x1b\\");
+    error_reply(&t, "\x1b_Gi=10;");
+    T.feed(&t, "\x1b_Ga=t,i=4294967295,f=32,s=1,v=1;AQIDBA==\x1b\\");
+    reply(&t, "\x1b_Gi=4294967295;OK\x1b\\");
+    check(K.count(&t.graphics) == 1, "transmit-only stores data without displaying it");
+    T.feed(&t, "\x1b_Ga=p,i=4294967295,C=1\x1b\\");
+    reply(&t, "\x1b_Gi=4294967295;OK\x1b\\");
+    T.feed(&t, "\x1b_Ga=T,i=8,f=24,s=1,v=1,q=1,C=1;AAAA\x1b\\");
+    reply(&t, "");
+    check(
+        K.count(&t.graphics) == 3,
+        "valid transmission succeeds after a corrupt compressed stream"
+    );
+}
+
+screen_lifetime :: () {
+    t: T.Terminal;
+    T.init(&t, 6, 3, 3, 16#ffffff, 0);
+    defer T.release(&t);
+    T.feed(&t, "\x1b_Ga=T,i=2,f=24,s=1,v=1,C=1,q=2;/wAA\x1b\\");
+    T.feed(&t, "\x1b[?1049h");
+    check(K.count(&t.graphics) == 0, "entering alternate screen hides main placements");
+    T.feed(&t, "\x1b_Ga=T,i=3,f=24,s=1,v=1,C=1,q=2;AAD/\x1b\\");
+    v := placement(&t);
+    check(v.rgba[2] == 255, "alternate placement");
+    T.feed(&t, "\x1b[?1049l");
+    v = placement(&t);
+    check(v.rgba[0] == 255, "main placement is restored");
+    T.feed(&t, "\x1b[?1049h");
+    check(K.count(&t.graphics) == 0, "re-entering alternate screen clears it");
+    T.feed(&t, "\x1b[?1049l\x1b[3;1H\n");
+    T.scroll_view(&t, 1);
+    v = placement(&t);
+    check(v.dy == 0 && t.view_offset == 1, "scrollback keeps an image beside its original text");
+    T.scroll_view(&t, -1);
+    T.feed(&t, "\x1bc");
+    T.feed(&t, "\x1b_Ga=T,i=4,f=24,s=1,v=1,C=1,q=2;AAAA\x1b\\");
+    T.feed(&t, "\x1b[2J");
+    check(K.count(&t.graphics) == 0, "erase display clears visible placements");
+    T.feed(&t, "\x1b_Ga=T,i=7,f=24,s=2,v=1,m=1;AAAA\x1b\\");
+    T.begin_session(&t);
+    T.feed(&t, "\x1b_Gm=0;AAAA\x1b\\X");
+    check(
+        K.count(&t.graphics) == 0 && T.visible_cell(&t, 0, 0).codepoint == 88,
+        "a replacement shell discards pending image transmissions"
+    );
+}
+
+main :: () {
+    probe();
+    discarded_frames();
+    chunks_and_placements();
+    decoding_and_recovery();
+    screen_lifetime();
+    print("Kitty graphics terminal tests passed.\n");
+}

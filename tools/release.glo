@@ -33,23 +33,27 @@ package :: (root: str, version: str) -> bool {
         return fail(
             "version must contain 1..64 ASCII letters, digits, '.', '_' or '-' and start with a letter or digit"
         );
-    names: [5]str = .[
+    names := .[
         "wst.exe",
         "LICENSE",
         "THIRD_PARTY_NOTICES",
         "README.md",
-        "config.example.lua"
+        "config.example.lua",
+        "conpty.dll",
+        "OpenConsole.exe"
     ];
-    sources: [5]str = .[
+    sources := .[
         "build/wst.exe",
         "build/LICENSE",
         "build/THIRD_PARTY_NOTICES",
         "README.md",
-        "config.example.lua"
+        "config.example.lua",
+        "build/conpty.dll",
+        "build/OpenConsole.exe"
     ];
     archive: [..]u8;
     defer archive.free();
-    entries: [5]Entry;
+    entries: [names.count]Entry;
     for index: 0..names.count {
         path := path_join(root, sources[index]);
         defer path.free();

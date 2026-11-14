@@ -5,6 +5,8 @@
 #import "Strings/Utf8";
 #import "Format";
 #import "Thread/Atomic";
+#import "File_System/Path";
+Process :: #import "Process";
 T :: #import "platform_types.glo";
 kernel32 :: #library,system "kernel32";
 user32 :: #library,system "user32";
@@ -111,6 +113,9 @@ CreatePipe :: (read: *Handle, write: *Handle, security: usize, size: u32) -> s32
 CreatePseudoConsole :: (size: Coord, input: Handle, output: Handle, flags: u32, pseudo: *Handle) -> s32 #foreign kernel32;
 ResizePseudoConsole :: (pseudo: Handle, size: Coord) -> s32 #foreign kernel32;
 ClosePseudoConsole :: (pseudo: Handle) #foreign kernel32;
+LoadLibraryExW :: (path: usize, file: Handle, flags: u32) -> Handle #foreign kernel32;
+GetProcAddress :: (module: Handle, name: cstr) -> usize #foreign kernel32;
+FreeLibrary :: (module: Handle) -> s32 #foreign kernel32;
 InitializeProcThreadAttributeList :: (list: usize, count: u32, flags: u32, size: *usize) -> s32 #foreign kernel32;
 UpdateProcThreadAttribute :: (
     list: usize,
@@ -169,6 +174,7 @@ MsgWaitForMultipleObjectsEx :: (
 ) -> u32 #foreign user32;
 
 SESSION_LIMIT :: 32;
+IO_CHUNK :: 16384;
 RING_SIZE :: 4 * 1024 * 1024;
 INVALID_HANDLE :: 16#ffff_ffff_ffff_ffff;
 INFINITE :: 16#ffff_ffff;
@@ -176,6 +182,7 @@ Byte_Queue :: struct {
     lock: Critical_Section;
     changed: usize;
     bytes: usize;
+    capacity: usize;
     head: usize;
     tail: usize;
     count: usize;
@@ -202,6 +209,51 @@ Pty_Slot :: struct {
 slots: [SESSION_LIMIT + 1]Pty_Slot;
 selected: s32;
 error_storage: [2048]u8;
+
+// Recent OpenConsole versions forward Kitty's APC graphics strings. Prefer
+// the Microsoft ConPTY redistributable beside wst.exe; keep all operations
+// on a pseudoconsole handle in the same implementation.
+Create_Pty :: #fn_ptr(size: Coord, input: Handle, output: Handle, flags: u32, pseudo: *Handle) -> s32 #c_call;
+Resize_Pty :: #fn_ptr(pseudo: Handle, size: Coord) -> s32 #c_call;
+Close_Pty :: #fn_ptr(pseudo: Handle) #c_call;
+pty_api_ready: bool;
+side_by_side_pty: bool;
+create_pty: Create_Pty;
+resize_pty: Resize_Pty;
+close_pty: Close_Pty;
+
+init_pty_api :: () {
+    if pty_api_ready return;
+    pty_api_ready = true;
+    executable := Process.current_executable_path();
+    defer executable.free();
+    if executable.count == 0 return;
+    path := path_join(path_dirname(executable), "conpty.dll");
+    defer path.free();
+    name := wide(path.c_string());
+    defer release(name);
+    if name == 0 return;
+    // An absolute name and LOAD_LIBRARY_SEARCH_SYSTEM32 keep the shell's
+    // current directory and PATH out of both the DLL and dependency searches.
+    dll := LoadLibraryExW(name, 0, 16#800);
+    if dll == 0 return;
+    create := GetProcAddress(dll, "ConptyCreatePseudoConsole");
+    resize := GetProcAddress(dll, "ConptyResizePseudoConsole");
+    close := GetProcAddress(dll, "ConptyClosePseudoConsole");
+    if create == 0 || resize == 0 || close == 0 {
+        _ := FreeLibrary(dll);
+        return;
+    }
+    create_pty = cast(Create_Pty) create;
+    resize_pty = cast(Resize_Pty) resize;
+    close_pty = cast(Close_Pty) close;
+    side_by_side_pty = true;
+}
+
+resize_console :: (pseudo: Handle, size: Coord) -> s32 {
+    if side_by_side_pty return resize_pty(pseudo, size);
+    return ResizePseudoConsole(pseudo, size);
+}
 
 allocate :: (bytes: usize) -> usize {
     return HeapAlloc(GetProcessHeap(), 8, bytes);
@@ -268,41 +320,60 @@ expanded :: (text: cstr) -> usize {
 queue_init :: (queue: *Byte_Queue) {
     InitializeCriticalSection(&queue.lock);
     InitializeConditionVariable(&queue.changed);
-    queue.bytes = allocate(RING_SIZE);
+    queue.capacity = IO_CHUNK;
+    queue.bytes = allocate(queue.capacity);
 }
 queue_destroy :: (queue: *Byte_Queue) {
     release(queue.bytes);
     DeleteCriticalSection(&queue.lock);
 }
 append :: (queue: *Byte_Queue, data: usize, count: usize) {
-    first: usize = RING_SIZE - queue.head;
+    first := queue.capacity - queue.head;
     if first > count first = count;
     copy(queue.bytes + queue.head, data, first);
     copy(queue.bytes, data + first, count - first);
-    queue.head = (queue.head + count) % RING_SIZE;
+    queue.head = (queue.head + count) % queue.capacity;
     queue.count += count;
 }
 take :: (queue: *Byte_Queue, data: usize, count: usize) -> usize {
     size := count;
     if size > queue.count size = queue.count;
-    first: usize = RING_SIZE - queue.tail;
+    first := queue.capacity - queue.tail;
     if first > size first = size;
     copy(data, queue.bytes + queue.tail, first);
     copy(data + first, queue.bytes, size - first);
-    queue.tail = (queue.tail + size) % RING_SIZE;
+    queue.tail = (queue.tail + size) % queue.capacity;
     queue.count -= size;
     return size;
+}
+// Called under the queue lock. On failure the queued bytes stay available
+// to the consumer. Each output read fits the initial ring once it drains.
+ensure_space :: (queue: *Byte_Queue, additional: usize) -> bool {
+    if additional <= queue.capacity - queue.count return true;
+    if additional > RING_SIZE - queue.count       return false;
+    capacity := queue.capacity;
+    while capacity < queue.count + additional capacity *= 2;
+    bytes := allocate(capacity);
+    if bytes == 0 return false;
+    count := take(queue, bytes, queue.count);
+    release(queue.bytes);
+    queue.bytes = bytes;
+    queue.capacity = capacity;
+    queue.tail = 0;
+    queue.head = count;
+    queue.count = count;
+    return true;
 }
 read_output :: (parameter: usize) -> u32 #c_call {
     session := cast(*Pty_Session) parameter;
     queue := &session.output_queue;
-    buffer: [16384]u8;
+    buffer: [IO_CHUNK]u8;
     while session.stopping.load() == 0 {
         count: u32;
-        if ReadFile(session.output_pipe, cast(usize) &buffer, 16384, &count, 0) == 0 || count == 0
+        if ReadFile(session.output_pipe, cast(usize) &buffer, IO_CHUNK, &count, 0) == 0 || count == 0
             break;
         EnterCriticalSection(&queue.lock);
-        while RING_SIZE - queue.count < cast(usize) count && session.stopping.load() == 0
+        while session.stopping.load() == 0 && !ensure_space(queue, cast(usize) count)
             _ := SleepConditionVariableCS(&queue.changed, &queue.lock, INFINITE);
         if session.stopping.load() == 0 {
             append(queue, cast(usize) &buffer, count);
@@ -315,13 +386,13 @@ read_output :: (parameter: usize) -> u32 #c_call {
 write_input :: (parameter: usize) -> u32 #c_call {
     session := cast(*Pty_Session) parameter;
     queue := &session.input_queue;
-    buffer: [16384]u8;
+    buffer: [IO_CHUNK]u8;
     while session.stopping.load() == 0 {
         EnterCriticalSection(&queue.lock);
         while queue.count == 0 && session.stopping.load() == 0
             _ := SleepConditionVariableCS(&queue.changed, &queue.lock, INFINITE);
         count: usize;
-        if session.stopping.load() == 0 count = take(queue, cast(usize) &buffer, 16384);
+        if session.stopping.load() == 0 count = take(queue, cast(usize) &buffer, IO_CHUNK);
         LeaveCriticalSection(&queue.lock);
         if count == 0 break;
         sent: usize;
@@ -365,7 +436,10 @@ close_session :: (value: usize) {
     if session.input_pipe != 0  _ := CloseHandle(session.input_pipe);
     if session.primary_thread != 0 && session.process != 0
         _ := TerminateProcess(session.process, 1);
-    if session.pseudo != 0 ClosePseudoConsole(session.pseudo);
+    if session.pseudo != 0 {
+        if side_by_side_pty close_pty(session.pseudo);
+        else                ClosePseudoConsole(session.pseudo);
+    }
     if session.process != 0 {
         if WaitForSingleObject(session.process, 500) == 258
             _ := TerminateProcess(session.process, 1);
@@ -407,13 +481,13 @@ prepare_session :: (
     }
     if CreatePipe(input_read, &session.input_pipe, 0, 0) == 0    return false;
     if CreatePipe(&session.output_pipe, output_write, 0, 0) == 0 return false;
-    result := CreatePseudoConsole(
-        .{ cast(s16) cols, cast(s16) rows },
-        input_read.*,
-        output_write.*,
-        0,
-        &session.pseudo
-    );
+    init_pty_api();
+    size: Coord = .{ cast(s16) cols, cast(s16) rows };
+    result: s32;
+    if side_by_side_pty
+        result = create_pty(size, input_read.*, output_write.*, 0, &session.pseudo);
+    else
+        result = CreatePseudoConsole(size, input_read.*, output_write.*, 0, &session.pseudo);
     if result < 0 {
         SetLastError(cast(u32) result);
         return false;
@@ -627,10 +701,7 @@ pty_resize_prepared :: (cols: s32, rows: s32) -> s32 {
         SetLastError(87);
         return windows_error("Resizing prepared ConPTY shell");
     }
-    result := ResizePseudoConsole(
-        (cast(*Pty_Session) value).pseudo,
-        .{ cast(s16) cols, cast(s16) rows }
-    );
+    result := resize_console((cast(*Pty_Session) value).pseudo, .{ cast(s16) cols, cast(s16) rows });
     if result < 0 {
         SetLastError(cast(u32) result);
         return windows_error("Resizing prepared ConPTY shell");
@@ -713,7 +784,7 @@ pty_send :: (data: [*]const u8, length: s32) -> s32 {
     if !session.queues_ready || session.stopping.load() != 0 return 0;
     queue := &session.input_queue;
     EnterCriticalSection(&queue.lock);
-    fits := cast(usize) length <= RING_SIZE - queue.count;
+    fits := ensure_space(queue, cast(usize) length);
     if fits append(queue, cast(usize) data, cast(usize) length);
     WakeConditionVariable(&queue.changed);
     LeaveCriticalSection(&queue.lock);
@@ -727,10 +798,7 @@ pty_resize :: (cols: s32, rows: s32) -> s32 {
         SetLastError(87);
         return windows_error("Resizing ConPTY shell");
     }
-    result := ResizePseudoConsole(
-        (cast(*Pty_Session) value).pseudo,
-        .{ cast(s16) cols, cast(s16) rows }
-    );
+    result := resize_console((cast(*Pty_Session) value).pseudo, .{ cast(s16) cols, cast(s16) rows });
     if result < 0 {
         SetLastError(cast(u32) result);
         return windows_error("Resizing ConPTY shell");

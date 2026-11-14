@@ -1,0 +1,779 @@
+//! Per-terminal Kitty graphics resources. Placements reference stable image slots;
+//! immutable pixel generations are shared by every placement of an image.
+#import "Format";
+Decode :: #import "kitty_decode.glo";
+
+MAX_IMAGES :: 256;
+MAX_PLACEMENTS :: 1024;
+MAX_STORAGE :: 96 * 1024 * 1024;
+MAX_EXTENT :: 16777216;
+
+#public Controls :: struct {
+    action: u8 = #char "t";
+    quiet: s64;
+    feature: u8;
+    more: s64;
+    id: u32;
+    number: u32;
+    deletion: u8 = #char "a";
+    placement: u32;
+    medium: u8 = #char "d";
+    compression: u8;
+    format: u32 = 32;
+    width: u32;
+    height: u32;
+    size: u32;
+    virtual: s64;
+    parent: s64;
+    parent_place: s64;
+    offset_x: s64;
+    offset_y: s64;
+    cursor_policy: s64;
+    x: s64;
+    y: s64;
+    cols: s64;
+    rows: s64;
+    crop_w: s64;
+    crop_h: s64;
+    z: s32;
+    continuation: bool = true;
+    has_quiet: bool;
+}
+#public Image :: struct {
+    pixels: [..]u8;
+    width: s32;
+    height: s32;
+    id: u32;
+    number: u32;
+    token: u64;
+    refs: s32;
+}
+#public Placement :: struct {
+    image: ssize;
+    id: u32;
+    x: s32;
+    y: s32;
+    z: s32;
+    sx: s32;
+    sy: s32;
+    sw: s32;
+    sh: s32;
+    offset_x: s32;
+    offset_y: s32;
+    cols: s32;
+    rows: s32;
+    // Clipping limits relative to the anchor, in rows. An unbounded bottom
+    // lets the placement track changes in cell size during zoom.
+    first: s32;
+    end: s32 = MAX_EXTENT;
+}
+#public Screen :: struct {
+    images: [..]Image;
+    places: [..]Placement;
+    bytes: ssize;
+}
+Rect :: struct {
+    dx: s32;
+    dy: s32;
+    dw: s32;
+    dh: s32;
+    cols: s32;
+    rows: s32;
+}
+generation: u64;
+
+#public {
+
+Store :: struct {
+    screens: [2]Screen;
+    active: s32;
+    next_id: u32;
+    cw: s32 = 8;
+    ch: s32 = 16;
+    partial: bool;
+    head: Controls;
+    data: [..]u8;
+    failure: str;
+}
+View :: struct {
+    rgba: [*]const u8;
+    token: u64;
+    width: s32;
+    height: s32;
+    sx: s32;
+    sy: s32;
+    sw: s32;
+    sh: s32;
+    dx: s32;
+    dy: s32;
+    dw: s32;
+    dh: s32;
+    clip_top: s32;
+    clip_bottom: s32;
+    z: s32;
+}
+
+cancel :: (s: *Store) {
+    s.partial = false;
+    s.data.reset();
+    s.failure = "";
+}
+release :: (s: *Store) {
+    cancel(s);
+    for i: 0..2 free_screen(&s.screens[i]);
+    fresh: Store;
+    s.* = fresh;
+}
+alt :: (s: *Store, entering: bool) {
+    cancel(s);
+    if entering {
+        free_screen(&s.screens[1]);
+        s.active = 1;
+    } else s.active = 0;
+}
+metrics :: (s: *Store, cw: s32, ch: s32) {
+    if cw > 0 && cw <= 4096 s.cw = cw;
+    if ch > 0 && ch <= 4096 s.ch = ch;
+}
+count :: (s: *Store) -> s32 {
+    return cast(s32) s.screens[s.active].places.count;
+}
+view :: (s: *Store, index: s32, cw: s32, ch: s32, view_offset: s32, out: *View) -> bool {
+    if index < 0 || index >= count(s) || cw < 1 || ch < 1 return false;
+    screen := &s.screens[s.active];
+    p := &screen.places[index];
+    img := &screen.images[p.image];
+    box := geometry(p, cw, ch);
+    y := p.y + view_offset;
+    out.rgba = img.pixels.data;
+    out.token = img.token;
+    out.width = img.width;
+    out.height = img.height;
+    out.sx = p.sx;
+    out.sy = p.sy;
+    out.sw = p.sw;
+    out.sh = p.sh;
+    out.dx = p.x * cw + box.dx;
+    out.dy = coord(cast(s64) y * cast(s64) ch + cast(s64) box.dy);
+    out.dw = box.dw;
+    out.dh = box.dh;
+    out.clip_top = coord(cast(s64)(y + p.first) * cast(s64) ch);
+    out.clip_bottom = coord(cast(s64)(y + p.end) * cast(s64) ch);
+    out.z = p.z;
+    return true;
+}
+
+clear :: (s: *Store, rows: s32) {
+    screen := &s.screens[s.active];
+    i := screen.places.count;
+    while i > 0 {
+        i -= 1;
+        p := &screen.places[i];
+        box := geometry(p, s.cw, s.ch);
+        if p.y + p.first < rows && p.y + smaller(box.rows, p.end) > 0
+            drop_placement(screen, i);
+    }
+}
+trim :: (s: *Store, history: s32) {
+    clip_screen(&s.screens[0], -history, MAX_EXTENT, s.cw, s.ch);
+}
+resize :: (s: *Store, rows: s32) {
+    for i: 0..2 clip_screen(&s.screens[i], -MAX_EXTENT, rows, s.cw, s.ch);
+}
+scroll :: (s: *Store, top: s32, bottom: s32, delta: s32, history_count: s32) {
+    screen := &s.screens[s.active];
+    i := screen.places.count;
+    while i > 0 {
+        i -= 1;
+        p := &screen.places[i];
+        box := geometry(p, s.cw, s.ch);
+        if history_count >= 0 {
+            p.y += delta;
+            clip_placement(screen, i, box.rows, -history_count, MAX_EXTENT);
+        } else if p.y + p.first >= top && p.y + smaller(box.rows, p.end) <= bottom + 1 {
+            p.y += delta;
+            clip_placement(screen, i, box.rows, top, bottom + 1);
+        }
+    }
+}
+
+command :: (
+    s: *Store,
+    bytes: str,
+    cursor_x: s32,
+    cursor_y: s32,
+    cols: s32,
+    rows: s32,
+    cell_w: s32,
+    cell_h: s32,
+    advance_cols: *s32,
+    advance_rows: *s32,
+    replies: *[..]u8
+) {
+    advance_cols.* = 0;
+    advance_rows.* = 0;
+    metrics(s, cell_w, cell_h);
+    head: Controls;
+    split: ssize = 0;
+    while split < bytes.count && bytes[split] != #char ";" split += 1;
+    payload: str;
+    if split < bytes.count payload = bytes[split + 1..];
+    values: [128]s64;
+    error := parse(bytes[0..split], &values, &head);
+    if error == "" && head.action == #char "q" && head.feature != 0 {
+        feature_reply(&head, &values, replies);
+        return;
+    }
+    if s.partial && (!head.continuation || error != "") cancel(s);
+    if error != "" {
+        reply(&head, error, replies);
+        return;
+    }
+    if s.partial {
+        more := head.more;
+        quiet := head.quiet;
+        override_quiet := head.has_quiet;
+        head = s.head;
+        head.more = more;
+        if override_quiet head.quiet = quiet;
+    }
+    if head.feature != 0 {
+        reply(&head, "EINVAL:feature query requires a=q", replies);
+        return;
+    }
+    if head.id != 0 && head.number != 0 {
+        reply(&head, "EINVAL:specify either i or I", replies);
+        return;
+    }
+    screen := &s.screens[s.active];
+    action := head.action;
+    if action == #char "d" {
+        error = delete_images(s, &head, cursor_x, cursor_y, rows);
+        if error != "" reply(&head, error, replies);
+        return;
+    }
+    if action == #char "p" {
+        slot := lookup(screen, &head);
+        if slot < 0 error = "ENOENT:image not found";
+        else {
+            img := &screen.images[slot];
+            head.id = img.id;
+            place: Placement;
+            error = prepare_place(s, &head, img, cursor_x, cursor_y, &place);
+            if error == "" error = put(screen, slot, &place);
+            if error == "" movement(s, &head, &place, cols, rows, advance_cols, advance_rows);
+        }
+        reply(&head, error, replies);
+        return;
+    }
+    if action != #char "q" && action != #char "t" && action != #char "T" {
+        reply(&head, "ENOTSUP:unsupported graphics action", replies);
+        return;
+    }
+    more := head.more == 1;
+    if !s.partial {
+        if head.medium != #char "d"
+            s.failure = "ENOTSUP:unsupported transmission medium";
+        else if head.compression != 0 && head.compression != #char "z"
+            s.failure = "ENOTSUP:unsupported compression";
+    }
+    if s.failure == "" {
+        if more &&
+           (
+               payload.count % 4 != 0 || (
+                   payload.count > 0 && payload[payload.count - 1] == #char "="
+               )
+           )
+            s.failure = "EINVAL:invalid intermediate chunk";
+        else if !Decode.base64(payload, &s.data)
+            s.failure = "EINVAL:invalid or oversized base64 data";
+    }
+    if more {
+        if s.failure != "" s.data.reset();
+        s.partial = true;
+        s.head = head;
+        return;
+    }
+    if s.failure == ""
+        s.failure = finish(s, &head, cursor_x, cursor_y, cols, rows, advance_cols, advance_rows);
+    reply(&head, s.failure, replies);
+    cancel(s);
+}
+
+}
+
+// Commit a replacement only after both the image and its requested placement
+// are valid. A failed upload leaves the previous pixels and placements intact.
+finish :: (
+    s: *Store,
+    head: *Controls,
+    cursor_x: s32,
+    cursor_y: s32,
+    cols: s32,
+    rows: s32,
+    advance_cols: *s32,
+    advance_rows: *s32
+) -> str {
+    img: Image;
+    defer img.pixels.reset();
+    error := Decode.decode(
+        s.data.view(),
+        head.format,
+        head.width,
+        head.height,
+        head.compression == #char "z",
+        head.size,
+        &img.pixels,
+        &img.width,
+        &img.height
+    );
+    if error != "" || head.action == #char "q" return error;
+    screen := &s.screens[s.active];
+    slot := lookup_id(screen, head.id);
+    place: Placement;
+    display := head.action == #char "T";
+    if display {
+        error = prepare_place(s, head, &img, cursor_x, cursor_y, &place);
+        if error != "" return error;
+        replacing := slot >= 0 && screen.images[slot].refs > 0;
+        if !replacing && screen.places.count >= MAX_PLACEMENTS return "ENOSPC:placement limit";
+    }
+    img.id = head.id;
+    img.number = head.number;
+    if img.number != 0 {
+        img.id = fresh_id(s, screen);
+        head.id = img.id;
+    }
+    slot = store_image(screen, &img, slot);
+    if display {
+        error = put(screen, slot, &place);
+        if error == "" movement(s, head, &place, cols, rows, advance_cols, advance_rows);
+    }
+    return error;
+}
+
+smaller :: (a: s32, b: s32) -> s32 {
+    if a < b return a;
+    return b;
+}
+coord :: (v: s64) -> s32 {
+    if v > 1073741823  return 1073741823;
+    if v < -1073741823 return -1073741823;
+    return cast(s32) v;
+}
+free_screen :: (screen: *Screen) {
+    for i: 0..screen.images.count screen.images[i].pixels.reset();
+    screen.images.reset();
+    screen.places.reset();
+    screen.bytes = 0;
+}
+lookup_id :: (screen: *Screen, id: u32) -> ssize {
+    if id != 0 for i: 0..screen.images.count {
+        if screen.images[i].id == id return i;
+    }
+    return -1;
+}
+lookup :: (screen: *Screen, c: *Controls) -> ssize {
+    number := c.number;
+    if number == 0 return lookup_id(screen, c.id);
+    result: ssize = -1;
+    for i: 0..screen.images.count if screen.images[i].number == number {
+        if result < 0 || screen.images[i].token > screen.images[result].token result = i;
+    }
+    return result;
+}
+fresh_id :: (s: *Store, screen: *Screen) -> u32 {
+    while true {
+        if s.next_id == 4294967295 s.next_id = 0;
+        s.next_id += 1;
+        if s.next_id != 0 && lookup_id(screen, s.next_id) < 0 return s.next_id;
+    }
+    return 0;
+}
+free_pixels :: (screen: *Screen, slot: ssize) {
+    img := &screen.images[slot];
+    screen.bytes -= img.pixels.count;
+    img.pixels.reset();
+    empty: Image;
+    img.* = empty;
+}
+drop_placement :: (screen: *Screen, index: ssize) {
+    slot := screen.places[index].image;
+    img := &screen.images[slot];
+    img.refs -= 1;
+    if img.refs == 0 && img.id == 0 free_pixels(screen, slot);
+    j := index + 1;
+    while j < screen.places.count {
+        screen.places[j - 1] = screen.places[j];
+        j += 1;
+    }
+    screen.places.resize(screen.places.count - 1);
+}
+evict :: (screen: *Screen, slot: ssize) {
+    i := screen.places.count;
+    while i > 0 {
+        i -= 1;
+        if screen.places[i].image == slot drop_placement(screen, i);
+    }
+    free_pixels(screen, slot);
+}
+store_image :: (screen: *Screen, img: *Image, replacing: ssize) -> ssize {
+    if replacing >= 0 evict(screen, replacing);
+    slot: ssize = -1;
+    while true {
+        oldest: ssize = -1;
+        for i: 0..screen.images.count {
+            entry := &screen.images[i];
+            if entry.token == 0 {
+                slot = i;
+            } else if oldest < 0 {
+                oldest = i;
+            } else {
+                other := &screen.images[oldest];
+                if (entry.refs == 0 && other.refs > 0) ||
+                   ((entry.refs == 0) == (other.refs == 0) && entry.token < other.token)
+                    oldest = i;
+            }
+        }
+        if screen.bytes + img.pixels.count <= MAX_STORAGE &&
+           (slot >= 0 || screen.images.count < MAX_IMAGES)
+            break;
+        evict(screen, oldest);
+    }
+    if slot < 0 {
+        slot = screen.images.count;
+        empty: Image;
+        screen.images.push(empty);
+    }
+    generation += 1;
+    img.token = generation;
+    screen.images[slot] = img.*;
+    screen.images[slot].pixels = img.pixels.take();
+    screen.bytes += screen.images[slot].pixels.count;
+    return slot;
+}
+clip_placement :: (screen: *Screen, i: ssize, rows: s32, first: s32, end: s32) {
+    p := &screen.places[i];
+    if p.y + p.first < first            p.first = first - p.y;
+    if p.y + smaller(rows, p.end) > end p.end = end - p.y;
+    if p.first >= smaller(rows, p.end)  drop_placement(screen, i);
+}
+clip_screen :: (screen: *Screen, first: s32, end: s32, cw: s32, ch: s32) {
+    i := screen.places.count;
+    while i > 0 {
+        i -= 1;
+        box := geometry(&screen.places[i], cw, ch);
+        clip_placement(screen, i, box.rows, first, end);
+    }
+}
+geometry :: (p: *Placement, cw: s32, ch: s32) -> Rect {
+    r: Rect;
+    r.dx = smaller(p.offset_x, cw - 1);
+    r.dy = smaller(p.offset_y, ch - 1);
+    r.dw = p.sw;
+    r.dh = p.sh;
+    width := cast(s64) p.cols * cast(s64) cw - cast(s64) r.dx;
+    height := cast(s64) p.rows * cast(s64) ch - cast(s64) r.dy;
+    if width > 0 || height > 0 {
+        if width > 0 && (height <= 0 || width * cast(s64) p.sh <= height * cast(s64) p.sw) {
+            r.dw = coord(width);
+            r.dh = coord((width * cast(s64) p.sh + cast(s64) p.sw / 2) / cast(s64) p.sw);
+        } else {
+            r.dw = coord((height * cast(s64) p.sw + cast(s64) p.sh / 2) / cast(s64) p.sh);
+            r.dh = coord(height);
+        }
+        if r.dw < 1                r.dw = 1;
+        if r.dh < 1                r.dh = 1;
+        if width > cast(s64) r.dw  r.dx += cast(s32)(width - cast(s64) r.dw) / 2;
+        if height > cast(s64) r.dh r.dy += cast(s32)(height - cast(s64) r.dh) / 2;
+    }
+    r.cols = p.cols;
+    r.rows = p.rows;
+    if r.cols == 0 r.cols = (r.dx + r.dw + cw - 1) / cw;
+    if r.rows == 0 r.rows = (r.dy + r.dh + ch - 1) / ch;
+    return r;
+}
+prepare_place :: (s: *Store, c: *Controls, img: *Image, x: s32, y: s32, p: *Placement) -> str {
+    if c.virtual != 0 || c.parent != 0 || c.parent_place != 0
+        return "ENOTSUP:unsupported placement type";
+    if c.offset_x >= cast(s64) s.cw || c.offset_y >= cast(s64) s.ch || c.cursor_policy > 1
+        return "EINVAL:invalid cell offset or cursor policy";
+    if c.x >= cast(s64) img.width || c.y >= cast(s64) img.height
+        return "EINVAL:empty source rectangle";
+    if c.cols > 16384 || c.rows > 16384
+        return "EINVAL:placement too large";
+    p.x = x;
+    p.y = y;
+    p.id = c.placement;
+    p.z = c.z;
+    p.offset_x = cast(s32) c.offset_x;
+    p.offset_y = cast(s32) c.offset_y;
+    p.cols = cast(s32) c.cols;
+    p.rows = cast(s32) c.rows;
+    p.sx = cast(s32) c.x;
+    p.sy = cast(s32) c.y;
+    p.sw = img.width - p.sx;
+    p.sh = img.height - p.sy;
+    if c.crop_w > 0 && c.crop_w < cast(s64) p.sw p.sw = cast(s32) c.crop_w;
+    if c.crop_h > 0 && c.crop_h < cast(s64) p.sh p.sh = cast(s32) c.crop_h;
+    return "";
+}
+put :: (screen: *Screen, slot: ssize, p: *Placement) -> str {
+    p.image = slot;
+    img := &screen.images[slot];
+    if img.id == 0 p.id = 0;
+    if p.id != 0 for i: 0..screen.places.count {
+        prior := &screen.places[i];
+        if prior.image == slot && prior.id == p.id {
+            drop_placement(screen, i);
+            break;
+        }
+    }
+    if screen.places.count >= MAX_PLACEMENTS return "ENOSPC:placement limit";
+    i := screen.places.count;
+    screen.places.push(p.*);
+    while i > 0 {
+        prev := &screen.places[i - 1];
+        if prev.z < p.z || (prev.z == p.z && screen.images[prev.image].id <= img.id) break;
+        screen.places[i] = prev.*;
+        i -= 1;
+    }
+    screen.places[i] = p.*;
+    img.refs += 1;
+    return "";
+}
+movement :: (s: *Store, c: *Controls, p: *Placement, cols: s32, rows: s32, right: *s32, down: *s32) {
+    if c.cursor_policy == 1 return;
+    r := geometry(p, s.cw, s.ch);
+    right.* = smaller(cols, r.cols);
+    down.* = smaller(rows, r.rows);
+}
+delete_images :: (s: *Store, c: *Controls, cursor_x: s32, cursor_y: s32, rows: s32) -> str {
+    mode := c.deletion;
+    hard := mode >= #char "A" && mode <= #char "Z";
+    if hard                        mode += 32;
+    if !in_set(mode, "aincpqrxyz") return "ENOTSUP:unsupported delete selector";
+    screen := &s.screens[s.active];
+    target := lookup(screen, c);
+    x := c.x - 1;
+    y := c.y - 1;
+    if mode == #char "c" {
+        x = cursor_x;
+        y = cursor_y;
+    }
+    touched: [MAX_IMAGES]bool;
+    i := screen.places.count;
+    while i > 0 {
+        i -= 1;
+        p := &screen.places[i];
+        box := geometry(p, s.cw, s.ch);
+        first := p.y + p.first;
+        end := p.y + smaller(p.end, box.rows);
+        x_match := x >= cast(s64) p.x && x < cast(s64)(p.x + box.cols);
+        y_match := y >= cast(s64) first && y < cast(s64) end;
+        visible := first < rows && end > 0;
+        matches := false;
+        if mode == {
+        case #char "a";
+            matches = visible;
+        case #char "i", #char "n";
+            matches = p.image == target && (c.placement == 0 || p.id == c.placement);
+        case #char "r";
+            id := cast(s64) screen.images[p.image].id;
+            matches = id >= c.x && id <= c.y;
+        case #char "x";
+            matches = visible && x_match;
+        case #char "y";
+            matches = visible && y_match;
+        case #char "z";
+            matches = visible && p.z == c.z;
+        case #char "p", #char "c";
+            matches = visible && x_match && y_match;
+        case #char "q";
+            matches = visible && x_match && y_match && p.z == c.z;
+        else;
+        }
+        if matches {
+            touched[p.image] = true;
+            drop_placement(screen, i);
+        }
+    }
+    if hard for j: 0..screen.images.count {
+        img := &screen.images[j];
+        if img.refs != 0 || img.token == 0 continue;
+        if mode == #char "a" || touched[j] ||
+           ((mode == #char "i" || mode == #char "n") && target == j && c.placement == 0) ||
+           (mode == #char "r" && cast(s64) img.id >= c.x && cast(s64) img.id <= c.y)
+            free_pixels(screen, j);
+    }
+    return "";
+}
+in_set :: (v: u8, set: str) -> bool {
+    for i: 0..set.count if v == set[i] return true;
+    return false;
+}
+// Use the protocol's single-byte keys only at the wire boundary.
+set_control :: (c: *Controls, key: u8, value: s64) {
+    if key == {
+    case #char "a";
+        c.action = cast(u8) value;
+    case #char "q";
+        c.quiet = value;
+    case #char "e";
+        c.feature = cast(u8) value;
+    case #char "m";
+        c.more = value;
+    case #char "i";
+        c.id = cast(u32) value;
+    case #char "I";
+        c.number = cast(u32) value;
+    case #char "d";
+        c.deletion = cast(u8) value;
+    case #char "p";
+        c.placement = cast(u32) value;
+    case #char "t";
+        c.medium = cast(u8) value;
+    case #char "o";
+        c.compression = cast(u8) value;
+    case #char "f";
+        c.format = cast(u32) value;
+    case #char "s";
+        c.width = cast(u32) value;
+    case #char "v";
+        c.height = cast(u32) value;
+    case #char "S";
+        c.size = cast(u32) value;
+    case #char "U";
+        c.virtual = value;
+    case #char "P";
+        c.parent = value;
+    case #char "Q";
+        c.parent_place = value;
+    case #char "X";
+        c.offset_x = value;
+    case #char "Y";
+        c.offset_y = value;
+    case #char "C";
+        c.cursor_policy = value;
+    case #char "x";
+        c.x = value;
+    case #char "y";
+        c.y = value;
+    case #char "c";
+        c.cols = value;
+    case #char "r";
+        c.rows = value;
+    case #char "w";
+        c.crop_w = value;
+    case #char "h";
+        c.crop_h = value;
+    case #char "z";
+        c.z = cast(s32) value;
+    else;
+    }
+}
+parse :: (data: str, values: *[128]s64, c: *Controls) -> str {
+    at: ssize = 0;
+    while at < data.count {
+        key := data[at];
+        if at + 2 >= data.count || data[at + 1] != #char "=" ||
+           !in_set(key, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+            return "EINVAL:bad graphics control";
+        at += 2;
+        end := at;
+        while end < data.count && data[end] != #char "," end += 1;
+        if end == at return "EINVAL:empty graphics control";
+        if in_set(key, "atedo") {
+            if end != at + 1 return "EINVAL:invalid graphics control";
+            values.*[key] = cast(s64) data[at];
+        } else {
+            negative := data[at] == #char "-";
+            if negative {
+                if !in_set(key, "zHV") return "EINVAL:negative graphics control";
+                at += 1;
+            }
+            if at == end return "EINVAL:invalid graphics number";
+            value: s64 = 0;
+            while at < end {
+                digit := data[at];
+                if digit < #char "0" || digit > #char "9" return "EINVAL:invalid graphics number";
+                value = value * 10 + cast(s64)(digit - #char "0");
+                if value > 4294967295 return "EINVAL:graphics number too large";
+                at += 1;
+            }
+            if negative value = -value;
+            if in_set(key, "zHV") && (value < -2147483648 || value > 2147483647)
+                return "EINVAL:graphics number out of range";
+            values.*[key] = value;
+        }
+        set_control(c, key, values.*[key]);
+        if key != #char "m" && key != #char "q" c.continuation = false;
+        if key == #char "q"                     c.has_quiet = true;
+        if end + 1 == data.count                return "EINVAL:incomplete graphics control";
+        at = end + 1;
+    }
+    if c.more > 1 || c.quiet > 2 return "EINVAL:invalid chunk or quiet flag";
+    return "";
+}
+write_bytes :: (dest: *[..]u8, text: str) {
+    for i: 0..text.count dest.push(text[i]);
+}
+reply :: (c: *Controls, error: str, out: *[..]u8) {
+    if c.quiet == 2 || (c.quiet == 1 && error == "") return;
+    id := c.id;
+    number := c.number;
+    if id == 0 && number == 0 return;
+    write_bytes(out, "\x1b_G");
+    if id != 0 write_bytes(out, tprint("i={}", id));
+    if number != 0 {
+        if id != 0 out.push(#char ",");
+        write_bytes(out, tprint("I={}", number));
+    }
+    placement := c.placement;
+    if placement != 0 write_bytes(out, tprint(",p={}", placement));
+    if error == "" write_bytes(out, ";OK");
+    else {
+        out.push(#char ";");
+        write_bytes(out, error);
+    }
+    write_bytes(out, "\x1b\\");
+}
+feature_reply :: (c: *Controls, values: *[128]s64, out: *[..]u8) {
+    if c.id == 0 return;
+    if c.number != 0 {
+        reply(c, "EINVAL:specify either i or I", out);
+        return;
+    }
+    if c.quiet != 0 return;
+    write_bytes(out, tprint("\x1b_Gi={}", c.id));
+    action := c.feature;
+    if in_set(action, "Ttpdq") {
+        write_bytes(out, ",e=");
+        out.push(cast(u8) action);
+        // The protocol asks for only supported, non-default query values.
+        keys := "fsvSopxywhXYcrCzd";
+        for k: 0..keys.count {
+            key := keys[k];
+            v := values.*[key];
+            if v == 0 continue;
+            applies := false;
+            if in_set(action, "tTq") {
+                if      key == #char "f"   applies = v == 24 || v == 100;
+                else if key == #char "o"   applies = cast(u8) v == #char "z";
+                else if in_set(key, "svS") applies = true;
+            }
+            if in_set(action, "Tp") && in_set(key, "pxywhXYcrCz")
+                applies = key != #char "C" || v == 1;
+            if action == #char "d" && in_set(key, "pxyz") applies = true;
+            if action == #char "d" && key == #char "d" && cast(u8) v != #char "a"
+                applies = in_set(cast(u8) v, "AicnpqrxyzICNPQRXYZ");
+            if !applies continue;
+            out.push(#char ",");
+            out.push(cast(u8) key);
+            out.push(#char "=");
+            if in_set(key, "do") out.push(cast(u8) v);
+            else                 write_bytes(out, tprint("{}", v));
+        }
+    }
+    write_bytes(out, ";OK\x1b\\");
+}

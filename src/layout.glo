@@ -22,6 +22,8 @@ initialize :: () -> bool {
         C.Clay_SetCurrentContext(clay_context);
         return true;
     }
+    // This layout always contains five elements, regardless of pane or tab count.
+    C.Clay_SetMaxElementCount(64);
     capacity := C.Clay_MinMemorySize();
     #push_allocator(Ctx.heap_allocator());
     if Ctx.mem_alloc_raw(Ctx.Layout.bytes(cast(ssize) capacity)) == {

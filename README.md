@@ -12,7 +12,9 @@ compiler on `PATH`, and the selected shell installed. PowerShell and cmd use
 `powershell.exe -NoLogo` and `cmd.exe /d`; Nushell uses `nu.exe` from `PATH`.
 Lua 5.5 and the vendored Clay source are linked statically, so no separate Lua
 or Clay DLL is needed. The initial build compiles those dependency sources into
-the local `build/cache` directory.
+the local `build/cache` directory. The build also copies Microsoft's x64 ConPTY
+host beside the executable so terminal graphics reach wst on Windows versions
+whose built-in host drops graphics commands.
 
 Application logic is Glosso, including ConPTY workers, Windows API bindings,
 installed-font discovery, and Clay layout construction. Windows services are
@@ -32,7 +34,20 @@ glosso compile first.glo --cache-dir=build/cache
 then suppresses its own executable output. The default task builds an optimized
 GUI executable. All build automation is Glosso; no PowerShell scripts are needed.
 
-The application-only compiler command is:
+The build uses Git to apply a memory fix to a temporary copy of affected
+Glosso SDKs. The fix makes `Gui` upload text geometry in batches and allocate
+Direct3D scene resources on first use. SDKs with the fix build directly.
+
+To apply the same fix to a sibling Glosso checkout, run these commands from
+the wst project directory:
+
+```powershell
+git -C ../glosso apply (Resolve-Path vendor/glosso/gui-memory.patch).Path
+$env:GLOSSO_STD = (Resolve-Path ../glosso/std).Path
+```
+
+With a fixed SDK selected and the ConPTY host staged by the standard build,
+you can also compile just the executable:
 
 ```powershell
 glosso compile src/main.glo -O3 -o build/wst.exe --cache-dir build/cache --linker-arg /subsystem:windows
@@ -43,8 +58,8 @@ the same output path with a diagnostic console.
 The default build opens only the terminal window. All generated binaries and
 compiler caches belong in `build/`.
 
-The build task copies `LICENSE` and `THIRD_PARTY_NOTICES` beside `build/wst.exe`.
-Keep both files with the executable when distributing a build.
+Keep `conpty.dll`, `OpenConsole.exe`, `LICENSE`, and `THIRD_PARTY_NOTICES` beside
+`wst.exe` when distributing a build.
 
 Tasks follow the compiler's `--` separator:
 
@@ -66,8 +81,8 @@ glosso compile first.glo --cache-dir=build/cache -- release --version 0.1.0
 
 This builds a fresh executable and creates
 `build/releases/wst-0.1.0-windows-x64.zip`. The archive contains `wst.exe`,
-`LICENSE`, `THIRD_PARTY_NOTICES`, `README.md`, and `config.example.lua` at its
-root. The version labels the archive; omitting it uses `dev`. The example
+`conpty.dll`, `OpenConsole.exe`, `LICENSE`, `THIRD_PARTY_NOTICES`, `README.md`,
+and `config.example.lua` at its root. The version labels the archive; omitting it uses `dev`. The example
 configuration remains an example until you copy it to your configuration path.
 ZIP creation uses a deterministic Glosso ZIP32 writer with stored entries and
 atomic replacement, without an external archive program.
@@ -450,6 +465,34 @@ is shared by all tabs and panes; `font_size` in the Lua configuration sets the
 initial/reset size. Each pane retains its own scrollback when zooming or
 resizing.
 
+### Inline images
+
+wst supports static images sent using the Kitty graphics protocol's direct
+transfer mode (`t=d`). Clients can stream PNG, RGB, or RGBA data in chunks,
+optionally compressed with zlib. Images can be placed at the cursor, scaled to
+cells, cropped, layered with text, and deleted by ID. Each pane has its own
+image store.
+
+With `kitten` installed, run this inside wst.
+
+```sh
+kitten icat --transfer-mode=stream image.png
+```
+
+To try it from PowerShell without installing an image viewer, run these two
+lines to draw a blue square four columns wide.
+
+```powershell
+$esc = [string][char]27
+[Console]::Write("${esc}_Ga=T,f=24,s=1,v=1,c=4,q=2;AID/${esc}\")
+```
+
+The decoded RGBA data can occupy up to 64 MiB per image and 96 MiB per screen.
+The renderer can show up to 512 distinct images across a window's panes at
+once. File and shared-memory transfers, Unicode placeholders, relative
+placements, indexed-color image data, and animation are unsupported.
+[Kitty graphics protocol reference](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+
 Run the checks from PowerShell:
 
 ```powershell
@@ -478,8 +521,8 @@ and `tests/terminal_test.glo` defining its current scope.
 
 Original contributions to wst are [MIT licensed](LICENSE). Third-party materials
 retain their upstream copyrights and license terms. Complete notices for st,
-Clay, Glosso (including `Gui`), Lua, stb_truetype, and LLVM compiler-rt builtins
-are included in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) and accompany binary
+Clay, Glosso (including `Gui`), Lua, stb_truetype, LLVM compiler-rt builtins,
+and Microsoft's ConPTY host are included in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) and accompany binary
 releases. The upstream st and Clay license files also remain in their source
 directories. The st notice is retained for the supplied reference sources and
 st-derived portions of wst.

@@ -1,5 +1,6 @@
 //! Regression for ConPTY output waking the UI and resetting after consumption.
 P :: #import "../src/platform.glo";
+T :: #import "../src/terminal.glo";
 #import "Io";
 kernel32 :: #library,system "kernel32";
 Sleep :: (milliseconds: u32) #foreign kernel32;
@@ -14,13 +15,24 @@ pump :: () {
     while P.next_event(&event) != 0 {}
 }
 // Establish a quiet queue without depending on the event being tested.
-quiet :: () {
+quiet :: (terminal: *T.Terminal) {
     data: [65536]u8;
     start := P.ticks();
     last := start;
     while P.ticks() - last < 250 {
         pump();
-        while P.pty_read(cast([*]u8) &data, 65536) > 0 last = P.ticks();
+        while true {
+            n := P.pty_read(cast([*]u8) &data, 65536);
+            if n == 0 break;
+            // ConPTY queries the terminal's device attributes before cmd starts.
+            T.feed(terminal, cast(str) data[..cast(ssize) n]);
+            if terminal.replies.count > 0 {
+                reply := terminal.replies.view();
+                #assert P.pty_send(reply.data, cast(s32) reply.count) != 0;
+                terminal.replies.clear();
+            }
+            last = P.ticks();
+        }
         #assert P.ticks() - start < 5000, "shell output should settle";
         Sleep(5);
     }
@@ -29,7 +41,10 @@ main :: () {
     #assert P.open("Consolas", 16, 100, 30, 12, 1) != 0;
     defer P.close();
     #assert P.pty_start("cmd.exe /d /q", 100, 30) != 0;
-    quiet();
+    terminal: T.Terminal;
+    T.init(&terminal, 100, 30, 0, 16#ffffff, 0);
+    defer T.release(&terminal);
+    quiet(&terminal);
 
     // The full expected marker never occurs in the typed command. Seeing it
     // proves cmd processed the command, rather than matching input echo/startup.
@@ -64,7 +79,7 @@ main :: () {
         }
     }
 
-    quiet();
+    quiet(&terminal);
     // After draining, the event must stop waking waits. Retry only when an
     // incidental window message legitimately wakes the hidden window.
     slept := false;

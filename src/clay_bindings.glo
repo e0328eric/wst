@@ -502,6 +502,7 @@ CLAY_ERROR_TYPE_HASH_MAP_CAPACITY_EXCEEDED :: 9;
 // bindgen skipped C macro bool: unsupported replacement
 
 Clay_MinMemorySize :: () -> u32 #foreign clay_native "Clay_MinMemorySize";
+Clay_SetMaxElementCount :: (count: s32) #foreign clay_native "Clay_SetMaxElementCount";
 
 Clay_CreateArenaWithCapacityAndMemory :: (capacity: u64, memory: ?[*]void) -> Clay_Arena #foreign clay_native "Clay_CreateArenaWithCapacityAndMemory";
 

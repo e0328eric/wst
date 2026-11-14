@@ -1,0 +1,166 @@
+//! Bounded decoding of Kitty direct-transfer chunks into straight RGBA8.
+Deflate :: #import "../vendor/glosso/Deflate.glo";
+#import "Image/Core";
+#import "Image/Png";
+#import "Memory/Raw";
+#import "Memory/Ownership";
+
+#public MAX_BYTES :: 64 * 1024 * 1024;
+MAX_AXIS :: 16384; // std.Gui's maximum texture dimension
+
+base64_digit :: (b: u8) -> s32 {
+    if b >= 65 && b <= 90  return cast(s32) b - 65;
+    if b >= 97 && b <= 122 return cast(s32) b - 97 + 26;
+    if b >= 48 && b <= 57  return cast(s32) b - 48 + 52;
+    if b == 43             return 62;
+    if b == 47             return 63;
+    return -1;
+}
+
+/// Appends one chunk, accepting padded or unpadded final quanta. An invalid
+/// chunk leaves the logical contents of the transmission unchanged.
+#public base64 :: (src: str, dst: *[..]u8) -> bool {
+    if src.count > 4096 return false;
+    n := src.count;
+    while n > 0 && src[n - 1] == 61 n -= 1;
+    padding := src.count - n;
+    if n % 4 == 1 || padding > 2 || (padding != 0 && src.count % 4 != 0) return false;
+    if dst.*.count > MAX_BYTES - n * 6 / 8                               return false;
+    start := dst.*.count;
+    bits: u32;
+    available: u32;
+    for i: 0..n {
+        digit := base64_digit(src[i]);
+        if digit < 0 {
+            dst.*.count = start;
+            return false;
+        }
+        bits = (bits << 6) | cast(u32) digit;
+        available += 6;
+        if available >= 8 {
+            available -= 8;
+            dst.push(cast(u8)((bits >> available) & 255));
+            bits &= (cast(u32) 1 << available) - 1;
+        }
+    }
+    if bits != 0 {
+        dst.*.count = start;
+        return false;
+    }
+    return true;
+}
+
+adler32 :: (bytes: []const u8) -> u32 {
+    a: u32 = 1;
+    b: u32;
+    offset: ssize;
+    while offset < bytes.count {
+        // 5552 bytes is the longest run whose sums fit in a u32.
+        end := offset + 5552;
+        if end > bytes.count end = bytes.count;
+        while offset < end {
+            a += cast(u32) bytes[offset];
+            b += a;
+            offset += 1;
+        }
+        a %= 65521;
+        b %= 65521;
+    }
+    return (b << 16) | a;
+}
+
+inflate_zlib :: (src: []const u8, dst: []u8) -> bool {
+    if src.count < 6 return false;
+    header := cast(u32) src[0] * 256 + cast(u32) src[1];
+    if (src[0] & 15) != 8 || (src[0] >> 4) > 7 || header % 31 != 0 || (src[1] & 32) != 0
+        return false;
+    trailer := src.count - 4;
+    if !Deflate.inflate_exact(src[2..trailer], dst) return false;
+    return adler32(dst) == read_be32(src, trailer);
+}
+
+read_be32 :: (data: []const u8, offset: ssize) -> u32 {
+    value: u32;
+    for i: offset..offset + 4 value = (value << 8) | cast(u32) data[i];
+    return value;
+}
+
+/// Decodes an assembled transfer. On success the caller owns the RGBA buffer
+/// and receives the actual image dimensions; failures preserve all outputs.
+#public decode :: (
+    data: []const u8,
+    format: u32,
+    width: u32,
+    height: u32,
+    compressed: bool,
+    expected_size: u32,
+    pixels: *[..]u8,
+    pixel_w: *s32,
+    pixel_h: *s32,
+) -> str {
+    if data.count == 0        return "EINVAL:empty image payload";
+    if data.count > MAX_BYTES return "EFBIG:image payload exceeds limit";
+    png := format == 100;
+    if !png && format != 24 && format != 32 return "ENOTSUP:unsupported image format";
+
+    expected := cast(ssize) expected_size;
+    if !png {
+        if width == 0 || height == 0 return "EINVAL:missing image dimensions";
+        if width > MAX_AXIS || height > MAX_AXIS || width > (MAX_BYTES / 4) / height
+            return "EFBIG:image dimensions exceed limit";
+        expected = cast(ssize) width * cast(ssize) height * cast(ssize)(format / 8);
+    }
+    bytes := data;
+    inflated: [..]u8;
+    defer inflated.reset();
+    if compressed {
+        if expected < 1         return "EINVAL:compressed PNG requires S";
+        if expected > MAX_BYTES return "EFBIG:inflated image exceeds limit";
+        inflated.reserve(expected);
+        inflated.count = expected;
+        if !inflate_zlib(data, inflated.view()) return "EINVAL:invalid compressed image";
+        bytes = inflated.view();
+    }
+    if png {
+        // IHDR must be the first chunk. Check the per-axis GPU limit before
+        // the codec allocates any scanlines; the codec validates IHDR itself.
+        if bytes.count < 24 return "EINVAL:truncated PNG header";
+        if read_be32(bytes, 16) > MAX_AXIS || read_be32(bytes, 20) > MAX_AXIS
+            return "EFBIG:image dimensions exceed limit";
+        limits: Image_Limits = .{ .max_pixels = MAX_BYTES / 4, .max_bytes = MAX_BYTES * 3 };
+        if Image.image_decode_png(bytes, limits) == {
+        case .Ok(image);
+            pixels.reset();
+            pixels.* = image.pixels;
+            pixel_w.* = cast(s32) image.width;
+            pixel_h.* = cast(s32) image.height;
+            return "";
+        case .Err(error);
+            return "EINVAL:invalid PNG or image exceeds limit";
+        }
+    }
+    if bytes.count != expected return "EINVAL:pixel data size does not match dimensions";
+    result: [..]u8;
+    if format == 32 && compressed {
+        result = value_take(&inflated);
+    } else {
+        count := cast(ssize) width * cast(ssize) height;
+        result.reserve(count * 4);
+        result.count = count * 4;
+        if format == 32 {
+            _ := mem_copy(cast(*void) result.data, cast(*const void) bytes.data, result.count);
+        } else {
+            for i: 0..count {
+                result[i * 4] = bytes[i * 3];
+                result[i * 4 + 1] = bytes[i * 3 + 1];
+                result[i * 4 + 2] = bytes[i * 3 + 2];
+                result[i * 4 + 3] = 255;
+            }
+        }
+    }
+    pixels.reset();
+    pixels.* = result;
+    pixel_w.* = cast(s32) width;
+    pixel_h.* = cast(s32) height;
+    return "";
+}

@@ -1,0 +1,73 @@
+//! Apply the std/Gui memory fix to an isolated copy of affected Glosso SDKs.
+#import "Glosso/Paths";
+#import "File_System/Copy";
+#import "File_System/Directory";
+#import "File_System/File";
+#import "File_System/Path";
+#import "File_System/Temporary";
+#import "Process/Command";
+#import "Strings/Utf8";
+#import "Format";
+#import "Io";
+#export "File_System/Temporary" {
+    Temporary_Directory
+};
+
+// Prefer the same path across serial builds so the compiler can reuse its
+// cache. Concurrent builds, or a previous interrupted build, get another slot.
+create_stage :: (root: str) -> Temporary_Directory {
+    for i: 0..ssize_max() {
+        path := path_join(root, tprint("build/gui-sdk-{}", i));
+        if create_directory(path) == {
+        case .Ok;
+            return .{ .path = path, .allocator = context.allocator, .valid = true };
+        case .Err(error);
+            if error.kind != .Already_Exists {
+                print("wst build: cannot stage the Gui SDK: {}\n", error.kind);
+                exit(1);
+            }
+        }
+        path.free();
+    }
+    print("wst build: could not create a private SDK copy\n");
+    exit(1);
+}
+
+#public prepare :: (root: str, stage: *Temporary_Directory) -> str {
+    original := GLOSSO_STANDARD_DIRECTORY;
+    source := read_file(path_join(original, "Gui/native/renderer_api.h"));
+    if #pattern .Ok(header) = source {
+        defer header.free();
+        if !header.contains("overlay_capacity(render.overlay_count+6)") return original;
+    } else return original;
+
+    stage.* = create_stage(root);
+    staged := path_join(stage.path, "std");
+    if #pattern .Err(error) = copy_tree(original, staged, .flags = .Recursive | .Follow_Symlinks) {
+        print("wst build: cannot copy the Gui SDK: {}\n", error.kind);
+        stage.free();
+        exit(1);
+    }
+    // Keep git apply rooted in our private tree even inside another checkout.
+    patch := path_join(root, "vendor/glosso/gui-memory.patch");
+    arguments: [5]str = .[
+        tprint("--git-dir={}/.git", stage.path),
+        tprint("--work-tree={}", stage.path),
+        "apply",
+        "--include=std/Gui/native/*",
+        patch
+    ];
+    git := Command.command_make("git", arguments[..]);
+    defer git.destroy();
+    git.set_working_directory(stage.path);
+    git.no_window = true;
+    if git.run() == {
+    case .Ok(done);
+        if done.status.exited && done.status.code == 0 return staged;
+        print("wst build: Gui backport does not apply to this SDK; using its own renderer.\n");
+    case .Err(error);
+        if error.child.valid _ := error.child.close();
+        print("wst build: Git is unavailable for the Gui backport; using the SDK renderer.\n");
+    }
+    return original;
+}

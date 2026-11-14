@@ -40,10 +40,11 @@ main :: () {
     prepared: R.Prepared;
     check(R.prepare("Consolas", 16, G.content_scale(window), &prepared), R.error_message());
     check(prepared.cw > 0 && prepared.ch > 0, "installed font metrics");
-    check(
-        G.glyph_advance(prepared.regular, #char "😀") * prepared.scale <= cast(f32)(2 * prepared.cw) + 0.01,
-        "the emoji fallback fits a terminal's two-cell span"
-    );
+    for chain: prepared.fallback check(chain.attempted == 0, "unused fallback fonts stay unloaded");
+    check(!G.font_valid(prepared.regular_glyphs) && !G.font_valid(prepared.bold_glyphs),
+        "private cmap faces stay unloaded before a ligature is drawn");
+    regular := prepared.regular;
+    scale := prepared.scale;
     R.commit(&prepared);
     check(G.update_window_events(window), "pump Gui input");
     check(R.frame_begin(16#112233), "begin Gui render");
@@ -58,6 +59,10 @@ main :: () {
         .{ 90, 16#ffffff, 16#112233, 0 }
     ];
     R.grid(12, 50, 6, 1, cw, ch, cast([*]const P.Render_Cell) &cells, 0, 0, 1, 16#e5c07b);
+    check(
+        G.glyph_advance(regular, #char "😀") * scale <= cast(f32)(2 * cw) + 0.01,
+        "the loaded emoji fallback fits a terminal's two-cell span"
+    );
     R.draw_label(12, 5, 650, 36, "Standard Gui / 한글 / 日本語 / emoji 😀", 16#ffffff);
     // These cells have the same glyph origin. The taller reference lets ink
     // extend past the normal row, revealing fallback ascender/descender clipping.

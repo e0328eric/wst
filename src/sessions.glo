@@ -165,6 +165,7 @@ resize :: (book: *Book, workspace: *const M.Workspace, base: L.Layout, cw: s32, 
         next := pane_layout(base, book.rects[i]);
         cols := columns(next, cw);
         line_count := rows(next, ch);
+        T.set_cell_size(&p.terminal, cw, ch);
         if cols != p.terminal.cols || line_count != p.terminal.rows {
             _ := P.pty_select(p.handle);
             code: s32;

@@ -12,6 +12,9 @@ System :: #import "File_System/System";
 #import "Format";
 #import "Io";
 Release :: #import "tools/release.glo";
+Gui_Std :: #import "tools/gui_std.glo";
+
+build_std: str;
 
 usage :: () {
     print(
@@ -53,6 +56,7 @@ compile :: (root: str, source: str, name: str, gui: bool) {
     options.output_directory = path_join(root, "build");
     options.output_name = name;
     options.optimization_level = .O3;
+    if build_std.count > 0 options.add_compiler_arg(tprint("--std={}", build_std));
     options.add_compiler_arg(tprint("--cache-dir={}", path_join(root, "build/cache")));
     if gui options.add_linker_arg("/subsystem:windows");
     profile.set_options(options);
@@ -72,9 +76,14 @@ build :: (root: str, console: bool = false) {
     for file: .["LICENSE", "THIRD_PARTY_NOTICES"] required(path_join(root, file));
     directory(path_join(root, "build"));
     compile(root, "src/main.glo", "wst", !console);
-    for file: .["LICENSE", "THIRD_PARTY_NOTICES"] {
+    for file: .[
+        "LICENSE",
+        "THIRD_PARTY_NOTICES",
+        "vendor/conpty/conpty.dll",
+        "vendor/conpty/OpenConsole.exe"
+    ] {
         source := path_join(root, file);
-        destination := path_join(root, tprint("build/{}", file));
+        destination := path_join(root, tprint("build/{}", path_basename(file)));
         if copy_file(source, destination, .Overwrite) == {
         case .Ok;
         case .Err(error);
@@ -245,6 +254,12 @@ task :: () {
     }
     defer {
         _ := System.set_current_directory(previous);
+    }
+    stage: Gui_Std.Temporary_Directory;
+    defer stage.free();
+    if action != "icon" {
+        directory(path_join(root, "build"));
+        build_std = Gui_Std.prepare(root, &stage);
     }
     if action == "build" build(root, console);
     else if action == "test" tests(root);
