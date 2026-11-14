@@ -1,0 +1,660 @@
+//! Lua configuration. Strings in Config are owned; release each Config once.
+#import "Io";
+#import "Strings/Utf8";
+#import "File_System/File";
+#import "Lua/Build";
+#import "Format";
+Keymap :: #import "keybindings.glo";
+Colors :: #import "colors.glo";
+// Config exposes this record publicly; export its types without the other
+// module's defaults() function, which would conflict with Config's defaults.
+#export "keybindings.glo" {
+    Binding, Bindings, Action
+};
+
+// This builds Lua into the executable, with no runtime Lua DLL dependency.
+// A small explicit C API surface keeps the generated binding set inexpensive.
+#insert #comptime static_bindings_source(.["lua_State"]);
+new_state :: () -> ?*void #foreign lua "luaL_newstate";
+close_state :: (state: *void) #foreign lua "lua_close";
+open_libraries :: (state: *void, loaded: s32, preloaded: s32) #foreign lua "luaL_openselectedlibs";
+load_buffer :: (
+    state: *void,
+    bytes: [*]const u8,
+    count: usize,
+    name: [*]const u8,
+    mode: ?[*]const u8
+) -> s32 #foreign lua "luaL_loadbufferx";
+call_lua :: (
+    state: *void,
+    args: s32,
+    results: s32,
+    error_function: s32,
+    call_context: ssize,
+    continuation: usize
+) -> s32 #foreign lua "lua_pcallk";
+value_type :: (state: *void, index: s32) -> s32 #foreign lua "lua_type";
+to_string :: (state: *void, index: s32, count: ?*usize) -> ?[*]const u8 #foreign lua "lua_tolstring";
+to_integer :: (state: *void, index: s32, is_number: ?*s32) -> s64 #foreign lua "lua_tointegerx";
+is_integer :: (state: *void, index: s32) -> s32 #foreign lua "lua_isinteger";
+to_boolean :: (state: *void, index: s32) -> s32 #foreign lua "lua_toboolean";
+push_nil :: (state: *void) #foreign lua "lua_pushnil";
+next_value :: (state: *void, index: s32) -> s32 #foreign lua "lua_next";
+set_top :: (state: *void, index: s32) #foreign lua "lua_settop";
+get_top :: (state: *void) -> s32 #foreign lua "lua_gettop";
+raw_length :: (state: *void, index: s32) -> usize #foreign lua "lua_rawlen";
+raw_get_integer :: (state: *void, index: s32, key: s64) -> s32 #foreign lua "lua_rawgeti";
+borrow_bytes :: (data: [*]const u8, count: ssize) -> []const u8 #magic "slice_from_pointer";
+
+LUA_BOOLEAN :: 1;
+LUA_NUMBER :: 3;
+LUA_STRING :: 4;
+LUA_TABLE :: 5;
+config_error_storage: [4096]u8;
+config_error_count: ssize;
+
+#public {
+
+/// Borrowed diagnostic storage, valid until the next load. It survives temporary
+/// arena resets and closing the Lua state; callers must not free it.
+error_message :: () -> str {
+    return borrow_bytes(cast([*]const u8) &config_error_storage, config_error_count).byte_slice_to_string();
+}
+
+Config :: struct {
+    shell: str;
+    command: str;
+    font_family: str;
+    font_size: s32;
+    font_ligatures: bool;
+    columns: s32;
+    rows: s32;
+    scrollback: s32;
+    padding: s32;
+    foreground: u32;
+    background: u32;
+    accent: u32;
+    cursor: u32;
+    cursor_text: u32;
+    selection_fg: u32;
+    selection_bg: u32;
+    palette: [16]u32;
+    close_on_exit: bool;
+    keybindings: Keymap.Bindings;
+    default_profile: str;
+    profiles: [32]Profile;
+    profile_count: s32;
+}
+
+Profile :: struct {
+    id: str;
+    name: str;
+    shell: str;
+    command: str;
+    starting_directory: str;
+}
+
+defaults :: () -> Config {
+    return .{
+        .shell = "powershell".clone(),
+        .command = "".clone(),
+        .font_family = "Cascadia Mono".clone(),
+        .font_size = 16,
+        .font_ligatures = true,
+        .columns = 100,
+        .rows = 30,
+        .scrollback = 5000,
+        .padding = 12,
+        .foreground = 16#d8dee9,
+        .background = 16#11151c,
+        .accent = 16#81a1c1,
+        .cursor = 16#e5c07b,
+        .cursor_text = 16#11151c,
+        .selection_fg = 16#ffffff,
+        .selection_bg = 16#3b506e,
+        .palette = Colors.default_palette(),
+        .close_on_exit = true,
+        .keybindings = Keymap.defaults(),
+        .default_profile = "".clone(),
+    };
+}
+
+release :: (cfg: *Config) {
+    cfg.shell.free();
+    cfg.command.free();
+    cfg.font_family.free();
+    cfg.default_profile.free();
+    for i: 0..cfg.profile_count release_profile(&cfg.profiles[i]);
+    cfg.profile_count = 0;
+    empty: str;
+    cfg.shell = empty;
+    cfg.command = empty;
+    cfg.font_family = empty;
+    cfg.default_profile = empty;
+}
+
+/// Deeply copy the complete configuration; release each returned value once.
+clone :: (source: *const Config) -> Config {
+    result := source.*;
+    result.shell = source.shell.clone();
+    result.command = source.command.clone();
+    result.font_family = source.font_family.clone();
+    result.default_profile = source.default_profile.clone();
+    for i: 0..source.profile_count {
+        result.profiles[i].id = source.profiles[i].id.clone();
+        result.profiles[i].name = source.profiles[i].name.clone();
+        result.profiles[i].shell = source.profiles[i].shell.clone();
+        result.profiles[i].command = source.profiles[i].command.clone();
+        result.profiles[i].starting_directory = source.profiles[i].starting_directory.clone();
+    }
+    return result;
+}
+
+/// Move ownership out of source, leaving a safely releasable empty record.
+take :: (source: *Config) -> Config {
+    result := source.*;
+    empty: Config;
+    source.* = empty;
+    return result;
+}
+
+profile_index :: (cfg: *const Config, id: str) -> s32 {
+    for i: 0..cfg.profile_count if cfg.profiles[i].id == id return cast(s32) i;
+    return -1;
+}
+
+/// Executes a UTF-8 Lua file that returns a table. Invalid input leaves cfg intact.
+/// Missing files are reported as errors; the caller decides whether a path is optional.
+load :: (path: str, cfg: *Config) -> bool {
+    config_error_count = 0;
+    source: str;
+    if read_file(path, 1024 * 1024 + 1) == {
+    case .Ok(contents);
+        source = contents;
+    case .Err(error);
+        return config_failure(tprint("wst: cannot read config '{}': {}", path, error.kind));
+    }
+    defer source.free();
+    if source.count > 1024 * 1024 {
+        return config_failure(tprint("wst: config '{}' exceeds 1 MiB", path));
+    }
+    if #pattern ?state = new_state() {
+        defer close_state(state);
+        open_libraries(state, -1, 0);
+        name := path.cstring_from_string();
+        defer name.free();
+        status := load_buffer(state, source.data, cast(usize) source.count, name.data, "t".data);
+        if status == 0 status = call_lua(state, 0, 1, 0, 0, 0);
+        if status != 0 {
+            return config_failure(tprint("wst: config '{}': {}", path, lua_text(state, -1)));
+        }
+        if value_type(state, 1) != LUA_TABLE {
+            return config_failure(tprint("wst: config '{}' must return a table", path));
+        }
+        candidate := clone(cfg);
+        if !read_table(state, &candidate) {
+            release(&candidate);
+            return false;
+        }
+        release(cfg);
+        cfg.* = candidate;
+        config_error_count = 0;
+        return true;
+    }
+    return config_failure("wst: could not create Lua state");
+}
+
+}
+
+release_profile :: (profile: *Profile) {
+    profile.id.free();
+    profile.name.free();
+    profile.shell.free();
+    profile.command.free();
+    profile.starting_directory.free();
+    empty: Profile;
+    profile.* = empty;
+}
+
+lua_text :: (state: *void, index: s32) -> str {
+    count: usize;
+    if #pattern ?bytes = to_string(state, index, &count)
+        return borrow_bytes(bytes, cast(ssize) count).byte_slice_to_string();
+    return "(Lua value has no text)";
+}
+
+config_failure :: (message: str) -> bool {
+    config_error_count = message.count;
+    if config_error_count > 4095 config_error_count = 4095;
+    for i: 0..config_error_count config_error_storage[i] = message[i];
+    config_error_storage[config_error_count] = 0;
+    print("{}\n", message);
+    return false;
+}
+
+bad_field :: (key: str, expected: str) -> bool {
+    return config_failure(tprint("wst: config field '{}': expected {}", key, expected));
+}
+
+has_zero :: (text: str) -> bool {
+    for byte: text.bytes() if byte == 0 return true;
+    return false;
+}
+
+read_text :: (state: *void, key: str, destination: *str, allow_empty: bool) -> bool {
+    if value_type(state, -1) != LUA_STRING return bad_field(key, "a string");
+    text := lua_text(state, -1);
+    if (!allow_empty && text.count == 0) || text.count > 32767 || has_zero(text) || !text.string_is_valid() {
+        if allow_empty return bad_field(key, "valid UTF-8 text without NUL bytes (0..32767 bytes)");
+        return bad_field(key, "valid UTF-8 text without NUL bytes (1..32767 bytes)");
+    }
+    if key == "shell" && text != "powershell" && text != "cmd" && text != "nushell"
+        return bad_field(key, "'powershell', 'cmd', or 'nushell'");
+    destination.free();
+    destination.* = text.clone();
+    return true;
+}
+
+read_integer :: (state: *void, key: str, destination: *s32, minimum: s64, maximum: s64) -> bool {
+    if value_type(state, -1) != LUA_NUMBER || is_integer(state, -1) == 0
+        return bad_field(key, "an integer in the documented range");
+    value := to_integer(state, -1, null);
+    if value < minimum || value > maximum
+        return bad_field(key, "an integer in the documented range");
+    destination.* = cast(s32) value;
+    return true;
+}
+
+read_color :: (state: *void, key: str, destination: *u32) -> bool {
+    if value_type(state, -1) == LUA_NUMBER && is_integer(state, -1) != 0 {
+        value := to_integer(state, -1, null);
+        if value < 0 || value > 16#ffffff return bad_field(key, "an RGB integer or '#RRGGBB'");
+        destination.* = cast(u32) value;
+        return true;
+    }
+    if value_type(state, -1) == LUA_STRING {
+        text := lua_text(state, -1);
+        if text.count != 7 || text[0] != cast(u8) #char "#"
+            return bad_field(key, "an RGB integer or '#RRGGBB'");
+        color: u32;
+        for i: 1..7 {
+            byte := text[i];
+            digit: u32;
+            if      byte >= 48 && byte <= 57  digit = cast(u32)(byte - 48);
+            else if byte >= 65 && byte <= 70  digit = cast(u32)(byte - 65 + 10);
+            else if byte >= 97 && byte <= 102 digit = cast(u32)(byte - 97 + 10);
+            else                              return bad_field(key, "an RGB integer or '#RRGGBB'");
+            color = color * 16 + digit;
+        }
+        destination.* = color;
+        return true;
+    }
+    return bad_field(key, "an RGB integer or '#RRGGBB'");
+}
+
+ansi_color_index :: (name:str)->s32 {
+    names:[8]str=.["black","red","green","yellow","blue","magenta","cyan","white"];
+    for i:0..8 if names[i]==name return cast(s32)i;
+    return -1;
+}
+
+read_colors :: (state:*void,cfg:*Config)->bool {
+    if value_type(state,-1)!=LUA_TABLE return bad_field("colors","a table of color groups");
+    colors_index:=get_top(state);
+    push_nil(state);
+    while next_value(state,colors_index)!=0 {
+        if value_type(state,-2)!=LUA_STRING return bad_field("colors","named color groups");
+        group:=lua_text(state,-2);
+        if group!="primary" && group!="cursor" && group!="selection" && group!="normal" && group!="bright"
+            return bad_field(tprint("colors.{}",group),"primary, cursor, selection, normal, or bright");
+        if value_type(state,-1)!=LUA_TABLE return bad_field(tprint("colors.{}",group),"a table of named RGB colors");
+        table_index:=get_top(state);
+        push_nil(state);
+        while next_value(state,table_index)!=0 {
+            if value_type(state,-2)!=LUA_STRING return bad_field(tprint("colors.{}",group),"named colors");
+            name:=lua_text(state,-2);
+            field:=tprint("colors.{}.{}",group,name);
+            valid:=false;
+            if group=="normal" || group=="bright" {
+                index:=ansi_color_index(name);
+                if index<0 return bad_field(field,"black, red, green, yellow, blue, magenta, cyan, or white");
+                if group=="bright" index+=8;
+                valid=read_color(state,field,&cfg.palette[index]);
+            } else if group=="primary" {
+                if name=="foreground" valid=read_color(state,field,&cfg.foreground);
+                else if name=="background" valid=read_color(state,field,&cfg.background);
+                else return bad_field(field,"foreground or background");
+            } else if group=="cursor" {
+                if name=="text" valid=read_color(state,field,&cfg.cursor_text);
+                else if name=="cursor" valid=read_color(state,field,&cfg.cursor);
+                else return bad_field(field,"text or cursor");
+            } else {
+                if name=="text" valid=read_color(state,field,&cfg.selection_fg);
+                else if name=="background" valid=read_color(state,field,&cfg.selection_bg);
+                else return bad_field(field,"text or background");
+            }
+            if !valid return false;
+            set_top(state,-2);
+        }
+        set_top(state,-2);
+    }
+    return true;
+}
+
+read_chord :: (
+    state: *void,
+    field: str,
+    bindings: *Keymap.Bindings,
+    action: Keymap.Action,
+    profile_id: s32 = 0
+) -> bool {
+    if value_type(state, -1) != LUA_STRING return bad_field(field, "a key chord string");
+    chord := lua_text(state, -1);
+    if chord.count == 0 || chord.count > 128 || has_zero(chord) || !chord.string_is_valid()
+        return bad_field(field, "a nonempty key chord without NUL bytes (at most 128 bytes)");
+    if !Keymap.add_profile(bindings, chord, action, profile_id)
+        return config_failure(
+            tprint(
+                "wst: config field '{}', chord '{}': {}",
+                field,
+                chord,
+                Keymap.error_message()
+            )
+        );
+    return true;
+}
+
+read_binding_object :: (state: *void, field: str, cfg: *Config, action: Keymap.Action) -> bool {
+    table_index := get_top(state);
+    chord: str;
+    profile_id: s32;
+    has_key := false;
+    push_nil(state);
+    while next_value(state, table_index) != 0 {
+        if value_type(state, -2) != LUA_STRING
+            return bad_field(field, "a binding object with only key/profile fields");
+        name := lua_text(state, -2);
+        if name == "key" {
+            if value_type(state, -1) != LUA_STRING
+                return bad_field(tprint("{}.key", field), "a key chord string");
+            chord = lua_text(state, -1);
+            has_key = true;
+            if chord.count == 0 || chord.count > 128 || has_zero(chord) || !chord.string_is_valid()
+                return bad_field(
+                    tprint("{}.key", field),
+                    "a nonempty key chord without NUL bytes (at most 128 bytes)"
+                );
+        } else if name == "profile" {
+            if !Keymap.profile_action(action)
+                return bad_field(
+                    tprint("{}.profile", field),
+                    "a profile target on new_tab, split_horizontal, or split_vertical"
+                );
+            if value_type(state, -1) != LUA_STRING
+                return bad_field(tprint("{}.profile", field), "a named profile id");
+            id := lua_text(state, -1);
+            if id.count == 0 || id.count > 64 || has_zero(id) || !id.string_is_valid()
+                return bad_field(
+                    tprint("{}.profile", field),
+                    "a valid profile id (1..64 UTF-8 bytes)"
+                );
+            index := profile_index(cfg, id);
+            if index < 0
+                return config_failure(
+                    tprint("wst: config field '{}.profile': unknown profile '{}'", field, id)
+                );
+            profile_id = index + 1;
+        } else return bad_field(
+            tprint("{}.{}", field, name),
+            "a supported binding object field (key or profile)"
+        );
+        set_top(state, -2);
+    }
+    if !has_key return bad_field(tprint("{}.key", field), "a required key chord string");
+    if !Keymap.add_profile(&cfg.keybindings, chord, action, profile_id)
+        return config_failure(
+            tprint(
+                "wst: config field '{}', chord '{}': {}",
+                field,
+                chord,
+                Keymap.error_message()
+            )
+        );
+    return true;
+}
+
+read_binding_action :: (state: *void, field: str, cfg: *Config, action: Keymap.Action) -> bool {
+    kind := value_type(state, -1);
+    if kind == LUA_BOOLEAN && to_boolean(state, -1) == 0 return true;
+    if kind == LUA_STRING return read_chord(state, field, &cfg.keybindings, action);
+    if kind != LUA_TABLE
+        return bad_field(field, "a chord string, binding object, dense array of bindings, or false");
+
+    // Absolute indexes keep the parent lua_next key/value intact while nested
+    // arrays are inspected. rawlen alone does not reject holes or named keys.
+    table_index := get_top(state);
+    // Named entries identify an object. An empty table remains a disabled
+    // action, and mixed named/numeric tables are rejected by the object reader.
+    object := false;
+    push_nil(state);
+    while next_value(state, table_index) != 0 {
+        if value_type(state, -2) == LUA_STRING object = true;
+        set_top(state, -2);
+    }
+    if object return read_binding_object(state, field, cfg, action);
+    length := raw_length(state, table_index);
+    if length > 128 return bad_field(field, "at most 128 key chords");
+    entries: usize;
+    push_nil(state);
+    while next_value(state, table_index) != 0 {
+        if value_type(state, -2) != LUA_NUMBER || is_integer(state, -2) == 0
+            return bad_field(field, "a dense array with integer keys 1 through its length");
+        index := to_integer(state, -2, null);
+        if index < 1 || cast(u64) index > cast(u64) length
+            return bad_field(field, "a dense array without holes or extra keys");
+        entries += 1;
+        set_top(state, -2);
+    }
+    if entries != length return bad_field(field, "a dense array without holes");
+    i: usize = 1;
+    while i <= length {
+        raw_get_integer(state, table_index, cast(s64) i);
+        if value_type(state, -1) == LUA_TABLE {
+            if !read_binding_object(state, tprint("{}[{}]", field, i), cfg, action) return false;
+        } else if !read_chord(state, field, &cfg.keybindings, action) return false;
+        set_top(state, -2);
+        i += 1;
+    }
+    return true;
+}
+
+clear_binding_overrides :: (state: *void, table_index: s32, bindings: *Keymap.Bindings) -> bool {
+    if value_type(state, table_index) != LUA_TABLE
+        return bad_field("keybindings", "a table of action names and key chords");
+    push_nil(state);
+    while next_value(state, table_index) != 0 {
+        if value_type(state, -2) != LUA_STRING
+            return bad_field("keybindings", "named terminal actions");
+        name := lua_text(state, -2);
+        action := Keymap.action_from_name(name);
+        if action == Keymap.Action.None
+            return bad_field(tprint("keybindings.{}", name), "a supported terminal action name");
+        // Remove all replaced defaults before any additions. A final table at
+        // capacity must not fail due to defaults that Lua visits later.
+        Keymap.clear_action(bindings, action);
+        set_top(state, -2);
+    }
+    return true;
+}
+
+read_keybindings :: (state: *void, cfg: *Config) -> bool {
+    table_index := get_top(state);
+    if !clear_binding_overrides(state, table_index, &cfg.keybindings) return false;
+    push_nil(state);
+    while next_value(state, table_index) != 0 {
+        name := lua_text(state, -2);
+        action := Keymap.action_from_name(name);
+        if !read_binding_action(state, tprint("keybindings.{}", name), cfg, action) return false;
+        set_top(state, -2);
+    }
+    // Validate after every override: swapping shortcuts between two actions is
+    // legal regardless of Lua's unspecified table traversal order.
+    if !Keymap.validate(&cfg.keybindings)
+        return config_failure(
+            tprint("wst: config field 'keybindings': {}", Keymap.error_message())
+        );
+    return true;
+}
+
+read_profiles :: (state: *void, cfg: *Config) -> bool {
+    if value_type(state, -1) != LUA_TABLE
+        return bad_field("profiles", "a map of named profile tables");
+    table_index := get_top(state);
+    next: [32]Profile;
+    count: s32;
+    defer {
+        for i: 0..count release_profile(&next[i]);
+    }
+    push_nil(state);
+    while next_value(state, table_index) != 0 {
+        if value_type(state, -2) != LUA_STRING return bad_field("profiles", "named profile ids");
+        id := lua_text(state, -2);
+        if id.count == 0 || id.count > 64 || has_zero(id) || !id.string_is_valid()
+            return bad_field("profiles", "profile ids of 1..64 UTF-8 bytes without NUL");
+        if count >= 32 return bad_field("profiles", "at most 32 profiles");
+        if value_type(state, -1) != LUA_TABLE
+            return bad_field(tprint("profiles.{}", id), "a profile table");
+        p := &next[count];
+        count += 1;
+        p.* = .{
+            .id = id.clone(),
+            .name = id.clone(),
+            .shell = "powershell".clone(),
+            .command = "".clone(),
+            .starting_directory = "".clone()
+        };
+        profile_table := get_top(state);
+        push_nil(state);
+        while next_value(state, profile_table) != 0 {
+            if value_type(state, -2) != LUA_STRING
+                return bad_field(tprint("profiles.{}", id), "named profile fields");
+            key := lua_text(state, -2);
+            field := tprint("profiles.{}.{}", id, key);
+            if key == "name" {
+                if !read_text(state, field, &p.name, false) return false;
+                if p.name.count > 256
+                    return bad_field(field, "a display name of 1..256 UTF-8 bytes");
+            } else if key == "shell" {
+                if !read_text(state, field, &p.shell, false) return false;
+                if p.shell != "powershell" && p.shell != "cmd" && p.shell != "nushell"
+                    return bad_field(field, "'powershell', 'cmd', or 'nushell'");
+            } else if key == "command" {
+                if !read_text(state, field, &p.command, true) return false;
+            } else if key == "starting_directory" {
+                if !read_text(state, field, &p.starting_directory, true) return false;
+            } else return bad_field(
+                field,
+                "a supported profile field (name, shell, command, starting_directory)"
+            );
+            set_top(state, -2);
+        }
+        set_top(state, -2);
+    }
+    // C.load can update an existing Config. Retained bindings refer to profile
+    // names even when Lua traversal order changes their numeric positions.
+    targets := cfg.keybindings.profile_ids;
+    for i: 0..cfg.keybindings.count if targets[i] > 0 {
+        old := targets[i] - 1;
+        if old >= cfg.profile_count return bad_field("keybindings", "an existing profile target");
+        found: s32 = -1;
+        for j: 0..count if next[j].id == cfg.profiles[old].id found = cast(s32) j;
+        if found < 0
+            return config_failure(
+                tprint(
+                    "wst: retained keybinding references removed profile '{}'",
+                    cfg.profiles[old].id
+                )
+            );
+        targets[i] = found + 1;
+    }
+    for i: 0..cfg.profile_count release_profile(&cfg.profiles[i]);
+    cfg.profiles = next;
+    cfg.profile_count = count;
+    count = 0;
+    cfg.keybindings.profile_ids = targets;
+    return true;
+}
+
+read_table :: (state: *void, cfg: *Config) -> bool {
+    // Nested scheme first so legacy flat foreground/background/cursor overrides
+    // have deterministic precedence regardless of lua_next traversal order.
+    push_nil(state);
+    while next_value(state,1)!=0 {
+        if value_type(state,-2)!=LUA_STRING return bad_field("(non-string key)","a named configuration field");
+        if lua_text(state,-2)=="colors" && !read_colors(state,cfg) return false;
+        set_top(state,-2);
+    }
+    // Read scalars first, profiles second, and bindings last: Lua table order
+    // must never affect profile/default/keybinding reference resolution.
+    push_nil(state);
+    while next_value(state, 1) != 0 {
+        if value_type(state, -2) != LUA_STRING
+            return bad_field("(non-string key)", "a named configuration field");
+        key := lua_text(state, -2);
+        valid := false;
+        if key == "shell" valid = read_text(state, key, &cfg.shell, false);
+        else if key == "command" valid = read_text(state, key, &cfg.command, true);
+        else if key == "default_profile" {
+            valid = read_text(state, key, &cfg.default_profile, true);
+            if valid && cfg.default_profile.count > 64
+                return bad_field(key, "a profile id of at most 64 UTF-8 bytes");
+        } else if key == "font_family" valid = read_text(state, key, &cfg.font_family, false);
+        else if key == "font_size" valid = read_integer(state, key, &cfg.font_size, 8, 72);
+        else if key == "font_ligatures" {
+            if value_type(state, -1) != LUA_BOOLEAN return bad_field(key, "a boolean");
+            cfg.font_ligatures = to_boolean(state, -1) != 0;
+            valid = true;
+        }
+        else if key == "columns" valid = read_integer(state, key, &cfg.columns, 20, 400);
+        else if key == "rows" valid = read_integer(state, key, &cfg.rows, 5, 200);
+        else if key == "scrollback" valid = read_integer(state, key, &cfg.scrollback, 0, 10000);
+        else if key == "padding" valid = read_integer(state, key, &cfg.padding, 0, 100);
+        else if key == "foreground" valid = read_color(state, key, &cfg.foreground);
+        else if key == "background" valid = read_color(state, key, &cfg.background);
+        else if key == "accent" valid = read_color(state, key, &cfg.accent);
+        else if key == "cursor" valid = read_color(state, key, &cfg.cursor);
+        else if key == "keybindings" || key == "profiles" || key == "colors" valid = true;
+        else if key == "close_on_exit" {
+            if value_type(state, -1) != LUA_BOOLEAN return bad_field(key, "a boolean");
+            cfg.close_on_exit = to_boolean(state, -1) != 0;
+            valid = true;
+        } else return bad_field(key, "a known configuration field");
+        if !valid return false;
+        // Remove value; lua_next needs the previous key to remain on the stack.
+        set_top(state, -2);
+    }
+    // Remove all explicitly overridden actions before remapping profiles. A
+    // profile may be deleted in the same edit that removes its old bindings.
+    push_nil(state);
+    while next_value(state, 1) != 0 {
+        if lua_text(state, -2) == "keybindings" &&
+           !clear_binding_overrides(state, get_top(state), &cfg.keybindings)
+            return false;
+        set_top(state, -2);
+    }
+    push_nil(state);
+    while next_value(state, 1) != 0 {
+        if lua_text(state, -2) == "profiles" && !read_profiles(state, cfg) return false;
+        set_top(state, -2);
+    }
+    if cfg.default_profile.count > 0 && profile_index(cfg, cfg.default_profile) < 0
+        return config_failure(
+            tprint("wst: default_profile references unknown profile '{}'", cfg.default_profile)
+        );
+    push_nil(state);
+    while next_value(state, 1) != 0 {
+        if lua_text(state, -2) == "keybindings" && !read_keybindings(state, cfg) return false;
+        set_top(state, -2);
+    }
+    return true;
+}

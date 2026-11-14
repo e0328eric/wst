@@ -1,0 +1,196 @@
+//! DirectWrite OpenType shaping for printable, left-to-right terminal runs.
+//! Glyph indices are rendered by the existing Gui font rasterizer through a
+//! private cmap; the terminal still owns cell positions and source characters.
+F :: #import "windows_fonts.glo";
+#import "Math/Core";
+
+dwrite :: #library,system "dwrite";
+Guid :: struct #c_call { a:u32; b:u16; c:u16; d:[8]u8; }
+#public Script :: struct #c_call { index:u16; shapes:s32; }
+Ref :: #fn_ptr(object:usize)->u32 #c_call;
+Query :: #fn_ptr(object:usize,id:*const Guid,result:*usize)->s32 #c_call;
+Create :: #fn_ptr(object:usize,result:*usize)->s32 #c_call;
+Nominal :: #fn_ptr(object:usize,codepoints:[*]const u32,count:u32,indices:[*]u16)->s32 #c_call;
+Analyze :: #fn_ptr(object:usize,source:usize,position:u32,length:u32,sink:usize)->s32 #c_call;
+Glyphs :: #fn_ptr(object:usize,text:[*]const u16,length:u32,face:usize,sideways:s32,rtl:s32,
+    script:*const Script,locale:usize,substitution:usize,features:usize,lengths:usize,ranges:u32,
+    capacity:u32,clusters:[*]u16,text_properties:[*]u16,indices:[*]u16,properties:[*]u16,count:*u32)->s32 #c_call;
+Placements :: #fn_ptr(object:usize,text:[*]const u16,clusters:[*]const u16,text_properties:[*]u16,
+    length:u32,indices:[*]const u16,properties:[*]const u16,count:u32,face:usize,em_size:f32,
+    sideways:s32,rtl:s32,script:*const Script,locale:usize,features:usize,lengths:usize,ranges:u32,
+    advances:[*]f32,offsets:[*]Offset)->s32 #c_call;
+create_factory :: (kind:s32,id:*const Guid,result:*usize)->s32 #foreign dwrite "DWriteCreateFactory";
+factory_id:Guid=.{16#b859ee5a,16#d838,16#4b5b,.[16#a2,16#e8,16#1a,16#dc,16#7d,16#93,16#db,16#48]};
+source_id:Guid=.{16#688e1a58,16#5094,16#47c8,.[16#ad,16#c8,16#fb,16#ce,16#a6,16#0a,16#e9,16#2b]};
+sink_id:Guid=.{16#5810cd44,16#0ca0,16#4701,.[16#b3,16#fa,16#be,16#c5,16#18,16#2a,16#e4,16#f6]};
+unknown_id:Guid=.{0,0,0,.[16#c0,0,0,0,0,0,0,16#46]};
+
+method :: (T:type,object:usize,index:ssize)->T {
+    table:=cast([*]usize)object;
+    slots:=cast([*]usize)table[0];
+    return cast(T)slots[index];
+}
+release :: (object:usize) { if object!=0 _:=method(Ref,object,2)(object); }
+same_id :: (left:*const Guid,right:*const Guid)->bool {
+    if left.a!=right.a || left.b!=right.b || left.c!=right.c return false;
+    for i:0..8 if left.d[i]!=right.d[i] return false;
+    return true;
+}
+
+// Analysis callback objects live on the open() stack. DirectWrite does not
+// retain them beyond the synchronous AnalyzeScript call.
+Text_At :: #fn_ptr(object:usize,position:u32,text:*usize,length:*u32)->s32 #c_call;
+Direction :: #fn_ptr(object:usize)->s32 #c_call;
+Locale :: #fn_ptr(object:usize,position:u32,length:*u32,text:*usize)->s32 #c_call;
+Substitution :: #fn_ptr(object:usize,position:u32,length:*u32,value:*usize)->s32 #c_call;
+Set_Script :: #fn_ptr(object:usize,position:u32,length:u32,script:*const Script)->s32 #c_call;
+Set_Breaks :: #fn_ptr(object:usize,position:u32,length:u32,breaks:usize)->s32 #c_call;
+Set_Bidi :: #fn_ptr(object:usize,position:u32,length:u32,explicit:u8,resolved:u8)->s32 #c_call;
+Set_Substitution :: #fn_ptr(object:usize,position:u32,length:u32,value:usize)->s32 #c_call;
+Source_Table :: struct #c_call {
+    query:Query; add_ref:Ref; release:Ref; at:Text_At; before:Text_At;
+    direction:Direction; locale:Locale; substitution:Substitution;
+}
+Sink_Table :: struct #c_call {
+    query:Query; add_ref:Ref; release:Ref; script:Set_Script;
+    breaks:Set_Breaks; bidi:Set_Bidi; substitution:Set_Substitution;
+}
+Source :: struct #c_call { table:*Source_Table; text:[*]const u16; length:u32; }
+Sink :: struct #c_call { table:*Sink_Table; script:Script; received:bool; }
+source_query :: (object:usize,id:*const Guid,result:*usize)->s32 #c_call {
+    result.*=0;
+    if same_id(id,&source_id) || same_id(id,&unknown_id) { result.*=object; return 0; }
+    return -2147467262;
+}
+sink_query :: (object:usize,id:*const Guid,result:*usize)->s32 #c_call {
+    result.*=0;
+    if same_id(id,&sink_id) || same_id(id,&unknown_id) { result.*=object; return 0; }
+    return -2147467262;
+}
+callback_ref :: (object:usize)->u32 #c_call { return 1; }
+source_at :: (object:usize,position:u32,text:*usize,length:*u32)->s32 #c_call {
+    source:=cast(*Source)object; text.*=0; length.*=0;
+    if position<source.length { text.*=cast(usize)(source.text+cast(ssize)position); length.*=source.length-position; }
+    return 0;
+}
+source_before :: (object:usize,position:u32,text:*usize,length:*u32)->s32 #c_call {
+    source:=cast(*Source)object; text.*=0; length.*=0;
+    if position>0 && position<=source.length { text.*=cast(usize)source.text; length.*=position; }
+    return 0;
+}
+source_direction :: (object:usize)->s32 #c_call { return 0; }
+source_locale :: (object:usize,position:u32,length:*u32,text:*usize)->s32 #c_call {
+    source:=cast(*Source)object; length.*=source.length; text.*=0; return 0;
+}
+source_substitution :: (object:usize,position:u32,length:*u32,value:*usize)->s32 #c_call {
+    source:=cast(*Source)object; length.*=source.length; value.*=0; return 0;
+}
+sink_script :: (object:usize,position:u32,length:u32,script:*const Script)->s32 #c_call {
+    sink:=cast(*Sink)object; sink.script=script.*; sink.received=true; return 0;
+}
+sink_breaks :: (object:usize,position:u32,length:u32,breaks:usize)->s32 #c_call { return 0; }
+sink_bidi :: (object:usize,position:u32,length:u32,explicit:u8,resolved:u8)->s32 #c_call { return 0; }
+sink_substitution :: (object:usize,position:u32,length:u32,value:usize)->s32 #c_call { return 0; }
+
+#public {
+Offset :: struct #c_call { advance:f32; ascender:f32; }
+Shaper :: struct { face:usize; analyzer:usize; script:Script; }
+Run :: struct {
+    changed:bool;
+    clusters:[..]u16;
+    glyphs:[..]u16;
+    advances:[..]f32;
+    offsets:[..]Offset;
+    text_units:[..]u16;
+    text_properties:[..]u16;
+    glyph_properties:[..]u16;
+    nominal_points:[..]u32;
+    nominal_glyphs:[..]u16;
+}
+
+/// Retains the installed face; callers may release their original reference.
+open :: (face:usize,result:*Shaper)->bool {
+    close(result);
+    if face==0 return false;
+    factory:usize; analyzer:usize;
+    defer release(factory);
+    if create_factory(0,&factory_id,&factory)<0 return false;
+    // IDWriteFactory::CreateTextAnalyzer (the base factory's slot 21).
+    if method(Create,factory,21)(factory,&analyzer)<0 return false;
+    source_table:Source_Table=.{source_query,callback_ref,callback_ref,source_at,source_before,
+        source_direction,source_locale,source_substitution};
+    sink_table:Sink_Table=.{sink_query,callback_ref,callback_ref,sink_script,sink_breaks,sink_bidi,sink_substitution};
+    latin:[1]u16=.[97];
+    source:Source=.{&source_table,cast([*]const u16)&latin,1};
+    sink:Sink; sink.table= &sink_table;
+    if method(Analyze,analyzer,3)(analyzer,cast(usize)&source,0,1,cast(usize)&sink)<0 || !sink.received {
+        release(analyzer); return false;
+    }
+    F.native_retain_face(face);
+    result.face=face; result.analyzer=analyzer; result.script=sink.script;
+    return true;
+}
+
+close :: (shaper:*Shaper) {
+    release(shaper.analyzer); F.native_release_face(shaper.face);
+    empty:Shaper; shaper.*=empty;
+}
+
+clear_run :: (run:*Run) {
+    run.changed=false;
+    run.clusters.clear(); run.glyphs.clear(); run.advances.clear(); run.offsets.clear();
+    run.text_units.clear(); run.text_properties.clear(); run.glyph_properties.clear();
+    run.nominal_points.clear(); run.nominal_glyphs.clear();
+}
+free_run :: (run:*Run) {
+    run.clusters.free(); run.glyphs.free(); run.advances.free(); run.offsets.free();
+    run.text_units.free(); run.text_properties.free(); run.glyph_properties.free();
+    run.nominal_points.free(); run.nominal_glyphs.free();
+    empty:Run; run.*=empty;
+}
+
+/// Printable ASCII has one UTF-16 unit and one terminal cell per source byte.
+/// Other scalars retain the renderer's existing Unicode and fallback path.
+shape :: (shaper:*Shaper,text:str,em_size:f32,result:*Run)->bool {
+    clear_run(result);
+    if shaper.face==0 || shaper.analyzer==0 || !is_finite(em_size) || em_size<=0 || em_size>576 ||
+        text.count==0 || text.count>32767 return false;
+    for i:0..text.count if text[i]<32 || text[i]>126 return false;
+    count:=cast(u32)text.count;
+    result.text_units.resize(text.count);
+    for i:0..text.count result.text_units[i]=cast(u16)text[i];
+    result.clusters.resize(text.count); result.text_properties.resize(text.count);
+    // DirectWrite's estimate can be insufficient for some fonts. Retry with a
+    // larger buffer, bounded by the 16-bit cluster indices returned by the API.
+    capacity:=count+count/2+16;
+    if capacity>65535 capacity=65535;
+    actual:u32; hr:s32;
+    while true {
+        result.glyphs.resize(cast(ssize)capacity); result.glyph_properties.resize(cast(ssize)capacity);
+        hr=method(Glyphs,shaper.analyzer,7)(shaper.analyzer,result.text_units.data,count,shaper.face,0,0,
+            &shaper.script,0,0,0,0,0,capacity,result.clusters.data,result.text_properties.data,
+            result.glyphs.data,result.glyph_properties.data,&actual);
+        if hr!= -2147024774 || capacity==65535 break;
+        capacity*=2; if capacity>65535 capacity=65535;
+    }
+    if hr<0 || actual==0 || actual>capacity { clear_run(result); return false; }
+    result.glyphs.resize(cast(ssize)actual); result.glyph_properties.resize(cast(ssize)actual);
+    result.advances.resize(cast(ssize)actual); result.offsets.resize(cast(ssize)actual);
+    hr=method(Placements,shaper.analyzer,8)(shaper.analyzer,result.text_units.data,result.clusters.data,
+        result.text_properties.data,count,result.glyphs.data,result.glyph_properties.data,actual,
+        shaper.face,em_size,0,0,&shaper.script,0,0,0,0,result.advances.data,result.offsets.data);
+    if hr<0 { clear_run(result); return false; }
+    result.nominal_points.resize(text.count); result.nominal_glyphs.resize(text.count);
+    for i:0..text.count result.nominal_points[i]=cast(u32)text[i];
+    if method(Nominal,shaper.face,11)(shaper.face,result.nominal_points.data,count,result.nominal_glyphs.data)<0 {
+        clear_run(result); return false;
+    }
+    result.changed=actual!=count;
+    if !result.changed for i:0..text.count {
+        if result.glyphs[i]!=result.nominal_glyphs[i] || result.clusters[i]!=cast(u16)i {
+            result.changed=true; break;
+        }
+    }
+    return true;
+}
+}

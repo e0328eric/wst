@@ -1,0 +1,168 @@
+M :: #import "../src/workspace.glo";
+#import "Io";
+
+check :: (ok:bool,message:str) {
+    if !ok { print("FAIL: {}\n",message); exit(1); }
+}
+same_rect :: (a:M.Rect,b:M.Rect)->bool {
+    return a.x==b.x && a.y==b.y && a.width==b.width && a.height==b.height;
+}
+
+divider_tests :: () {
+    w:M.Workspace;
+    bounds:M.Rect=.{10,20,1000,600};
+    check(M.new_tab(&w,1) && M.split(&w,2,M.Axis_Vertical) && M.split(&w,3,M.Axis_Horizontal),
+        "create nested draggable panes");
+    vertical:=M.divider_at(&w,bounds,6,510,100);
+    horizontal:=M.divider_at(&w,bounds,6,600,320);
+    check(vertical.node==0 && vertical.axis==M.Axis_Vertical && same_rect(vertical.rect,.{507,20,6,600}),
+        "vertical divider hit returns its actual draggable gap");
+    check(horizontal.node>=0 && horizontal.node!=vertical.node && horizontal.axis==M.Axis_Horizontal &&
+        same_rect(horizontal.rect,.{513,317,497,6}),"nested horizontal divider uses its subtree bounds");
+    check(M.divider_at(&w,bounds,6,506,100).node<0 && M.divider_at(&w,bounds,6,513,100).node<0 &&
+        M.divider_at(&w,bounds,6,1008,100).node<0,"pane cells and scrollbar-side pixels do not start divider drags");
+    check(M.divider_at(&w,bounds,6,510,620).node<0,"divider hit rectangle excludes its bottom edge");
+    check(M.divider_geometry(&w,1,bounds,6).node<0 && M.divider_geometry(&w,63,bounds,6).node<0,
+        "leaf and invalid node ids cannot be dragged");
+    check(!M.drag_divider(&w,1,bounds,6,600,100,50),"dragging a leaf leaves the layout unchanged");
+    focused:=M.focused(&w);
+    check(M.drag_divider(&w,vertical.node,bounds,6,710,100,50),"vertical drag changes the sibling widths");
+    check(M.focused(&w)==focused && w.active==0,"dragging preserves focused pane and active tab");
+    rects:[32]M.Rect;
+    M.arrange(&w,0,bounds,6,&rects);
+    check(same_rect(rects[0],.{10,20,700,600}) && same_rect(rects[1],.{716,20,294,297}) &&
+        same_rect(rects[2],.{716,323,294,297}),"vertical drag resizes both sibling subtrees without changing nested height ratio");
+    check(!M.drag_divider(&w,vertical.node,bounds,6,710,100,50),"same divider pixel is a no-op");
+    ratio:=w.tabs[0].nodes[vertical.node].ratio;
+    M.arrange(&w,0,.{10,20,2000,1000},6,&rects);
+    check(rects[0].width>1300 && rects[0].width<1500 && w.tabs[0].nodes[vertical.node].ratio==ratio,
+        "window resize preserves the dragged proportion instead of returning to half width");
+    M.arrange(&w,0,bounds,6,&rects);
+    check(rects[0].width==700,"restoring outer bounds restores the chosen divider position");
+    check(M.drag_divider(&w,horizontal.node,bounds,6,420,100,50),"horizontal drag changes top and bottom heights");
+    M.arrange(&w,0,bounds,6,&rects);
+    check(rects[1].height==400 && rects[2].y==426 && rects[2].height==194 && rects[0].width==700,
+        "nested horizontal resizing stays inside its parent region");
+    check(M.drag_divider(&w,horizontal.node,bounds,6,-2147483648,100,50),"dragging above the window clamps safely");
+    M.arrange(&w,0,bounds,6,&rects);
+    check(rects[1].height==50 && rects[2].height==544,"horizontal minimum protects the first child");
+    check(M.drag_divider(&w,horizontal.node,bounds,6,2147483647,100,50),"dragging below the window clamps safely");
+    M.arrange(&w,0,bounds,6,&rects);
+    check(rects[1].height==544 && rects[2].height==50,"horizontal minimum protects the second child");
+    check(M.drag_divider(&w,vertical.node,bounds,6,2147483647,100,50),"dragging right clamps the second subtree");
+    M.arrange(&w,0,bounds,6,&rects);
+    check(rects[0].width==894 && rects[1].width==100 && rects[2].width==100,
+        "vertical minimum includes every pane in a horizontal sibling subtree");
+    check(M.drag_divider(&w,vertical.node,bounds,6,-2147483648,100,50),"dragging left clamps the first subtree");
+    M.arrange(&w,0,bounds,6,&rects);
+    check(rects[0].width==100 && rects[1].width==894,"vertical minimum protects the first leaf");
+
+    check(M.new_tab(&w,4),"create a hidden-tab isolation check");
+    saved:=w.tabs[0].nodes[vertical.node].ratio;
+    check(M.divider_at(&w,bounds,6,110,100).node<0 && !M.drag_divider(&w,vertical.node,bounds,6,600,100,50),
+        "hidden tab dividers cannot be dragged through the active unsplit tab");
+    check(w.tabs[0].nodes[vertical.node].ratio==saved && M.focused(&w)==4,"hidden split geometry and focus stay unchanged");
+    check(M.close_tab(&w,1) && w.active==0,"return to nested split tab");
+
+    // A same-axis descendant with an unequal ratio needs enough width for both
+    // of its leaf minima when its ancestor divider is dragged toward it.
+    check(M.split(&w,4,M.Axis_Vertical),"split the lower nested pane again");
+    M.arrange(&w,0,bounds,6,&rects);
+    inner:=M.divider_at(&w,bounds,6,rects[2].x+rects[2].width+2,rects[2].y+1);
+    check(inner.node>=0 && inner.axis==M.Axis_Vertical,"locate a deeply nested divider");
+    check(M.drag_divider(&w,inner.node,bounds,6,rects[2].x+600,80,30),"make the descendant split deliberately unequal");
+    inner_ratio:=w.tabs[0].nodes[inner.node].ratio;
+    check(M.drag_divider(&w,vertical.node,bounds,6,2147483647,80,30),"ancestor drag honors retained descendant ratios");
+    M.arrange(&w,0,bounds,6,&rects);
+    for i:0..4 check(rects[i].width>=80 && rects[i].height>=30,"ancestor drag retains every nested leaf minimum");
+    check(rects[1].width>166 && w.tabs[0].nodes[inner.node].ratio==inner_ratio,
+        "minimum computation includes the unequal descendant ratio without changing it");
+    horizontal_ratio:=w.tabs[0].nodes[horizontal.node].ratio;
+    check(M.close_pane(&w,1),"close a root child after resizing");
+    check(M.divider_geometry(&w,vertical.node,bounds,6).node<0 &&
+        w.tabs[0].nodes[horizontal.node].ratio==horizontal_ratio && w.tabs[0].nodes[inner.node].ratio==inner_ratio,
+        "collapse retains surviving subtree proportions and invalidates the removed divider");
+    check(M.close_pane(&w,4) && M.split(&w,5,M.Axis_Vertical),"reused split nodes start a fresh divider");
+    M.arrange(&w,0,bounds,6,&rects);
+    check(rects[2].width==497 && rects[4].width==497,"new split resets reused ratio storage to fifty-fifty");
+    check(!M.drag_divider(&w,horizontal.node,.{0,0,0,0},100,2147483647,80,30),
+        "zero-sized bounds cannot produce a negative or movable divider");
+    _:=M.drag_divider(&w,horizontal.node,.{0,0,10,10},2,2147483647,80,30);
+    M.arrange(&w,0,.{0,0,10,10},2,&rects);
+    for rect:rects check(rect.width>=0 && rect.height>=0,"impossible leaf minima degrade safely in tiny bounds");
+
+    huge:M.Workspace;
+    check(M.new_tab(&huge,1) && M.split(&huge,2,M.Axis_Vertical),"create wide integer-range geometry");
+    huge_bounds:M.Rect=.{-2147483648,0,2147483647,100};
+    check(M.drag_divider(&huge,0,huge_bounds,6,2147483647,10,10),"large coordinate differences do not overflow");
+    M.arrange(&huge,0,huge_bounds,6,&rects);
+    check(rects[0].width>=10 && rects[1].width>=10,"large ratio rounding retains both minimum widths");
+}
+
+main :: () {
+    divider_tests();
+    w:M.Workspace;
+    check(M.focused(&w)==0 && M.pane_count(&w)==0,"empty workspace has no focus");
+    check(!M.split(&w,1,M.Axis_Vertical) && !M.close_pane(&w,1) && !M.close_tab(&w,0),"empty operations are safe");
+    check(!M.new_tab(&w,0) && !M.new_tab(&w,33),"pane ids stay within the runtime pool");
+    check(M.new_tab(&w,1) && w.count==1 && M.focused(&w)==1,"first tab owns its initial pane");
+    check(!M.new_tab(&w,1) && !M.split(&w,1,M.Axis_Vertical),"pane ownership is unique across tabs and splits");
+    check(!M.split(&w,2,99) && M.pane_count(&w)==1,"invalid axes cannot modify the tree");
+    check(M.split(&w,2,M.Axis_Vertical) && M.focused(&w)==2,"vertical split focuses the right pane");
+    check(M.split(&w,3,M.Axis_Horizontal) && M.focused(&w)==3,"nested horizontal split focuses the bottom pane");
+    ids:[32]s32;
+    check(M.pane_order(&w,0,&ids)==3 && ids[0]==1 && ids[1]==2 && ids[2]==3,"pane order follows the split tree");
+    rects:[32]M.Rect;
+    M.arrange(&w,0,.{10,20,1000,600},6,&rects);
+    check(same_rect(rects[0],.{10,20,497,600}),"left pane receives half the width after the divider");
+    check(same_rect(rects[1],.{513,20,497,297}) && same_rect(rects[2],.{513,323,497,297}),"nested panes divide their own region");
+    check(M.pane_at(&w,&rects,20,30)==1 && M.pane_at(&w,&rects,600,400)==3,"pane hit testing uses arranged rectangles");
+    check(M.pane_at(&w,&rects,510,100)==0 && M.pane_at(&w,&rects,600,320)==0,"dividers cannot select panes");
+    check(M.pane_at(&w,&rects,1010,600)==0,"outer rectangle bounds are exclusive");
+    check(M.focus_direction(&w,&rects,0,-1) && M.focused(&w)==2,"up selects the adjacent upper pane");
+    check(M.focus_direction(&w,&rects,-1,0) && M.focused(&w)==1,"left selects the overlapping full-height pane");
+    check(!M.focus_direction(&w,&rects,-1,0) && M.focused(&w)==1,"missing neighbors preserve focus");
+    check(!M.focus_direction(&w,&rects,1,1) && !M.focus_direction(&w,&rects,0,0),"directional focus accepts cardinal directions only");
+    check(M.focus_direction(&w,&rects,1,0) && M.focused(&w)==2,"right picks the closest aligned pane predictably");
+    check(M.cycle_pane(&w,-1) && M.focused(&w)==1,"previous pane follows tree order");
+    check(M.cycle_pane(&w,-1) && M.focused(&w)==3,"pane cycling wraps");
+    check(M.cycle_pane(&w,2147483647),"large cycle deltas avoid overflow");
+
+    check(M.new_tab(&w,4) && w.active==1 && M.focused(&w)==4,"new tabs become active");
+    M.arrange(&w,1,.{0,0,500,300},6,&rects);
+    check(same_rect(rects[3],.{0,0,500,300}) && rects[0].width==497,"arranging another tab retains existing rectangle slots");
+    check(M.pane_at(&w,&rects,20,30)==4,"hidden tab rectangles never participate in hit testing");
+    check(!M.cycle_pane(&w,1) && M.focused(&w)==4,"pane cycling is scoped to the active tab");
+    check(M.cycle_tab(&w,1) && w.active==0,"tab cycling wraps");
+    check(M.focused(&w)!=4 && M.focus_pane(&w,4) && w.active==1,"focusing a pane restores its tab");
+    check(!M.focus_pane(&w,32) && w.active==1,"unknown pane cannot change tabs");
+    check(M.close_pane(&w,2) && w.count==2 && w.active==1,"closing a hidden pane leaves the visible tab active");
+    M.arrange(&w,0,.{10,20,1000,600},6,&rects);
+    check(same_rect(rects[2],.{513,20,497,600}),"closing a nested leaf expands its sibling to the parent region");
+    check(M.close_pane(&w,1),"close the first root child");
+    M.arrange(&w,0,.{10,20,1000,600},6,&rects);
+    check(same_rect(rects[2],.{10,20,1000,600}),"closing a root child promotes the surviving subtree");
+    check(M.close_pane(&w,3) && w.count==1 && w.active==0 && M.focused(&w)==4,"last hidden pane removes its tab and adjusts the active index");
+    check(M.close_pane(&w,4) && w.count==0 && w.active==0,"last pane leaves an empty workspace for window closure");
+
+    full:M.Workspace;
+    check(M.new_tab(&full,1),"start maximum-capacity split test");
+    for pane:2..33 check(M.split(&full,cast(s32)pane,M.Axis_Vertical),"all32 stable ids fit one split tree");
+    check(M.pane_count(&full)==32 && !M.split(&full,33,M.Axis_Horizontal),"workspace enforces the global pane capacity");
+    check(M.pane_order(&full,0,&ids)==32 && ids[0]==1 && ids[31]==32,"deep nesting retains every leaf in order");
+    M.arrange(&full,0,.{0,0,1,1},100,&rects);
+    for rect:rects check(rect.width>=0 && rect.height>=0,"tiny nested geometry never creates negative rectangles");
+    for pane:2..33 check(M.close_pane(&full,cast(s32)pane),"deep leaves and parents collapse without orphaning siblings");
+    check(M.pane_count(&full)==1 && M.focused(&full)==1,"deep tree collapses back to its original pane");
+    for pane:2..33 check(M.split(&full,cast(s32)pane,M.Axis_Horizontal),"freed tree nodes and pane ids can be reused");
+    check(M.close_tab(&full,0) && full.count==0,"whole-tab close removes every split node");
+
+    tabs:M.Workspace;
+    for pane:1..17 check(M.new_tab(&tabs,cast(s32)pane),"sixteen tabs fit the tab strip");
+    check(tabs.count==16 && !M.new_tab(&tabs,17),"tab capacity rejects another tab without modification");
+    check(M.close_tab(&tabs,4) && tabs.count==15 && tabs.active==14 && M.focused(&tabs)==16,"closing an earlier tab preserves the active tab identity");
+    check(M.close_tab(&tabs,14) && tabs.active==13 && M.focused(&tabs)==15,"closing the last active tab selects its previous neighbor");
+    check(M.activate(&tabs,3) && M.close_tab(&tabs,3) && M.focused(&tabs)==6,"closing an active middle tab selects its next neighbor");
+    check(!M.activate(&tabs,-1) && !M.activate(&tabs,99),"out-of-range tab activation leaves focus unchanged");
+    print("workspace tests passed: tabs, nested splits, divider resizing/minima, focus, collapse, limits and geometry.\n");
+}

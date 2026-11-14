@@ -1,0 +1,92 @@
+//! Embed the application icon as Windows resources without an external RC tool.
+//! std.Gui loads the first icon group at window creation and on DPI changes.
+#import "Compiler";
+#import "Format";
+#import "Io";
+#import "File_System/File";
+#import "File_System/Directory";
+#import "File_System/Path";
+
+u16_at :: (bytes:str,offset:ssize)->u16 {
+    return cast(u16)bytes[offset] | (cast(u16)bytes[offset+1]<<8);
+}
+u32_at :: (bytes:str,offset:ssize)->u32 {
+    return cast(u32)bytes[offset] | (cast(u32)bytes[offset+1]<<8) |
+        (cast(u32)bytes[offset+2]<<16) | (cast(u32)bytes[offset+3]<<24);
+}
+put16 :: (bytes:*[..]u8,value:u16) {
+    bytes.*.push(cast(u8)value); bytes.*.push(cast(u8)(value>>8));
+}
+put32 :: (bytes:*[..]u8,value:u32) {
+    put16(bytes,cast(u16)value); put16(bytes,cast(u16)(value>>16));
+}
+align4 :: (bytes:*[..]u8) { while bytes.*.count%4!=0 bytes.*.push(0); }
+header :: (bytes:*[..]u8,size:u32,kind:u16,id:u16,flags:u16=16#1030) {
+    put32(bytes,size); put32(bytes,32);
+    put16(bytes,16#ffff); put16(bytes,kind);
+    put16(bytes,16#ffff); put16(bytes,id);
+    put32(bytes,0); put16(bytes,flags); put16(bytes,0);
+    put32(bytes,0); put32(bytes,0);
+}
+fail :: (message:str)->str {
+    print("wst: could not embed application icon: {}\n",message);
+    return "#comptime { #compile_error \"could not embed wst application icon\"; }";
+}
+
+link_icon :: ()->str {
+    location:=#source_location;
+    directory:=path_dirname(location.filename);
+    source:=tprint("{}/../assets/wst.ico",directory);
+    icon:str;
+    if read_file(source,4*1024*1024)== {
+    case .Ok(bytes); icon=bytes;
+    case .Err(error); return fail(tprint("{}: {}",source,error.kind));
+    }
+    defer icon.free();
+    if icon.count<6 || u16_at(icon,0)!=0 || u16_at(icon,2)!=1 return fail("invalid ICO header");
+    count:=cast(ssize)u16_at(icon,4);
+    if count==0 || 6+16*count>icon.count return fail("invalid ICO directory");
+    resource:[..]u8; defer resource.free();
+    // A .res stream begins with the conventional null resource header.
+    header(&resource,0,0,0,0);
+    group:[..]u8; defer group.free();
+    put16(&group,0); put16(&group,1); put16(&group,cast(u16)count);
+    for i:0..count {
+        entry:=6+16*i;
+        size:=u32_at(icon,entry+8); start:=cast(ssize)u32_at(icon,entry+12);
+        if size==0 || start<6+16*count || cast(u64)start+cast(u64)size>cast(u64)icon.count
+            return fail("ICO image extends outside its file");
+        id:=cast(u16)(i+1);
+        header(&resource,size,3,id); // RT_ICON holds one image from the ICO.
+        for j:0..cast(ssize)size resource.push(icon[start+j]);
+        align4(&resource);
+        for j:0..12 group.push(icon[entry+j]);
+        put16(&group,id);
+    }
+    header(&resource,cast(u32)group.count,14,1); // RT_GROUP_ICON maps sizes to RT_ICON ids.
+    for byte:group resource.push(byte);
+    align4(&resource);
+    hash:u64;
+    for byte:resource hash=(hash*131+cast(u64)byte)%4294967291;
+    output_directory:=tprint("{}/../build",directory);
+    if create_directory(output_directory,.make_parent=true)== {
+    case .Ok;
+    case .Err(error); return fail(tprint("{}: {}",output_directory,error.kind));
+    }
+    output:=tprint("{}/wst-icon-{}.res",output_directory,hash);
+    contents:=cast(str)resource.view();
+    unchanged:=false;
+    if read_file(output,8*1024*1024)== {
+    case .Ok(existing); unchanged=existing==contents; existing.free();
+    case .Err;
+    }
+    if !unchanged {
+        if write_file(output,contents)== {
+        case .Ok;
+        case .Err(error); return fail(tprint("{}: {}",output,error.kind));
+        }
+    }
+    add_current_linker_arg(output);
+    return "";
+}
+#insert #comptime link_icon();

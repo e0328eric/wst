@@ -1,0 +1,297 @@
+//! Small, explicit SVG subset used by wst's editable application mark.
+//! Unsupported drawing attributes/commands are rejected, never ignored.
+#import "Math/Core";
+#import "Image/Core";
+#import "Image/Png";
+#import "File_System/File";
+#import "File_System/Atomic";
+#import "File_System/Directory";
+#import "File_System/Path";
+#import "Strings/Utf8";
+#import "Io";
+
+Point :: struct { x:f32; y:f32; }
+Shape :: struct {
+    kind:s32; x:f32; y:f32; width:f32; height:f32; radius:f32;
+    fill:u32; stroke:u32; filled:bool; stroked:bool; thickness:f32;
+    round_caps:bool; points:[64]Point; count:ssize;
+}
+Attribute :: struct { name:str; value:str; }
+Scene :: struct { shapes:[64]Shape; count:ssize; }
+Parser :: struct { text:str; at:ssize; }
+
+fail :: (message:str)->bool { print("wst icon: {}\n",message); return false; }
+space :: (ch:u8)->bool { return ch==32 || ch==9 || ch==10 || ch==13; }
+skip :: (p:*Parser) { while p.at<p.text.count && space(p.text[p.at]) p.at+=1; }
+name_char :: (ch:u8)->bool {
+    return (ch>=65 && ch<=90) || (ch>=97 && ch<=122) || (ch>=48 && ch<=57) || ch==45 || ch==58 || ch==95;
+}
+name :: (p:*Parser)->str {
+    start:=p.at; while p.at<p.text.count && name_char(p.text[p.at]) p.at+=1;
+    return p.text[start..p.at];
+}
+starts :: (p:*const Parser,value:str)->bool {
+    return p.at+value.count<=p.text.count && p.text[p.at..p.at+value.count]==value;
+}
+number :: (text:str,result:*f32)->bool {
+    p:Parser=.{text}; if !take_number(&p,result) return false;
+    skip(&p); return p.at==text.count;
+}
+take_number :: (p:*Parser,result:*f32)->bool {
+    skip(p); negative:=false;
+    if p.at<p.text.count && (p.text[p.at]==45 || p.text[p.at]==43) {
+        negative=p.text[p.at]==45; p.at+=1;
+    }
+    value:f32; divisor:f32=1; digits:ssize; fraction:=false;
+    while p.at<p.text.count {
+        ch:=p.text[p.at];
+        if ch==46 && !fraction { fraction=true; p.at+=1; continue; }
+        if ch<48 || ch>57 break;
+        digits+=1;
+        if fraction { divisor*=10; value+=cast(f32)(ch-48)/divisor; }
+        else value=value*10+cast(f32)(ch-48);
+        p.at+=1;
+        if value>4096 || divisor>1000000000 return false;
+    }
+    if digits==0 return false;
+    if negative value= -value;
+    result.*=value; return true;
+}
+hex :: (ch:u8)->s32 {
+    if ch>=48 && ch<=57 return cast(s32)(ch-48);
+    if ch>=65 && ch<=70 return cast(s32)(ch-65+10);
+    if ch>=97 && ch<=102 return cast(s32)(ch-97+10);
+    return -1;
+}
+color :: (text:str,value:*u32,enabled:*bool)->bool {
+    if text=="none" { enabled.*=false; return true; }
+    if text.count!=7 || text[0]!=35 return false;
+    result:u32;
+    for i:1..7 { digit:=hex(text[i]); if digit<0 return false; result=(result<<4)|cast(u32)digit; }
+    value.*=result; enabled.*=true; return true;
+}
+attribute :: (attributes:[]Attribute,key:str)->str {
+    for item:attributes if item.name==key return item.value;
+    return "";
+}
+has_attribute :: (attributes:[]Attribute,key:str)->bool {
+    for item:attributes if item.name==key return true;
+    return false;
+}
+coordinate :: (attributes:[]Attribute,key:str,value:*f32,required:bool=true)->bool {
+    text:=attribute(attributes,key);
+    if text.count==0 return !required;
+    return number(text,value);
+}
+path_points :: (text:str,shape:*Shape)->bool {
+    p:Parser=.{text}; skip(&p);
+    if p.at>=text.count || text[p.at]!=77 return false;
+    p.at+=1;
+    while true {
+        point:Point;
+        if shape.count>=64 || !take_number(&p,&point.x) return false;
+        skip(&p); if p.at<text.count && text[p.at]==44 p.at+=1;
+        if !take_number(&p,&point.y) return false;
+        shape.points[shape.count]=point; shape.count+=1;
+        skip(&p); if p.at==text.count break;
+        if text[p.at]!=76 return false;
+        p.at+=1;
+    }
+    return shape.count>=2;
+}
+parse_shape :: (kind:str,attributes:[]Attribute,shape:*Shape)->bool {
+    for item:attributes {
+        allowed:=item.name=="id" || item.name=="fill" || item.name=="stroke" || item.name=="stroke-width";
+        if kind=="rect" allowed=allowed || item.name=="x" || item.name=="y" || item.name=="width" || item.name=="height" || item.name=="rx";
+        else if kind=="circle" allowed=allowed || item.name=="cx" || item.name=="cy" || item.name=="r";
+        else if kind=="line" allowed=allowed || item.name=="x1" || item.name=="y1" || item.name=="x2" || item.name=="y2" || item.name=="stroke-linecap";
+        else if kind=="path" allowed=allowed || item.name=="d" || item.name=="stroke-linecap" || item.name=="stroke-linejoin";
+        else return fail("unsupported SVG element");
+        if !allowed return fail("unsupported SVG drawing attribute");
+    }
+    shape.filled=true; // SVG's default fill is black.
+    if has_attribute(attributes,"fill") && !color(attribute(attributes,"fill"),&shape.fill,&shape.filled) return fail("expected an RGB fill or none");
+    if has_attribute(attributes,"stroke") && !color(attribute(attributes,"stroke"),&shape.stroke,&shape.stroked) return fail("expected an RGB stroke or none");
+    shape.thickness=1;
+    if !coordinate(attributes,"stroke-width",&shape.thickness,false) || shape.thickness<=0 return fail("invalid stroke width");
+    cap:=attribute(attributes,"stroke-linecap");
+    if cap.count>0 && cap!="round" && cap!="butt" return fail("unsupported SVG line cap");
+    shape.round_caps=cap=="round";
+    if kind=="rect" {
+        shape.kind=1;
+        if !coordinate(attributes,"x",&shape.x,false) || !coordinate(attributes,"y",&shape.y,false) ||
+            !coordinate(attributes,"width",&shape.width) || !coordinate(attributes,"height",&shape.height) ||
+            !coordinate(attributes,"rx",&shape.radius,false) || shape.width<=0 || shape.height<=0 || shape.radius<0 return fail("invalid rectangle");
+        if shape.radius>shape.width/2 shape.radius=shape.width/2;
+        if shape.radius>shape.height/2 shape.radius=shape.height/2;
+    } else if kind=="circle" {
+        shape.kind=2;
+        if !coordinate(attributes,"cx",&shape.x) || !coordinate(attributes,"cy",&shape.y) || !coordinate(attributes,"r",&shape.radius) || shape.radius<=0 return fail("invalid circle");
+    } else if kind=="line" {
+        shape.kind=3; shape.count=2;
+        if !coordinate(attributes,"x1",&shape.points[0].x) || !coordinate(attributes,"y1",&shape.points[0].y) ||
+            !coordinate(attributes,"x2",&shape.points[1].x) || !coordinate(attributes,"y2",&shape.points[1].y) return fail("invalid line");
+    } else if kind=="path" {
+        shape.kind=3;
+        if shape.filled || attribute(attributes,"stroke-linejoin")!="round" || !shape.round_caps return fail("paths require fill=none and round joins/caps");
+        if !path_points(attribute(attributes,"d"),shape) return fail("paths support one absolute M followed by absolute L segments");
+    } else return fail("unsupported SVG element");
+    return true;
+}
+
+parse :: (text:str,scene:*Scene)->bool {
+    empty:Scene; scene.*=empty; p:Parser=.{text}; opened:=false; closed:=false;
+    while true {
+        skip(&p); if p.at==text.count break;
+        if starts(&p,"<!--") {
+            p.at+=4; while p.at<text.count && !starts(&p,"-->") p.at+=1;
+            if p.at==text.count return fail("unterminated SVG comment");
+            p.at+=3; continue;
+        }
+        if starts(&p,"<?xml") {
+            if opened return fail("unexpected XML declaration");
+            while p.at<text.count && !starts(&p,"?>") p.at+=1;
+            if p.at==text.count return fail("unterminated XML declaration");
+            p.at+=2; continue;
+        }
+        if starts(&p,"</svg>") { if !opened || closed return fail("unexpected closing SVG tag"); closed=true; p.at+=6; continue; }
+        if p.text[p.at]!=60 || closed return fail("expected an SVG element");
+        p.at+=1; kind:=name(&p);
+        attributes:[32]Attribute; count:ssize; self_closing:=false;
+        while true {
+            skip(&p); if p.at>=text.count return fail("unterminated SVG element");
+            if starts(&p,"/>") { p.at+=2; self_closing=true; break; }
+            if p.text[p.at]==62 { p.at+=1; break; }
+            key:=name(&p); skip(&p);
+            if key.count==0 || count>=32 || has_attribute(attributes[..count],key) || p.at>=text.count || p.text[p.at]!=61 return fail("invalid or duplicate SVG attribute");
+            p.at+=1; skip(&p);
+            if p.at>=text.count || (p.text[p.at]!=34 && p.text[p.at]!=39) return fail("expected quoted SVG attribute");
+            quote:=p.text[p.at]; p.at+=1; start:=p.at;
+            while p.at<text.count && p.text[p.at]!=quote p.at+=1;
+            if p.at==text.count return fail("unterminated SVG attribute");
+            attributes[count]=.{key,text[start..p.at]}; count+=1; p.at+=1;
+        }
+        if kind=="svg" {
+            if opened || self_closing return fail("expected one SVG root");
+            for item:attributes[..count] if item.name!="xmlns" && item.name!="width" && item.name!="height" && item.name!="viewBox" return fail("unsupported SVG root attribute");
+            if attribute(attributes[..count],"xmlns")!="http://www.w3.org/2000/svg" || attribute(attributes[..count],"viewBox")!="0 0 256 256" return fail("expected a 256 x 256 SVG viewBox");
+            width,height:f32;
+            if !coordinate(attributes[..count],"width",&width) || !coordinate(attributes[..count],"height",&height) || width!=256 || height!=256 return fail("expected a 256 x 256 icon canvas");
+            opened=true;
+        } else if kind=="title" {
+            if !opened || self_closing || count!=0 return fail("invalid SVG title");
+            while p.at<text.count && !starts(&p,"</title>") {
+                if text[p.at]==60 return fail("nested SVG title markup is unsupported");
+                p.at+=1;
+            }
+            if p.at==text.count return fail("unterminated SVG title");
+            p.at+=8;
+        } else {
+            if !opened || !self_closing || scene.count>=64 return fail("expected a self-closing icon primitive");
+            if !parse_shape(kind,attributes[..count],&scene.shapes[scene.count]) return false;
+            scene.count+=1;
+        }
+    }
+    if !opened || !closed || scene.count==0 return fail("incomplete or empty SVG");
+    return true;
+}
+
+render :: (scene:*const Scene,size:ssize)->Image {
+    image:Image;
+    if Image.image_create(size,size)== { case .Ok(value); image=value; case .Err(error); print("wst icon: {}\n",error.message); exit(1); }
+    // Four by four area samples, composited in SVG order before averaging.
+    // RGB averages only covered samples, preserving straight-alpha PNG edges.
+    factor:=256.0/cast(f32)size;
+    for y:0..size for x:0..size {
+        red,green,blue,coverage:u32;
+        for sy:0..4 for sx:0..4 {
+            px:=(cast(f32)x+(cast(f32)sx+0.5)/4)*factor;
+            py:=(cast(f32)y+(cast(f32)sy+0.5)/4)*factor;
+            ink:u32; covered:=false;
+            for i:0..scene.count {
+                next:u32;
+                if sample(&scene.shapes[i],px,py,&next) { ink=next; covered=true; }
+            }
+            if covered { red+=(ink>>16)&255; green+=(ink>>8)&255; blue+=ink&255; coverage+=1; }
+        }
+        at:=(y*size+x)*4;
+        if coverage>0 {
+            image.pixels[at]=cast(u8)((red+coverage/2)/coverage);
+            image.pixels[at+1]=cast(u8)((green+coverage/2)/coverage);
+            image.pixels[at+2]=cast(u8)((blue+coverage/2)/coverage);
+            image.pixels[at+3]=cast(u8)((coverage*255+8)/16);
+        }
+    }
+    return image;
+}
+
+#public {
+generate :: (source:str,output_directory:str)->bool {
+    text:str;
+    if read_file(source,1048577)== { case .Ok(bytes); text=bytes; case .Err; return fail("cannot read SVG source"); }
+    defer text.free();
+    if text.count>1048576 return fail("SVG source exceeds 1 MiB");
+    scene:Scene; if !parse(text,&scene) return false;
+    sizes:[10]ssize=.[16,20,24,32,40,48,64,96,128,256];
+    encoded:[10][..]u8;
+    defer { for i:0..10 encoded[i].free(); }
+    for i:0..10 {
+        image:=render(&scene,sizes[i]); defer image.destroy();
+        if image.encode_png()== { case .Ok(bytes); encoded[i]=bytes; case .Err(error); return fail(error.message); }
+    }
+    ico:[..]u8; defer ico.free();
+    put16(&ico,0); put16(&ico,1); put16(&ico,10);
+    offset:u32=166;
+    for i:0..10 {
+        dimension:=cast(u8)(sizes[i]%256);
+        ico.push(dimension); ico.push(dimension); ico.push(0); ico.push(0);
+        put16(&ico,1); put16(&ico,32);
+        put32(&ico,cast(u32)encoded[i].count); put32(&ico,offset);
+        offset+=cast(u32)encoded[i].count;
+    }
+    for i:0..10 for byte:encoded[i] ico.push(byte);
+    if create_directory(output_directory,.make_parent=true).is_err() return fail("cannot create icon output directory");
+    png_path:=path_join(output_directory,"wst.png"); defer png_path.free();
+    ico_path:=path_join(output_directory,"wst.ico"); defer ico_path.free();
+    if atomic_write(png_path,encoded[9].view()).is_err() return fail("cannot replace PNG preview");
+    if atomic_write(ico_path,ico.view()).is_err() return fail("cannot replace Windows icon");
+    print("Generated {} and {} (10 sizes, 16-256 px)\n",ico_path,png_path);
+    return true;
+}
+}
+
+absolute_value :: (value:f32)->f32 { if value<0 return -value; return value; }
+minimum :: (a:f32,b:f32)->f32 { if a<b return a; return b; }
+maximum :: (a:f32,b:f32)->f32 { if a>b return a; return b; }
+segment :: (a:Point,b:Point,x:f32,y:f32,radius:f32,round_caps:bool)->bool {
+    dx:=b.x-a.x; dy:=b.y-a.y; length:=dx*dx+dy*dy;
+    if length==0 return round_caps && (x-a.x)*(x-a.x)+(y-a.y)*(y-a.y)<=radius*radius;
+    t:=((x-a.x)*dx+(y-a.y)*dy)/length;
+    if !round_caps && (t<0 || t>1) return false;
+    if t<0 t=0; if t>1 t=1;
+    px:=x-(a.x+t*dx); py:=y-(a.y+t*dy);
+    return px*px+py*py<=radius*radius;
+}
+sample :: (shape:*const Shape,x:f32,y:f32,color:*u32)->bool {
+    distance:f32;
+    if shape.kind==1 {
+        qx:=absolute_value(x-shape.x-shape.width/2)-shape.width/2+shape.radius;
+        qy:=absolute_value(y-shape.y-shape.height/2)-shape.height/2+shape.radius;
+        px:=maximum(qx,0); py:=maximum(qy,0);
+        distance=sqrt(px*px+py*py)+minimum(maximum(qx,qy),0)-shape.radius;
+    } else if shape.kind==2 {
+        dx:=x-shape.x; dy:=y-shape.y;
+        distance=sqrt(dx*dx+dy*dy)-shape.radius;
+    } else {
+        if !shape.stroked return false;
+        for i:1..shape.count if segment(shape.points[i-1],shape.points[i],x,y,shape.thickness/2,shape.round_caps) {
+            color.*=shape.stroke; return true;
+        }
+        return false;
+    }
+    if shape.stroked && absolute_value(distance)<=shape.thickness/2 { color.*=shape.stroke; return true; }
+    if shape.filled && distance<=0 { color.*=shape.fill; return true; }
+    return false;
+}
+put16 :: (out:*[..]u8,value:u16) { out.*.push(cast(u8)value); out.*.push(cast(u8)(value>>8)); }
+put32 :: (out:*[..]u8,value:u32) { put16(out,cast(u16)value); put16(out,cast(u16)(value>>16)); }

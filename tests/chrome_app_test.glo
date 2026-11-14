@@ -1,0 +1,55 @@
+//! Restyled controls through the actual application, isolated from the user's desktop.
+C :: #import "../src/chrome.glo";
+H :: #import "chrome_app_helper.glo";
+#import "Io";
+check :: (ok:bool,message:str) { if !ok { print("FAIL: {}\n",message); H.close(); exit(1); } }
+geometry :: (tabs:s32,active:s32,result_height:*s32)->C.Geometry {
+    width,height,dpi:s32; check(H.metrics(&width,&height,&dpi)!=0,"query owned child client dimensions");
+    result_height.*=height; return C.geometry(width,C.pixels(36,dpi),dpi,tabs,active);
+}
+click :: (rect:C.Rect) { check(rect.width>0 && H.click(rect.x+rect.width/2,rect.y+rect.height/2)!=0,"click shared chrome geometry"); }
+down :: (count:s32) { for i:0..count check(H.key(40)!=0,"navigate menu using software Down"); }
+main :: () {
+    check(H.start()!=0,"launch isolated application and profile probes"); defer H.close();
+    check(H.wait(1,1,1,"P00")!=0,"default profile opens in the restyled window");
+    check(H.resize(1000,420)!=0,"make a compact window for scrolling menu coverage");
+    height:s32; g:=geometry(1,0,&height);
+    click(g.new_tab); check(H.wait(2,2,2,"P00")!=0,"plus opens an independent default-profile tab");
+    g=geometry(2,1,&height); rect:=C.tab_rect(&g,0); rect.width/=2;
+    click(rect); check(H.wait(1,2,2,"P00")!=0,"click switches to the first tab");
+    g=geometry(2,0,&height); click(C.close_rect(&g,0));
+    check(H.wait(1,1,1,"P00")!=0,"tab close retires only that shell");
+
+    g=geometry(1,0,&height); click(g.menu);
+    state:C.State; rows:s32=23; // sixteen named profiles plus seven workspace actions
+    menu:=C.menu_rect(&g,height,rows);
+    row:C.Rect=.{menu.x+C.pixels(8,g.dpi),menu.y+C.pixels(26+3*28,g.dpi),menu.width-C.pixels(16,g.dpi),C.pixels(27,g.dpi)};
+    check(C.menu_hit(&g,&state,height,rows,row.x+row.width/2,row.y+row.height/2)==3,"profile row uses shared menu hit geometry");
+    click(row); check(H.wait(2,2,2,"P02")!=0,"profile menu click launches its named shell");
+    g=geometry(2,1,&height); click(g.menu); down(3); check(H.key(13)!=0,"activate keyboard-selected profile");
+    check(H.wait(3,3,3,"P02")!=0,"keyboard menu navigation opens the selected profile");
+    g=geometry(3,2,&height); click(g.menu); down(3); check(H.key(27)!=0 && H.key(13)!=0,"dismiss menu then send ordinary Enter");
+    check(H.stable(3,3,3,"P02")!=0,"Escape dismisses menu without launching a profile or stealing later Enter");
+
+    g=geometry(3,2,&height); click(g.menu); menu=C.menu_rect(&g,height,rows);
+    check(C.visible_rows(&g,height,rows)<16,"compact menu cannot show every profile simultaneously");
+    for i:0..4 check(H.wheel(menu.x+C.pixels(12,g.dpi),menu.y+C.pixels(40,g.dpi),-120)!=0,"scroll the compact profile menu");
+    state.selected=12; C.keep_selected(&state,&g,height,rows); menu=C.menu_rect(&g,height,rows);
+    offset:=12-state.menu_scroll;
+    row=.{menu.x+C.pixels(8,g.dpi),menu.y+C.pixels(26+offset*28,g.dpi),menu.width-C.pixels(16,g.dpi),C.pixels(27,g.dpi)};
+    click(row); check(H.wait(4,4,4,"P11")!=0,"wheel-scrolled menu launches an offscreen profile");
+    g=geometry(4,3,&height); click(g.menu); down(16); check(H.key(13)!=0,"activate last profile after keyboard auto-scroll");
+    check(H.wait(5,5,5,"P15")!=0,"keyboard navigation reaches profiles beyond the visible menu");
+    g=geometry(5,4,&height); click(g.menu); down(17); check(H.key(13)!=0,"split right using menu");
+    check(H.wait(5,5,6,"P15")!=0,"split menu action creates an inherited independent shell");
+    g=geometry(5,4,&height); click(g.menu); down(19); check(H.key(13)!=0,"close the split tab using menu");
+    check(H.wait(4,4,4,"P11")!=0,"close-tab menu action closes every pane in that tab");
+
+    if H.private_desktop()!=0 {
+        g=geometry(4,3,&height); click(g.maximize); check(H.zoomed(1)!=0,"maximize control executes native maximize");
+        g=geometry(4,3,&height); click(g.maximize); check(H.zoomed(0)!=0,"restore control executes native restore");
+    } else print("Private desktop unavailable; native max/restore commands are covered by chrome_window_test.\n");
+    check(H.wait(4,4,4,"P11")!=0,"window controls preserve tab and shell state");
+    g=geometry(4,3,&height); click(g.close); check(H.closed()!=0,"window close control exits the app cleanly");
+    print("Chrome application tests passed: tab controls, profile menus, keyboard/Escape, menu scrolling, splits and window close.\n");
+}

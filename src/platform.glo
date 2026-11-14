@@ -1,0 +1,2 @@
+//! Compatibility facade; std.Gui owns the frontend.
+#export "frontend.glo";

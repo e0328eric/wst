@@ -1,0 +1,289 @@
+//! wst's original compact title rail. Geometry is shared by painting and input.
+P :: #import "platform.glo";
+C :: #import "config.glo";
+M :: #import "workspace.glo";
+U :: #import "sessions.glo";
+#import "Format";
+#import "Strings/Utf8";
+
+#public {
+Rect :: struct { x:s32; y:s32; width:s32; height:s32; }
+Geometry :: struct {
+    width:s32; height:s32; dpi:s32;
+    brand:Rect; new_tab:Rect; menu:Rect;
+    zoom_out:Rect; reset_zoom:Rect; zoom_in:Rect;
+    minimize:Rect; maximize:Rect; close:Rect;
+    tab_x:s32; tab_width:s32; tab_gap:s32; first:s32; visible:s32;
+}
+State :: struct {
+    x:s32= -1; y:s32= -1;
+    menu_open:bool; menu_scroll:s32; selected:s32;
+    pressed:s32;
+}
+Hit :: struct { kind:s32; index:s32= -1; }
+Brand :: 1; Tab :: 2; Tab_Close :: 3; New_Tab :: 4; Menu :: 5;
+Zoom_Out :: 6; Reset_Zoom :: 7; Zoom_In :: 8;
+Minimize :: 9; Maximize :: 10; Close :: 11; Drag :: 12;
+
+pixels :: (value:s32,dpi:s32)->s32 { return value*dpi/96; }
+contains :: (rect:Rect,x:s32,y:s32)->bool {
+    return rect.width>0 && rect.height>0 && x>=rect.x && x<rect.x+rect.width && y>=rect.y && y<rect.y+rect.height;
+}
+mix :: (a:u32,b:u32,amount:u32)->u32 {
+    result:u32;
+    for shift:.[0,8,16] {
+        av:=(a>>cast(u32)shift)&255; bv:=(b>>cast(u32)shift)&255;
+        result|=((av*(100-amount)+bv*amount)/100)<<cast(u32)shift;
+    }
+    return result;
+}
+geometry :: (width:s32,height:s32,dpi:s32,count:s32,active:s32)->Geometry {
+    g:Geometry; g.width=width; g.height=height; g.dpi=dpi;
+    control:=pixels(40,dpi);
+    g.close=.{width-control,0,control,height};
+    g.maximize=.{width-2*control,0,control,height};
+    g.minimize=.{width-3*control,0,control,height};
+    g.brand=.{0,0,pixels(36,dpi),height};
+    right:=g.minimize.x-pixels(8,dpi);
+    if width>=pixels(660,dpi) {
+        right-=pixels(100,dpi);
+        g.zoom_out=.{right,pixels(5,dpi),pixels(25,dpi),height-pixels(10,dpi)};
+        g.reset_zoom=.{right+pixels(25,dpi),pixels(5,dpi),pixels(46,dpi),height-pixels(10,dpi)};
+        g.zoom_in=.{right+pixels(71,dpi),pixels(5,dpi),pixels(25,dpi),height-pixels(10,dpi)};
+        right-=pixels(10,dpi);
+    }
+    g.tab_x=pixels(40,dpi); g.tab_gap=pixels(4,dpi);
+    available:=right-g.tab_x-pixels(78,dpi);
+    if available<pixels(32,dpi) available=pixels(32,dpi);
+    g.visible=available/pixels(92,dpi);
+    if g.visible<1 g.visible=1;
+    if g.visible>count g.visible=count;
+    if g.visible>0 {
+        g.tab_width=(available-(g.visible-1)*g.tab_gap)/g.visible;
+        if g.tab_width>pixels(190,dpi) g.tab_width=pixels(190,dpi);
+        g.first=active-g.visible+1;
+        if g.first<0 g.first=0;
+        if g.first>count-g.visible g.first=count-g.visible;
+    }
+    after:=g.tab_x+g.visible*(g.tab_width+g.tab_gap)+pixels(4,dpi);
+    g.new_tab=.{after,pixels(4,dpi),pixels(28,dpi),height-pixels(8,dpi)};
+    g.menu=.{after+pixels(28,dpi),pixels(4,dpi),pixels(22,dpi),height-pixels(8,dpi)};
+    return g;
+}
+tab_rect :: (g:*const Geometry,index:s32)->Rect {
+    if index<g.first || index>=g.first+g.visible return .{};
+    return .{g.tab_x+(index-g.first)*(g.tab_width+g.tab_gap),pixels(5,g.dpi),g.tab_width,g.height-pixels(10,g.dpi)};
+}
+close_rect :: (g:*const Geometry,index:s32)->Rect {
+    rect:=tab_rect(g,index);
+    if rect.width<pixels(80,g.dpi) return .{};
+    return .{rect.x+rect.width-pixels(25,g.dpi),rect.y,pixels(24,g.dpi),rect.height};
+}
+hit :: (g:*const Geometry,x:s32,y:s32)->Hit {
+    if x<0 || x>=g.width || y<0 || y>=g.height return .{};
+    if contains(g.close,x,y) return .{Close};
+    if contains(g.maximize,x,y) return .{Maximize};
+    if contains(g.minimize,x,y) return .{Minimize};
+    if contains(g.brand,x,y) return .{Brand};
+    if contains(g.new_tab,x,y) return .{New_Tab};
+    if contains(g.menu,x,y) return .{Menu};
+    if contains(g.zoom_out,x,y) return .{Zoom_Out};
+    if contains(g.reset_zoom,x,y) return .{Reset_Zoom};
+    if contains(g.zoom_in,x,y) return .{Zoom_In};
+    for index:g.first..g.first+g.visible {
+        if contains(close_rect(g,index),x,y) return .{Tab_Close,index};
+        if contains(tab_rect(g,index),x,y) return .{Tab,index};
+    }
+    return .{Drag};
+}
+menu_rect :: (g:*const Geometry,height:s32,rows:s32)->Rect {
+    width:=pixels(264,g.dpi);
+    if width>g.width-pixels(16,g.dpi) width=g.width-pixels(16,g.dpi);
+    x:=g.menu.x+g.menu.width-width;
+    if x<pixels(8,g.dpi) x=pixels(8,g.dpi);
+    y:=g.height+pixels(6,g.dpi);
+    available:=height-y-pixels(8,g.dpi);
+    h:=pixels(32+28*rows,g.dpi);
+    if h>available h=available;
+    return .{x,y,width,h};
+}
+visible_rows :: (g:*const Geometry,height:s32,rows:s32)->s32 {
+    rect:=menu_rect(g,height,rows);
+    n:=(rect.height-pixels(32,g.dpi))/pixels(28,g.dpi);
+    if n<1 n=1;
+    if n>rows n=rows;
+    return n;
+}
+menu_hit :: (g:*const Geometry,state:*const State,height:s32,rows:s32,x:s32,y:s32)->s32 {
+    rect:=menu_rect(g,height,rows);
+    if !contains(rect,x,y) || y<rect.y+pixels(26,g.dpi) return -1;
+    index:=(y-rect.y-pixels(26,g.dpi))/pixels(28,g.dpi);
+    if index>=visible_rows(g,height,rows) return -1;
+    index+=state.menu_scroll;
+    if index>=rows return -1;
+    return index;
+}
+keep_selected :: (state:*State,g:*const Geometry,height:s32,rows:s32) {
+    if state.selected<0 state.selected=rows-1;
+    if state.selected>=rows state.selected=0;
+    visible:=visible_rows(g,height,rows);
+    if state.selected<state.menu_scroll state.menu_scroll=state.selected;
+    if state.selected>=state.menu_scroll+visible state.menu_scroll=state.selected-visible+1;
+    if state.menu_scroll>rows-visible state.menu_scroll=rows-visible;
+    if state.menu_scroll<0 state.menu_scroll=0;
+}
+
+/// Lua maps have no stable traversal order; the picker sorts its labels only.
+/// Stored profile indices and keyboard targets retain their original meaning.
+profile_at :: (cfg:*const C.Config,position:s32)->s32 {
+    if position<0 || position>=cfg.profile_count return -1;
+    order:[32]s32;
+    for i:0..cfg.profile_count order[i]=cast(s32)i;
+    for i:1..cfg.profile_count {
+        value:=order[i]; j:=i;
+        while j>0 {
+            a:=&cfg.profiles[value]; b:=&cfg.profiles[order[j-1]];
+            before:=text_before(a.name,b.name) || (a.name==b.name && text_before(a.id,b.id));
+            if !before break;
+            order[j]=order[j-1]; j-=1;
+        }
+        order[j]=value;
+    }
+    return order[position];
+}
+
+draw_header :: (g:*const Geometry,state:*const State,book:*const U.Book,workspace:*const M.Workspace,cfg:*const C.Config,base_size:s32,failed:bool) {
+    d:=g.dpi; ink:=cfg.foreground;
+    rail:=mix(cfg.background,ink,8); border:=mix(cfg.background,ink,15);
+    muted:=mix(cfg.background,ink,60); hover:=mix(rail,ink,7);
+    P.rect(0,0,g.width,g.height,rail);
+    P.rect(0,g.height-1,g.width,1,border);
+    h:=hit(g,state.x,state.y);
+    if h.kind==Brand P.rounded_rect(pixels(4,d),pixels(4,d),pixels(28,d),g.height-pixels(8,d),pixels(6,d),hover);
+    P.line(pixels(11,d),pixels(13,d),pixels(17,d),pixels(18,d),1.6*cast(f32)d/96,cfg.accent);
+    P.line(pixels(17,d),pixels(18,d),pixels(11,d),pixels(23,d),1.6*cast(f32)d/96,cfg.accent);
+    P.line(pixels(21,d),pixels(23,d),pixels(27,d),pixels(23,d),1.6*cast(f32)d/96,cfg.palette[6]);
+    for index:g.first..g.first+g.visible {
+        rect:=tab_rect(g,index); selected:=index==workspace.active;
+        over:=contains(rect,state.x,state.y);
+        color:=muted;
+        if selected {
+            P.rounded_rect(rect.x,rect.y,rect.width,rect.height,pixels(7,d),mix(border,cfg.accent,8));
+            P.rounded_rect(rect.x+1,rect.y+1,rect.width-2,rect.height-2,pixels(7,d)-1,mix(rail,cfg.accent,8));
+            color=ink;
+        } else if over P.rounded_rect(rect.x,rect.y,rect.width,rect.height,pixels(7,d),hover);
+        id:=workspace.tabs[index].focused;
+        caption:str=cfg.shell; activity:=false;
+        if id>0 {
+            pane:=&book.panes[id-1]; caption=pane.launch.name;
+            if pane.launch.profile_id.count==0 && pane.terminal.title.count>0 caption=cast(str)pane.terminal.title.view();
+            activity= !selected && P.ticks()-pane.last_output<900;
+        }
+        marker:=mix(rail,ink,30); if selected || activity marker=cfg.accent;
+        P.rounded_rect(rect.x+pixels(10,d),rect.y+(rect.height-pixels(8,d))/2,pixels(3,d),pixels(8,d),pixels(1,d),marker);
+        close:=close_rect(g,index);
+        width:=rect.width-pixels(27,d); if close.width>0 width-=close.width;
+        P.draw_ui_label(rect.x+pixels(23,d),rect.y,width,rect.height,friendly(caption).c_string(),color);
+        if close.width>0 && (selected || over) {
+            if h.kind==Tab_Close && h.index==index P.rounded_rect(close.x+pixels(2,d),close.y+pixels(4,d),close.width-pixels(6,d),close.height-pixels(8,d),pixels(4,d),mix(rail,ink,15));
+            cross(close,d,muted);
+        }
+    }
+    button(g.new_tab,h.kind==New_Tab,hover,d); plus(g.new_tab,d,muted);
+    button(g.menu,h.kind==Menu || state.menu_open,hover,d); chevron(g.menu,d,muted);
+    if g.zoom_out.width>0 {
+        button(g.zoom_out,h.kind==Zoom_Out,hover,d); minus(g.zoom_out,d,muted);
+        button(g.zoom_in,h.kind==Zoom_In,hover,d); plus(g.zoom_in,d,muted);
+        if failed P.draw_ui_label(g.reset_zoom.x,g.reset_zoom.y,g.reset_zoom.width,g.reset_zoom.height,"!",16#ff687e);
+        else P.draw_ui_label(g.reset_zoom.x,g.reset_zoom.y,g.reset_zoom.width,g.reset_zoom.height,tprint("{}%",cfg.font_size*100/base_size).c_string(),muted);
+    } else if failed P.rounded_rect(g.menu.x+pixels(15,d),g.menu.y+pixels(3,d),pixels(4,d),pixels(4,d),pixels(2,d),16#ff687e);
+    if h.kind==Minimize P.rect(g.minimize.x,0,g.minimize.width,g.height,hover);
+    if h.kind==Maximize P.rect(g.maximize.x,0,g.maximize.width,g.height,hover);
+    if h.kind==Close P.rect(g.close.x,0,g.close.width,g.height,16#be465b);
+    minus(g.minimize,d,muted);
+    r:=g.maximize; x:=r.x+r.width/2-pixels(4,d); y:=g.height/2-pixels(4,d); size:=pixels(8,d);
+    if P.window_maximized()!=0 {
+        outline(x+pixels(2,d),y-pixels(2,d),size,size,muted,pixels(1,d));
+        P.rect(x-1,y-1,size+2,size+2,rail);
+    }
+    outline(x,y,size,size,muted,pixels(1,d));
+    cross(g.close,d,muted);
+}
+
+draw_menu :: (g:*const Geometry,state:*const State,cfg:*const C.Config,height:s32,failed:bool) {
+    if !state.menu_open return;
+    rows:=cfg.profile_count+7; d:=g.dpi;
+    rect:=menu_rect(g,height,rows); surface:=mix(cfg.background,cfg.foreground,10);
+    P.rounded_rect(rect.x-pixels(2,d),rect.y+pixels(3,d),rect.width+pixels(4,d),rect.height+pixels(3,d),pixels(10,d),mix(cfg.background,0,45));
+    P.rounded_rect(rect.x,rect.y,rect.width,rect.height,pixels(8,d),mix(surface,cfg.foreground,18));
+    P.rounded_rect(rect.x+1,rect.y+1,rect.width-2,rect.height-2,pixels(8,d)-1,surface);
+    heading:str="WORKSPACE"; if failed heading="WORKSPACE  ·  Config error";
+    P.draw_ui_label(rect.x+pixels(14,d),rect.y+pixels(3,d),rect.width-pixels(28,d),pixels(21,d),heading.c_string(),mix(surface,cfg.foreground,55));
+    visible:=visible_rows(g,height,rows);
+    for i:0..visible {
+        row:=cast(s32)i+state.menu_scroll;
+        y:=rect.y+pixels(26+28*cast(s32)i,d);
+        if i>0 && (row==1 || row==cfg.profile_count+1 || row==cfg.profile_count+4)
+            P.rect(rect.x+pixels(14,d),y-1,rect.width-pixels(28,d),1,mix(surface,cfg.foreground,12));
+        if row==state.selected P.rounded_rect(rect.x+pixels(5,d),y,rect.width-pixels(10,d),pixels(27,d),pixels(5,d),mix(surface,cfg.accent,18));
+        label:str="New tab"; detail:str="default";
+        if row>0 && row<=cfg.profile_count {
+            profile:=&cfg.profiles[profile_at(cfg,row-1)]; label=profile.name; detail="";
+            if profile.id==cfg.default_profile detail="default";
+        } else if row==cfg.profile_count+1 { label="Split right"; detail=""; }
+        else if row==cfg.profile_count+2 { label="Split below"; detail=""; }
+        else if row==cfg.profile_count+3 { label="Close tab"; detail=""; }
+        else if row==cfg.profile_count+4 { label="Zoom out"; detail=""; }
+        else if row==cfg.profile_count+5 { label="Reset zoom"; detail="100%"; }
+        else if row==cfg.profile_count+6 { label="Zoom in"; detail=""; }
+        text_width:=rect.width-pixels(30,d); if detail.count>0 text_width-=pixels(55,d);
+        P.draw_ui_label(rect.x+pixels(14,d),y,text_width,pixels(27,d),label.c_string(),cfg.foreground);
+        if detail.count>0 P.draw_ui_label(rect.x+rect.width-pixels(62,d),y,pixels(52,d),pixels(27,d),detail.c_string(),mix(surface,cfg.foreground,55));
+    }
+    if visible<rows {
+        track:=rect.height-pixels(34,d); thumb:=track*visible/rows;
+        top:=(track-thumb)*state.menu_scroll/(rows-visible);
+        P.rounded_rect(rect.x+rect.width-pixels(4,d),rect.y+pixels(27,d)+top,pixels(2,d),thumb,pixels(1,d),cfg.accent);
+    }
+}
+}
+
+friendly :: (caption:str)->str {
+    if caption=="powershell" return "PowerShell";
+    if caption=="nushell" return "Nushell";
+    if caption=="cmd" return "Command Prompt";
+    if caption.count>2 && caption[1]==#char ":" {
+        start:ssize;
+        for i:0..caption.count if caption[i]==#char "\\" || caption[i]==#char "/" start=i+1;
+        if start<caption.count return caption[start..];
+    }
+    return caption;
+}
+text_before :: (a:str,b:str)->bool {
+    count:=a.count; if b.count<count count=b.count;
+    for i:0..count if a[i]!=b[i] return a[i]<b[i];
+    return a.count<b.count;
+}
+button :: (r:Rect,hover:bool,color:u32,d:s32) { if hover P.rounded_rect(r.x,r.y,r.width,r.height,pixels(5,d),color); }
+minus :: (r:Rect,d:s32,color:u32) {
+    x:=r.x+r.width/2; y:=r.y+r.height/2;
+    P.line(x-pixels(4,d),y,x+pixels(4,d),y,cast(f32)d/96,color);
+}
+plus :: (r:Rect,d:s32,color:u32) {
+    minus(r,d,color); x:=r.x+r.width/2; y:=r.y+r.height/2;
+    P.line(x,y-pixels(4,d),x,y+pixels(4,d),cast(f32)d/96,color);
+}
+cross :: (r:Rect,d:s32,color:u32) {
+    x:=r.x+r.width/2; y:=r.y+r.height/2; s:=pixels(3,d);
+    P.line(x-s,y-s,x+s,y+s,cast(f32)d/96,color); P.line(x+s,y-s,x-s,y+s,cast(f32)d/96,color);
+}
+chevron :: (r:Rect,d:s32,color:u32) {
+    x:=r.x+r.width/2; y:=r.y+r.height/2;
+    P.line(x-pixels(3,d),y-pixels(1,d),x,y+pixels(2,d),cast(f32)d/96,color);
+    P.line(x,y+pixels(2,d),x+pixels(3,d),y-pixels(1,d),cast(f32)d/96,color);
+}
+outline :: (x:s32,y:s32,w:s32,h:s32,color:u32,thickness:s32) {
+    stroke:=thickness; if stroke<1 stroke=1;
+    P.rect(x,y,w,stroke,color); P.rect(x,y+h-stroke,w,stroke,color);
+    P.rect(x,y,stroke,h,color); P.rect(x+w-stroke,y,stroke,h,color);
+}

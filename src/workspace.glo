@@ -1,0 +1,429 @@
+//! Tabs and binary split trees. Pane ids refer to independently owned runtimes.
+//! This model owns no memory, operating-system handles, or terminal buffers.
+
+#public {
+
+Max_Tabs :: 16;
+Max_Panes :: 32;
+Axis_Vertical :: 1; // A vertical divider creates left and right panes.
+Axis_Horizontal :: 2; // A horizontal divider creates top and bottom panes.
+
+Rect :: struct { x:s32; y:s32; width:s32; height:s32; }
+Node :: struct { used:bool; pane:s32; first:s32; second:s32; axis:s32; ratio:s32=5000; }
+Divider :: struct { node:s32= -1; axis:s32; rect:Rect; }
+Tab :: struct { root:s32; focused:s32; nodes:[63]Node; }
+Workspace :: struct { tabs:[16]Tab; count:s32; active:s32; }
+
+/// Create and activate a tab. Pane ids must be unique and in 1..32.
+new_tab :: (w:*Workspace,pane:s32)->bool {
+    if w.count>=Max_Tabs || !available(w,pane) return false;
+    tab:Tab;
+    tab.root=0; tab.focused=pane;
+    tab.nodes[0]=.{.used=true,.pane=pane};
+    w.tabs[w.count]=tab;
+    w.active=w.count; w.count+=1;
+    return true;
+}
+
+/// Split the focused leaf and focus the new right/bottom pane.
+split :: (w:*Workspace,pane:s32,axis:s32)->bool {
+    if w.count<=0 || !available(w,pane) ||
+       (axis!=Axis_Vertical && axis!=Axis_Horizontal) return false;
+    tab:=&w.tabs[w.active];
+    leaf:=find_leaf(tab,tab.focused);
+    if leaf<0 return false;
+    first:s32= -1; second:s32= -1;
+    for i:0..63 {
+        if !tab.nodes[i].used {
+            if first<0 first=cast(s32)i;
+            else { second=cast(s32)i; break; }
+        }
+    }
+    if second<0 return false;
+    previous:=tab.nodes[leaf].pane;
+    tab.nodes[first]=.{.used=true,.pane=previous};
+    tab.nodes[second]=.{.used=true,.pane=pane};
+    tab.nodes[leaf]=.{.used=true,.first=first,.second=second,.axis=axis};
+    tab.focused=pane;
+    return true;
+}
+
+/// Remove a leaf and collapse its parent. Removing the last leaf removes its tab.
+close_pane :: (w:*Workspace,pane:s32)->bool {
+    tab_index:=pane_tab(w,pane);
+    if tab_index<0 return false;
+    tab:=&w.tabs[tab_index];
+    leaf:=find_leaf(tab,pane);
+    if leaf==tab.root return close_tab(w,tab_index);
+    parent:s32= -1;
+    for i:0..63 {
+        node:=tab.nodes[i];
+        if node.used && node.axis!=0 && (node.first==leaf || node.second==leaf) {
+            parent=cast(s32)i; break;
+        }
+    }
+    if parent<0 return false;
+    sibling:=tab.nodes[parent].first;
+    if sibling==leaf sibling=tab.nodes[parent].second;
+    if tab.root==parent tab.root=sibling;
+    else {
+        for i:0..63 {
+            node:=&tab.nodes[i];
+            if !node.used || node.axis==0 continue;
+            if node.first==parent node.first=sibling;
+            else if node.second==parent node.second=sibling;
+        }
+    }
+    empty:Node;
+    tab.nodes[leaf]=empty; tab.nodes[parent]=empty;
+    if tab.focused==pane tab.focused=first_pane(tab,sibling);
+    return true;
+}
+
+close_tab :: (w:*Workspace,index:s32)->bool {
+    if index<0 || index>=w.count return false;
+    i:=index;
+    while i+1<w.count { w.tabs[i]=w.tabs[i+1]; i+=1; }
+    w.count-=1;
+    empty:Tab; w.tabs[w.count]=empty;
+    if index<w.active w.active-=1;
+    if w.active>=w.count w.active=w.count-1;
+    if w.count==0 w.active=0;
+    return true;
+}
+
+/// Return whether focus changed. Invalid targets leave the workspace untouched.
+activate :: (w:*Workspace,index:s32)->bool {
+    if index<0 || index>=w.count || index==w.active return false;
+    w.active=index;
+    return true;
+}
+
+cycle_tab :: (w:*Workspace,delta:s32)->bool {
+    if w.count<=1 return false;
+    next:=wrapped(w.active,delta,w.count);
+    return activate(w,next);
+}
+
+focused :: (w:*const Workspace)->s32 {
+    if w.count<=0 return 0;
+    return w.tabs[w.active].focused;
+}
+
+/// Find a pane's tab, or -1 when the id is not present.
+pane_tab :: (w:*const Workspace,pane:s32)->s32 {
+    if pane<1 || pane>Max_Panes return -1;
+    for i:0..w.count if find_leaf(&w.tabs[i],pane)>=0 return cast(s32)i;
+    return -1;
+}
+
+pane_count :: (w:*const Workspace)->s32 {
+    result:s32;
+    for i:0..w.count for node:w.tabs[i].nodes if node.used && node.axis==0 result+=1;
+    return result;
+}
+
+/// Focus a pane, activating its tab if necessary; returns whether focus changed.
+focus_pane :: (w:*Workspace,pane:s32)->bool {
+    index:=pane_tab(w,pane);
+    if index<0 return false;
+    changed:=w.active!=index || w.tabs[index].focused!=pane;
+    w.active=index; w.tabs[index].focused=pane;
+    return changed;
+}
+
+/// Enumerate one tab from left/top to right/bottom in split-tree order.
+pane_order :: (w:*const Workspace,index:s32,ids:*[32]s32)->s32 {
+    if index<0 || index>=w.count return 0;
+    count:s32;
+    collect(&w.tabs[index],w.tabs[index].root,ids,&count);
+    return count;
+}
+
+cycle_pane :: (w:*Workspace,delta:s32)->bool {
+    if w.count<=0 return false;
+    ids:[32]s32;
+    count:=pane_order(w,w.active,&ids);
+    if count<=1 return false;
+    current:s32;
+    for i:0..count if ids[i]==w.tabs[w.active].focused current=cast(s32)i;
+    next:=ids[wrapped(current,delta,count)];
+    return focus_pane(w,next);
+}
+
+/// Write this tab's pane rectangles, indexed by pane id minus one. Other tabs'
+/// entries are retained so callers may arrange every tab into a shared array.
+arrange :: (w:*const Workspace,index:s32,rect:Rect,gap:s32,rects:*[32]Rect) {
+    if index<0 || index>=w.count return;
+    bounds:=rect;
+    if bounds.width<0 bounds.width=0;
+    if bounds.height<0 bounds.height=0;
+    if gap<0 gap=0;
+    divide(&w.tabs[index],w.tabs[index].root,bounds,gap,rects);
+}
+
+/// Divider hit testing is confined to the active tab and excludes pane cells.
+divider_at :: (w:*const Workspace,bounds:Rect,gap:s32,x:s32,y:s32)->Divider {
+    empty:Divider;
+    if w.count<=0 return empty;
+    return hit_divider(&w.tabs[w.active],w.tabs[w.active].root,safe_rect(bounds),safe_gap(gap),x,y);
+}
+
+/// Resolve a still-reachable split in the active tab; leaves are never dividers.
+divider_geometry :: (w:*const Workspace,node:s32,bounds:Rect,gap:s32)->Divider {
+    empty:Divider;
+    if w.count<=0 || node<0 || node>=63 return empty;
+    tab:=&w.tabs[w.active];
+    if !tab.nodes[node].used || tab.nodes[node].axis==0 return empty;
+    region:Rect;
+    if !find_region(tab,tab.root,node,safe_rect(bounds),safe_gap(gap),&region) return empty;
+    first,second,bar:Rect;
+    partition(tab.nodes[node],region,safe_gap(gap),&first,&second,&bar);
+    return .{node,tab.nodes[node].axis,bar};
+}
+
+/// Position is the physical leading edge of the divider, after subtracting the
+/// pointer's grab offset. Preserve all other split ratios, focus and tab state.
+drag_divider :: (w:*Workspace,node:s32,bounds:Rect,gap:s32,position:s32,
+    min_width:s32,min_height:s32)->bool {
+    if w.count<=0 || node<0 || node>=63 return false;
+    tab:=&w.tabs[w.active];
+    if !tab.nodes[node].used || tab.nodes[node].axis==0 return false;
+    gap=safe_gap(gap);
+    region:Rect;
+    if !find_region(tab,tab.root,node,safe_rect(bounds),gap,&region) return false;
+    first,second,bar:Rect;
+    split_node:=tab.nodes[node];
+    partition(split_node,region,gap,&first,&second,&bar);
+    extent,origin,current:s32;
+    a,b:Rect;
+    a=minimum_size(tab,split_node.first,safe_gap(min_width),safe_gap(min_height),gap);
+    b=minimum_size(tab,split_node.second,safe_gap(min_width),safe_gap(min_height),gap);
+    low,second_min:s64;
+    if split_node.axis==Axis_Vertical {
+        extent=region.width-bar.width; origin=region.x; current=first.width;
+        low=cast(s64)a.width; second_min=cast(s64)b.width;
+    } else {
+        extent=region.height-bar.height; origin=region.y; current=first.height;
+        low=cast(s64)a.height; second_min=cast(s64)b.height;
+    }
+    if extent<=0 return false;
+    high:=cast(s64)extent-second_min;
+    if low>high {
+        // A tiny outer window cannot honor every minimum. Divide its remaining
+        // pixels in proportion to the two subtree requirements without negatives.
+        total:=low+second_min;
+        low=cast(s64)extent*low/total;
+        high=low;
+    }
+    desired:=cast(s64)position-cast(s64)origin;
+    if desired<low desired=low;
+    if desired>high desired=high;
+    // Choose a representable ratio whose rounded geometry respects both ends.
+    minimum_ratio:=(low*10000+cast(s64)extent-1)/cast(s64)extent;
+    maximum_ratio:=((high+1)*10000-1)/cast(s64)extent;
+    if minimum_ratio>maximum_ratio return false;
+    ratio:=(desired*10000+cast(s64)extent-1)/cast(s64)extent;
+    if ratio<minimum_ratio ratio=minimum_ratio;
+    if ratio>maximum_ratio ratio=maximum_ratio;
+    if ratio>10000 ratio=10000;
+    if ratio<0 ratio=0;
+    next:=cast(s32)(cast(s64)extent*ratio/10000);
+    if next==current return false;
+    tab.nodes[node].ratio=cast(s32)ratio;
+    return true;
+}
+
+contains :: (rect:Rect,x:s32,y:s32)->bool {
+    return rect.width>0 && rect.height>0 && cast(s64)x>=cast(s64)rect.x && cast(s64)y>=cast(s64)rect.y &&
+        cast(s64)x<cast(s64)rect.x+cast(s64)rect.width && cast(s64)y<cast(s64)rect.y+cast(s64)rect.height;
+}
+
+/// Hit testing includes only the visible tab; gaps never select a pane.
+pane_at :: (w:*const Workspace,rects:*const [32]Rect,x:s32,y:s32)->s32 {
+    if w.count<=0 return 0;
+    ids:[32]s32;
+    count:=pane_order(w,w.active,&ids);
+    for i:0..count if contains(rects.*[ids[i]-1],x,y) return ids[i];
+    return 0;
+}
+
+/// Move to a neighboring pane in one cardinal direction. Prefer a pane whose
+/// perpendicular span overlaps, then the closest forward center and offset.
+focus_direction :: (w:*Workspace,rects:*const [32]Rect,dx:s32,dy:s32)->bool {
+    if w.count<=0 || (dx==0 && dy==0) || (dx!=0 && dy!=0) return false;
+    current:=focused(w);
+    source:=rects.*[current-1];
+    if source.width<=0 || source.height<=0 return false;
+    sx:=2*cast(s64)source.x+cast(s64)source.width;
+    sy:=2*cast(s64)source.y+cast(s64)source.height;
+    ids:[32]s32;
+    count:=pane_order(w,w.active,&ids);
+    best:s32; best_aligned:=false; best_major,best_minor:s64;
+    for i:0..count {
+        pane:=ids[i];
+        if pane==current continue;
+        target:=rects.*[pane-1];
+        if target.width<=0 || target.height<=0 continue;
+        tx:=2*cast(s64)target.x+cast(s64)target.width;
+        ty:=2*cast(s64)target.y+cast(s64)target.height;
+        major,minor:s64; aligned:bool;
+        if dx!=0 {
+            major=tx-sx;
+            if dx<0 major= -major;
+            minor=ty-sy;
+            aligned=cast(s64)source.y<cast(s64)target.y+cast(s64)target.height &&
+                cast(s64)target.y<cast(s64)source.y+cast(s64)source.height;
+        } else {
+            major=ty-sy;
+            if dy<0 major= -major;
+            minor=tx-sx;
+            aligned=cast(s64)source.x<cast(s64)target.x+cast(s64)target.width &&
+                cast(s64)target.x<cast(s64)source.x+cast(s64)source.width;
+        }
+        if major<=0 continue;
+        if minor<0 minor= -minor;
+        if best==0 || (aligned && !best_aligned) ||
+           (aligned==best_aligned && (major<best_major || (major==best_major && minor<best_minor))) {
+            best=pane; best_aligned=aligned; best_major=major; best_minor=minor;
+        }
+    }
+    if best==0 return false;
+    return focus_pane(w,best);
+}
+
+}
+
+available :: (w:*const Workspace,pane:s32)->bool {
+    return pane>=1 && pane<=Max_Panes && pane_tab(w,pane)<0;
+}
+
+find_leaf :: (tab:*const Tab,pane:s32)->s32 {
+    for i:0..63 {
+        node:=tab.nodes[i];
+        if node.used && node.axis==0 && node.pane==pane return cast(s32)i;
+    }
+    return -1;
+}
+
+first_pane :: (tab:*const Tab,index:s32)->s32 {
+    at:=index;
+    while tab.nodes[at].axis!=0 at=tab.nodes[at].first;
+    return tab.nodes[at].pane;
+}
+
+wrapped :: (current:s32,delta:s32,count:s32)->s32 {
+    next:=(cast(s64)current+cast(s64)delta)%cast(s64)count;
+    if next<0 next+=cast(s64)count;
+    return cast(s32)next;
+}
+
+collect :: (tab:*const Tab,index:s32,ids:*[32]s32,count:*s32) {
+    node:=tab.nodes[index];
+    if node.axis==0 { ids.*[count.*]=node.pane; count.*+=1; return; }
+    collect(tab,node.first,ids,count);
+    collect(tab,node.second,ids,count);
+}
+
+coordinate :: (value:s64)->s32 {
+    if value< -2147483648 return -2147483648;
+    if value>2147483647 return 2147483647;
+    return cast(s32)value;
+}
+
+divide :: (tab:*const Tab,index:s32,rect:Rect,gap:s32,rects:*[32]Rect) {
+    node:=tab.nodes[index];
+    if node.axis==0 { rects.*[node.pane-1]=rect; return; }
+    first,second,bar:Rect;
+    partition(node,rect,gap,&first,&second,&bar);
+    divide(tab,node.first,first,gap,rects);
+    divide(tab,node.second,second,gap,rects);
+}
+
+safe_gap :: (value:s32)->s32 { if value<0 return 0; return value; }
+safe_rect :: (rect:Rect)->Rect {
+    result:=rect;
+    result.width=safe_gap(result.width); result.height=safe_gap(result.height);
+    return result;
+}
+node_ratio :: (node:Node)->s32 {
+    if node.ratio<0 return 0;
+    if node.ratio>10000 return 10000;
+    return node.ratio;
+}
+
+partition :: (node:Node,rect:Rect,gap:s32,first:*Rect,second:*Rect,bar:*Rect) {
+    first.*=rect; second.*=rect; bar.*=rect;
+    separation:=gap;
+    if node.axis==Axis_Vertical {
+        if separation>rect.width separation=rect.width;
+        remaining:=rect.width-separation;
+        first.width=cast(s32)(cast(s64)remaining*cast(s64)node_ratio(node)/10000);
+        second.width=remaining-first.width;
+        second.x=coordinate(cast(s64)rect.x+cast(s64)first.width+cast(s64)separation);
+        bar.x=coordinate(cast(s64)rect.x+cast(s64)first.width); bar.width=separation;
+    } else {
+        if separation>rect.height separation=rect.height;
+        remaining:=rect.height-separation;
+        first.height=cast(s32)(cast(s64)remaining*cast(s64)node_ratio(node)/10000);
+        second.height=remaining-first.height;
+        second.y=coordinate(cast(s64)rect.y+cast(s64)first.height+cast(s64)separation);
+        bar.y=coordinate(cast(s64)rect.y+cast(s64)first.height); bar.height=separation;
+    }
+}
+
+find_region :: (tab:*const Tab,index:s32,target:s32,rect:Rect,gap:s32,result:*Rect)->bool {
+    if index==target { result.*=rect; return true; }
+    node:=tab.nodes[index];
+    if node.axis==0 return false;
+    first,second,bar:Rect;
+    partition(node,rect,gap,&first,&second,&bar);
+    return find_region(tab,node.first,target,first,gap,result) ||
+        find_region(tab,node.second,target,second,gap,result);
+}
+
+hit_divider :: (tab:*const Tab,index:s32,rect:Rect,gap:s32,x:s32,y:s32)->Divider {
+    empty:Divider;
+    node:=tab.nodes[index];
+    if node.axis==0 return empty;
+    first,second,bar:Rect;
+    partition(node,rect,gap,&first,&second,&bar);
+    if contains(bar,x,y) return .{index,node.axis,bar};
+    if contains(first,x,y) return hit_divider(tab,node.first,first,gap,x,y);
+    if contains(second,x,y) return hit_divider(tab,node.second,second,gap,x,y);
+    return empty;
+}
+
+// Honor the retained descendant ratios as well as their basic sum/max minima.
+// This avoids squeezing an already unequal nested split below its leaf limits.
+minimum_size :: (tab:*const Tab,index:s32,width:s32,height:s32,gap:s32)->Rect {
+    node:=tab.nodes[index];
+    if node.axis==0 return .{0,0,width,height};
+    a:=minimum_size(tab,node.first,width,height,gap);
+    b:=minimum_size(tab,node.second,width,height,gap);
+    result:Rect;
+    if node.axis==Axis_Vertical {
+        result.width=required_extent(a.width,b.width,node_ratio(node),gap);
+        result.height=a.height; if b.height>result.height result.height=b.height;
+    } else {
+        result.height=required_extent(a.height,b.height,node_ratio(node),gap);
+        result.width=a.width; if b.width>result.width result.width=b.width;
+    }
+    return result;
+}
+
+required_extent :: (a:s32,b:s32,ratio:s32,gap:s32)->s32 {
+    extent:=cast(s64)a+cast(s64)b;
+    if a>0 {
+        if ratio==0 return 2147483647;
+        required:=(cast(s64)a*10000+cast(s64)ratio-1)/cast(s64)ratio;
+        if required>extent extent=required;
+    }
+    if b>0 {
+        if ratio==10000 return 2147483647;
+        part:=10000-ratio;
+        required:=(cast(s64)b*10000+cast(s64)part-1)/cast(s64)part;
+        if required>extent extent=required;
+    }
+    return coordinate(extent+cast(s64)gap);
+}

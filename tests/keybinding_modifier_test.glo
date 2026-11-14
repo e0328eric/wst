@@ -1,0 +1,32 @@
+//! Exact modifier routing through the real std.Gui event pump.
+P :: #import "../src/platform.glo";
+H :: #import "keybinding_native_helper.glo";
+#import "Io";
+
+drain :: () { event:P.Event; while P.next_event(&event)!=0 {} }
+expect :: (window:usize,key:s32,mods:s32,bound:bool) {
+    drain();
+    #assert H.post_key(window,key,mods)!=0,"software chord targets only this hidden Gui window";
+    keys,bytes,old_actions:s32; event:P.Event;
+    while P.next_event(&event)!=0 {
+        if event.kind==1 { #assert event.a==key && event.b==mods,"reported chord retains exact modifiers"; keys+=1; }
+        if event.kind==2 bytes+=event.length;
+        if event.kind==9 || event.kind==10 old_actions+=1;
+    }
+    #assert old_actions==0,"copy/paste have no hidden hard-coded keyboard path";
+    if bound #assert keys==1 && bytes==0,"bound modifiers produce one action without leaked characters";
+    else #assert keys==0 && bytes>0,"unbound modifier combinations retain terminal text/control bytes";
+}
+main :: () {
+    #assert P.open("Consolas",16,80,24,12,1)!=0;
+    defer P.close();
+    window:=H.test_window(); #assert window!=0; drain();
+    keys:[3]P.Key_Binding=.[.{65,3,1},.{75,4,2},.{66,6,3}];
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&keys,3)!=0;
+    expect(window,65,3,true); expect(window,65,2,false); expect(window,65,1,false);
+    expect(window,75,4,true); expect(window,66,6,true); expect(window,66,2,false);
+    expect(window,67,3,false); expect(window,86,3,false);
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&keys,0)!=0;
+    expect(window,65,3,false);
+    print("modifier keybinding tests passed: std.Gui Ctrl/Shift/Alt routing, exact modifiers, no text leaks.\n");
+}

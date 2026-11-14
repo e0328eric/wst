@@ -1,0 +1,67 @@
+//! Scrollback scrollbar geometry. Offsets are rows above the live viewport.
+//! The caller performs horizontal hit testing before page_direction/offset_at.
+
+#public {
+
+Scrollbar :: struct #c_call {
+    x: s32;
+    y: s32;
+    width: s32;
+    height: s32;
+    thumb_y: s32;
+    thumb_height: s32;
+}
+
+compute :: (x: s32, y: s32, width: s32, height: s32, rows: s32,
+            history: s32, view_offset: s32) -> Scrollbar {
+    bar: Scrollbar = .{ .x=x, .y=y, .width=nonnegative(width), .height=nonnegative(height), .thumb_y=y };
+    if bar.width==0 || bar.height==0 return bar;
+    if history<=0 {
+        bar.thumb_height=bar.height;
+        return bar;
+    }
+    visible:=cast(s64)rows;
+    if visible<1 visible=1;
+    minimum:=cast(s64)bar.width*2;
+    if minimum<20 minimum=20;
+    thumb:=cast(s64)bar.height*visible/(visible+cast(s64)history);
+    if thumb<minimum thumb=minimum;
+    if thumb>cast(s64)bar.height thumb=cast(s64)bar.height;
+    bar.thumb_height=cast(s32)thumb;
+    travel:=cast(s64)bar.height-thumb;
+    offset:=clamp64(cast(s64)view_offset,0,cast(s64)history);
+    top: s64=(cast(s64)history-offset)*travel;
+    top=(top+cast(s64)history/2)/cast(s64)history;
+    bar.thumb_y=coordinate(cast(s64)y+top);
+    return bar;
+}
+
+offset_at :: (bar: Scrollbar, history: s32, pointer_y: s32, grab_offset: s32) -> s32 {
+    travel:=cast(s64)bar.height-cast(s64)bar.thumb_height;
+    if history<=0 || bar.width<=0 || bar.height<=0 || travel<=0 return 0;
+    grab:=clamp64(cast(s64)grab_offset,0,cast(s64)bar.thumb_height);
+    top:=clamp64(cast(s64)pointer_y-grab-cast(s64)bar.y,0,travel);
+    distance: s64=(travel-top)*cast(s64)history;
+    return cast(s32)((distance+travel/2)/travel);
+}
+
+page_direction :: (bar: Scrollbar, pointer_y: s32) -> s32 {
+    if bar.width<=0 || bar.height<=0 || bar.thumb_height>=bar.height return 0;
+    pointer:=cast(s64)pointer_y;
+    if pointer<cast(s64)bar.y || pointer>=cast(s64)bar.y+cast(s64)bar.height return 0;
+    if pointer<cast(s64)bar.thumb_y return 1;
+    if pointer>=cast(s64)bar.thumb_y+cast(s64)bar.thumb_height return -1;
+    return 0;
+}
+
+}
+
+nonnegative :: (value: s32) -> s32 { if value<0 return 0; return value; }
+clamp64 :: (value: s64, lo: s64, hi: s64) -> s64 {
+    if value<lo return lo;
+    if value>hi return hi;
+    return value;
+}
+coordinate :: (value: s64) -> s32 {
+    return cast(s32)clamp64(value,-2147483648,2147483647);
+}

@@ -1,0 +1,196 @@
+//! Native font changes keep the window fixed and update the shell's cell grid.
+P :: #import "../src/platform.glo";
+L :: #import "../src/layout.glo";
+T :: #import "../src/terminal.glo";
+H :: #import "keybinding_native_helper.glo";
+#import "Io";
+#import "Format";
+#import "File_System/File";
+#import "Strings/Utf8";
+
+cells: [8]P.Render_Cell;
+
+contains :: (text: str, needle: str) -> bool {
+    if text.count < needle.count return false;
+    for i: 0..text.count-needle.count+1
+        if text[i..i+needle.count] == needle return true;
+    return false;
+}
+pixels :: (path: str) -> str {
+    if read_file(path,64*1024*1024)== {
+    case .Ok(data); return data;
+    case .Err(error); print("font test snapshot read failed: {}\n",error.kind); exit(1);
+    }
+}
+native_key :: (window: usize,key: s32,bound: bool) {
+    event:P.Event;
+    while P.next_event(&event)!=0 {}
+    #assert H.post_key(window,key,0)!=0;
+    keys,text:s32;
+    while P.next_event(&event)!=0 {
+        if event.kind==1 && event.a==key keys+=1;
+        if event.kind==2 text+=event.length;
+    }
+    if bound #assert keys==1 && text==0,"native combined settings commit the new binding";
+    else #assert keys==0 && text>0,"failed combined settings preserve the previous binding";
+}
+draw_fonts :: (grid: bool) {
+    width,height,cw,ch:s32;
+    P.metrics(&width,&height,&cw,&ch);
+    P.frame_begin(16#11151c);
+    header:=36*P.dpi()/96;
+    P.draw_label(12,0,width-24,header,"Font family / fixed UI",16#d8dee9);
+    if grid P.grid(12,header,4,2,cw,ch,cast([*]const P.Render_Cell)&cells,1,1,1,16#e5c07b);
+    P.frame_end();
+}
+fresh_font_pixels :: (family: str,size: s32) {
+    #assert P.set_font(family.c_string(),size)!=0;
+    draw_fonts(true);
+    #assert P.snapshot("build/font_changed.bmp")!=0;
+    changed:=pixels("build/font_changed.bmp");
+    defer changed.free();
+    P.frame_begin(0);
+    draw_fonts(true);
+    #assert P.snapshot("build/font_fresh.bmp")!=0;
+    fresh:=pixels("build/font_fresh.bmp");
+    defer fresh.free();
+    #assert changed==fresh,"font changes invalidate every retained glyph and UI pixel";
+}
+
+main :: () {
+    #assert P.open("Consolas",16,80,24,12,1)!=0,"hidden zoom test window";
+    defer P.close();
+    width,height,initial_cw,initial_ch: s32;
+    P.metrics(&width,&height,&initial_cw,&initial_ch);
+    #assert width>0 && height>0 && initial_cw>0 && initial_ch>0;
+    #assert P.pty_start("cmd.exe /d /q",80,24)!=0,"interactive ConPTY for font-size changes";
+
+    w,h,cw,ch: s32;
+    #assert P.set_font_size(24)!=0;
+    P.metrics(&w,&h,&cw,&ch);
+    #assert w==width && h==height,"zoom keeps client dimensions unchanged";
+    #assert cw>initial_cw && ch>initial_ch,"zoom in increases cell metrics";
+    #assert P.set_font_size(7)==0 && P.set_font_size(73)==0,"reject unsupported font sizes";
+    rejected_cw,rejected_ch: s32;
+    P.metrics(&w,&h,&rejected_cw,&rejected_ch);
+    #assert w==width && h==height && rejected_cw==cw && rejected_ch==ch,"invalid sizes preserve current font";
+
+    #assert P.set_font_size(12)!=0;
+    P.metrics(&w,&h,&cw,&ch);
+    #assert w==width && h==height && cw<initial_cw && ch<initial_ch,"zoom out reduces cell metrics";
+    #assert P.set_font_size(16)!=0;
+    P.metrics(&w,&h,&cw,&ch);
+    #assert cw==initial_cw && ch==initial_ch,"reset restores the configured font metrics";
+
+    // Font and shortcut updates publish together, even when a new font would
+    // otherwise have changed the terminal metrics.
+    window:=H.test_window();
+    #assert window!=0;
+    previous:[1]P.Key_Binding=.[.{65,0,1}];
+    next:[1]P.Key_Binding=.[.{66,0,2}];
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&previous,1)!=0;
+    native_key(window,65,true);
+    invalid:=next; invalid[0].mods=8;
+    #assert P.apply_live_settings("Courier New",24,cast([*]const P.Key_Binding)&invalid,1)==0;
+    P.metrics(&w,&h,&cw,&ch);
+    #assert cw==initial_cw && ch==initial_ch,"invalid key table cannot commit a prepared font";
+    native_key(window,65,true); native_key(window,66,false);
+    #assert P.apply_live_settings("",24,cast([*]const P.Key_Binding)&next,1)==0;
+    native_key(window,65,true); native_key(window,66,false);
+    long_name:[..]u8;
+    defer long_name.free();
+    for 0..128 long_name.push(65);
+    #assert P.set_font((cast(str)long_name.view()).c_string(),24)==0,"reject overlong UTF-16 font family";
+    invalid_utf8:[..]u8;
+    defer invalid_utf8.free();
+    invalid_utf8.push(255);
+    #assert P.set_font((cast(str)invalid_utf8.view()).c_string(),24)==0,"reject invalid UTF-8 font family";
+    #assert P.set_font("Consolas",7)==0,"font family changes cannot bypass size limits";
+    P.metrics(&w,&h,&cw,&ch);
+    #assert w==width && h==height && cw==initial_cw && ch==initial_ch,"invalid font requests preserve native metrics and window";
+    #assert P.apply_live_settings("Courier New",24,cast([*]const P.Key_Binding)&next,1)!=0;
+    P.metrics(&w,&h,&cw,&ch);
+    #assert w==width && h==height && cw>0 && ch>initial_ch,"combined update changes family/size without resizing the window";
+    native_key(window,65,false); native_key(window,66,true);
+
+    // Terminal zoom leaves the header/status UI at its fixed 16-DIP font size.
+    draw_fonts(false);
+    #assert P.snapshot("build/font_ui_before.bmp")!=0;
+    ui_before:=pixels("build/font_ui_before.bmp");
+    defer ui_before.free();
+    #assert P.set_font_size(12)!=0;
+    draw_fonts(false);
+    #assert P.snapshot("build/font_ui_after.bmp")!=0;
+    ui_after:=pixels("build/font_ui_after.bmp");
+    defer ui_after.free();
+    #assert ui_before==ui_after,"terminal font size does not change the fixed UI font";
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&previous,0)!=0;
+
+    for i: 0..8 cells[i]=.{ .codepoint=cast(u32)(65+i),.fg=16#d8dee9,.bg=16#11151c };
+    cells[2]=.{ .codepoint=16#d55c,.fg=16#d8dee9,.bg=16#11151c,.flags=8 };
+    cells[3]=.{ .codepoint=0,.fg=16#d8dee9,.bg=16#11151c,.flags=16 };
+    for 0..2 {
+        for family: .["Consolas","Courier New","Cascadia Mono","wst deliberately missing font"] {
+            fresh_font_pixels(family,20);
+            P.metrics(&w,&h,&cw,&ch);
+            #assert w==width && h==height && cw>0 && ch>0,"family updates keep valid fixed client dimensions";
+        }
+    }
+    #assert P.set_font("Consolas",16)!=0;
+    for 0..3 {
+        for size: .[8,72,20,12,24,16] {
+            #assert P.set_font_size(cast(s32)size)!=0;
+            P.metrics(&w,&h,&cw,&ch);
+            #assert w==width && h==height && cw>0 && ch>0,"repeated zoom keeps a valid fixed-size window";
+            P.frame_begin(16#11151c);
+            P.grid(12,48,4,2,cw,ch,cast([*]const P.Render_Cell)&cells,1,1,1,16#e5c07b);
+            P.frame_end();
+        }
+    }
+    #assert P.set_font_size(24)!=0;
+    P.metrics(&w,&h,&cw,&ch);
+    layout:=L.compute(w,h,12,cast(f32)P.dpi()/96.0);
+    cols:=cast(s32)layout.viewport_width/cw;
+    rows:=cast(s32)layout.viewport_height/ch;
+    #assert cols>1 && rows>0 && cols<80 && rows<24,"larger font yields a smaller logical terminal grid";
+    #assert P.pty_resize(cols,rows)!=0,"ConPTY accepts the grid derived from zoomed metrics";
+    terminal: T.Terminal;
+    T.init(&terminal,cols,rows,100,16#d8dee9,16#11151c);
+    defer T.release(&terminal);
+
+    // Runtime console-property expansion keeps the complete expected marker
+    // out of the input echo, proving the child observed its resized console.
+    command: str="powershell.exe -NoLogo -NoProfile -Command \"[Console]::Write('ZOOM_COLS_' + [Console]::WindowWidth + '_ROWS_' + [Console]::WindowHeight + '_DONE')\"\rexit\r";
+    expected:=tprint("ZOOM_COLS_{}_ROWS_{}_DONE",cols,rows);
+    #assert !contains(command,expected);
+    #assert P.pty_send(command.data,cast(s32)command.count)!=0;
+    output: [..]u8;
+    defer output.free();
+    data: [65536]u8;
+    start:=P.ticks();
+    found:=false; exited:=false; exit_code: s32;
+    event: P.Event;
+    while P.ticks()-start<15000 {
+        while P.next_event(&event)!=0 {}
+        n:=P.pty_read(cast([*]u8)&data,65536);
+        if n>0 {
+            bytes:=raw_string(cast([*]const u8)&data,n);
+            T.feed(&terminal,bytes);
+            for i: 0..n output.push(data[i]);
+            if contains(cast(str)output.view(),expected) found=true;
+        }
+        if terminal.replies.count>0 {
+            #assert P.pty_send(terminal.replies.data,cast(s32)terminal.replies.count)!=0;
+            terminal.replies.clear();
+        }
+        exited=P.pty_status(&exit_code)==1;
+        if found && exited break;
+        P.wait(10);
+    }
+    if !found print("Expected {} in zoomed ConPTY output:\n{}\n",expected,cast(str)output.view());
+    #assert found,"child process observes the zoomed column and row count";
+    #assert exited && exit_code==0,"zoomed shell exits cleanly";
+    print("zoom tests passed: fixed window, font metrics, atomic rollback, UI font, redraw and ConPTY grid.\n");
+}
+
+raw_string :: (data: [*]const u8,count: ssize) -> str #magic "string_from_raw_parts";

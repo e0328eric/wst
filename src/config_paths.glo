@@ -1,0 +1,29 @@
+//! Owned paths for the startup-selected Lua configuration.
+Directories :: #import "File_System/Directory_Paths";
+Paths :: #import "File_System/Path";
+Metadata :: #import "File_System/Metadata";
+
+#public {
+
+/// Returns the roaming user configuration path without creating it.
+/// The caller owns the returned string and must free it.
+user_path :: () -> str {
+    if #pattern ?directory = Directories.get_config_dir() {
+        defer directory.free();
+        base := directory.to_string();
+        defer base.free();
+        return Paths.path_join(base, "wst/config.lua");
+    }
+    return "config.lua".clone();
+}
+
+/// Selects one path for loading and watching, including an absent user file.
+/// The caller owns the returned string and must free it.
+select_path :: (explicit_path: str = "") -> str {
+    if explicit_path.count != 0 return explicit_path.clone();
+    if Metadata.is_regular_file("config.lua").unwrap_or(false)
+        return "config.lua".clone();
+    return user_path();
+}
+
+}

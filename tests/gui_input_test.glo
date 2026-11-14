@@ -1,0 +1,95 @@
+//! Ordered std.Gui events retain terminal shortcuts, text, VT controls and drag state.
+G :: #import "Gui";
+I :: #import "../src/gui_input.glo";
+T :: #import "../src/platform_types.glo";
+N :: #import "../src/native.glo";
+#import "Io";
+
+check :: (ok: bool, message: str) { if !ok { print("FAIL: {}\n", message); exit(1); } }
+key :: (value: G.Key, mods: G.Modifiers, scan: u32 = 0) {
+    I.feed_event(.{.kind=.Key,.key=value,.modifiers=mods,.action=.Press,.scancode=scan});
+}
+character :: (value: u32) { I.feed_event(.{.kind=.Text,.codepoint=value}); }
+point :: (kind: G.Event_Kind, action: G.Input_Action, x: f32, y: f32) {
+    I.feed_event(.{.kind=kind,.action=action,.button=.Left,.x=x,.y=y});
+}
+next :: () -> T.Event {
+    value: T.Event; check(I.next_event(&value)!=0,"expected a converted terminal event"); return value;
+}
+empty :: () { value:T.Event; check(I.next_event(&value)==0,"input batch has no extra characters or actions"); }
+translated :: (value:s32,scan:s32,mods:s32)->u32 {
+    chars:[8]u32;
+    check(N.key_text(value,scan,mods,cast([*]u32)&chars,8)==1,"active keyboard layout translates a test letter");
+    return chars[0];
+}
+
+main :: () {
+    defer I.close();
+    bindings:[3]T.Key_Binding=.[.{65,0,1},.{66,1,2},.{107,2,3}];
+    check(I.set_keybindings(cast([*]const T.Key_Binding)&bindings,3)!=0,"install adapter bindings");
+    px,py:s32;
+    check(!I.pointer_position(&px,&py),"hover position is absent before a Gui pointer event");
+    // TranslateMessage may append all text after a run of key events. Ordered
+    // predictions consume only the bound key's character in that mixed stream.
+    a:=translated(65,16#1e,0); c:=translated(67,16#2e,0);
+    key(.A,.None,16#1e); key(.C,.None,16#2e); character(a); character(c);
+    event:=next(); check(event.kind==1 && event.a==65 && event.b==0 && event.c==1,"bound plain key reaches action dispatch");
+    event=next(); check(event.kind==2 && event.length==1 && event.text[0]==cast(u8)c,"unbound neighbor retains its text"); empty();
+    b:=translated(66,16#30,1);
+    key(.B,.Shift,16#30); character(b);
+    event=next(); check(event.kind==1 && event.a==66 && event.b==1,"Gui Shift maps to legacy Shift exactly"); empty();
+
+    key(.Equal,.Ctrl,16#4e);
+    event=next(); check(event.kind==1 && event.a==107 && event.b==2,"keypad plus keeps its distinct Lua virtual key"); empty();
+    key(.C,.Ctrl,16#2e);
+    event=next(); check(event.kind==2 && event.length==1 && event.text[0]==3,"unbound Ctrl+C remains a shell control byte"); empty();
+    key(.A,.Alt,16#1e);
+    event=next(); check(event.kind==2 && event.length==2 && event.text[0]==27 && event.text[1]==cast(u8)a,
+        "unbound Alt letters retain their escape prefix"); empty();
+    key(.Space,.Alt,16#39); character(32); event=next();
+    check(event.kind==1 && event.a==32 && event.b==4 && event.c==0,"unbound Alt+Space opens the native window menu without terminal text"); empty();
+    menu_binding:[1]T.Key_Binding=.[.{32,4,7}];
+    check(I.set_keybindings(cast([*]const T.Key_Binding)&menu_binding,1)!=0,"allow an explicitly configured Alt+Space action");
+    key(.Space,.Alt,16#39); character(32); event=next();
+    check(event.kind==1 && event.c==7,"configured Alt+Space takes precedence over the native menu"); empty();
+    check(I.set_keybindings(cast([*]const T.Key_Binding)&bindings,3)!=0,"restore adapter bindings");
+    key(.Backspace,.None); key(.Enter,.None); key(.Escape,.None); key(.Tab,.Shift);
+    event=next(); check(event.kind==2 && event.text[0]==127,"backspace is DEL for terminal input");
+    event=next(); check(event.kind==2 && event.text[0]==13,"Enter produces carriage return");
+    event=next(); check(event.kind==2 && event.text[0]==27,"Escape remains a terminal byte");
+    event=next(); check(event.kind==1 && event.a==9 && event.b==1,"Shift+Tab retains VT-key routing"); empty();
+    character(16#1f600); event=next();
+    check(event.kind==2 && event.length==4 && event.text[0]==240 && event.text[1]==159 &&
+        event.text[2]==152 && event.text[3]==128,"supplementary Unicode is preserved as UTF-8"); empty();
+
+    invalid:=bindings; invalid[0].mods=8;
+    check(I.set_keybindings(cast([*]const T.Key_Binding)&invalid,3)==0 && I.error_message().count>0,
+        "invalid bindings reject the whole replacement");
+    key(.A,.None,16#1e); character(a); event=next();
+    check(event.kind==1 && event.c==1,"failed replacement preserves working action routing"); empty();
+
+    dividers:[2]T.Divider_Hit=.[.{100,50,8,200,1},.{200,150,180,8,2}];
+    check(I.set_dividers(cast([*]const T.Divider_Hit)&dividers,2)!=0,"install divider geometry");
+    point(.PointerMove,.None,101,80); check(I.cursor_axis()==1,"vertical divider selects horizontal resize cursor"); empty();
+    check(I.pointer_position(&px,&py) && px==101 && py==80,"idle movement updates hover without requiring a drag event");
+    point(.PointerButton,.Press,102,80);
+    point(.PointerMove,.None,-50,-60); point(.PointerMove,.None,202,152);
+    check(I.cursor_axis()==1,"captured divider retains its axis across another divider");
+    point(.PointerButton,.Release,202,152);
+    check(I.cursor_axis()==2,"normal release returns to the hovered divider axis");
+    event=next(); check(event.kind==6 && event.a==102,"left press starts selection or divider dragging");
+    event=next(); check(event.kind==7 && event.a==202 && event.b==152,"successive drag moves coalesce");
+    event=next(); check(event.kind==8 && event.a==202 && event.b==152,"release carries its final position"); empty();
+    point(.PointerButton,.Press,102,80); _:=next(); I.cancel_pointer();
+    event=next(); check(event.kind==11,"application cancellation ends a captured drag");
+    point(.PointerMove,.None,400,400); point(.PointerButton,.Release,400,400); empty();
+    point(.PointerButton,.Press,102,80); _:=next();
+    I.feed_event(.{.kind=.Focus,.action=.Release});
+    event=next(); check(event.kind==11,"focus loss cancels before synthesizing releases");
+    event=next(); check(event.kind==3,"focus loss refreshes terminal focus painting");
+    point(.PointerButton,.Release,102,80); empty();
+    I.close(); key(.A,.None,16#1e); character(a);
+    check(!I.pointer_position(&px,&py),"reopening input clears stale hover coordinates");
+    event=next(); check(event.kind==2,"reopening input cannot retain bindings"); empty();
+    print("Gui input adapter tests passed: exact shortcuts, text isolation, Unicode, controls, keypad keys, divider capture and cancellation.\n");
+}

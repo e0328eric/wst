@@ -1,0 +1,58 @@
+//! An owned launch snapshot keeps a running pane independent of later config edits.
+C :: #import "config.glo";
+#import "Strings/Utf8";
+#export "config.glo" { Config };
+
+#public {
+Launch :: struct {
+    profile_id: str;
+    name: str;
+    command: str;
+    directory: str;
+}
+
+resolve :: (cfg: *const C.Config, profile_id: str, result: *Launch) -> bool {
+    next: Launch;
+    if profile_id.count == 0 {
+        next.profile_id = "".clone();
+        next.name = cfg.shell.clone();
+        next.command = command(cfg.shell, cfg.command);
+        next.directory = "".clone();
+    } else {
+        index := C.profile_index(cfg, profile_id);
+        if index < 0 return false;
+        profile := &cfg.profiles[index];
+        next.profile_id = profile.id.clone();
+        next.name = profile.name.clone();
+        next.command = command(profile.shell, profile.command);
+        next.directory = profile.starting_directory.clone();
+    }
+    release(result);
+    result.* = next;
+    return true;
+}
+
+clone :: (source: *const Launch) -> Launch {
+    return .{source.profile_id.clone(), source.name.clone(), source.command.clone(), source.directory.clone()};
+}
+
+take :: (source: *Launch) -> Launch {
+    result := source.*;
+    empty: Launch;
+    source.* = empty;
+    return result;
+}
+
+release :: (launch: *Launch) {
+    launch.profile_id.free(); launch.name.free(); launch.command.free(); launch.directory.free();
+    empty: Launch;
+    launch.* = empty;
+}
+}
+
+command :: (shell: str, override: str) -> str {
+    if override.count > 0 return override.clone();
+    if shell == "cmd" return "cmd.exe /d".clone();
+    if shell == "nushell" return "nu.exe".clone();
+    return "powershell.exe -NoLogo".clone();
+}

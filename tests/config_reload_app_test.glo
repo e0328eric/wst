@@ -1,0 +1,8 @@
+//! End-to-end hot reload in the actual executable, using only hidden windows.
+H :: #import "config_reload_app_helper.glo";
+#import "Io";
+
+main :: () {
+    #assert H.run()!=0,"actual application hot reloads appearance, launch, layout and exit policy with atomic failure rollback";
+    print("application reload test passed: invalid edits retained, live appearance, launch replacement, exact grid, reloaded exit policy.\n");
+}

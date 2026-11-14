@@ -1,0 +1,24 @@
+#import "Compiler";
+#import "Format";
+#import "Io";
+#import "Strings/Utf8";
+
+test_bindings :: () -> str {
+    if Native_Compile_Output.compile_c_archive("st_win_config_reload_app_test",
+        .["tests/config_reload_app_helper.c"],
+        .compiler_args=.["-Wall","-Wextra","-Werror"]) == {
+    case .Ok(built);
+        return tprint("helper :: #library,static \"{}\";",built.artifact.replace("\\","/"));
+    case .Err(error);
+        print("application reload test helper build failed: {}\n",error.message);
+        return "#comptime { #compile_error \"application reload test helper build failed\"; }";
+    }
+}
+#insert #comptime test_bindings();
+#comptime {
+    add_current_linker_arg("user32.lib");
+    add_current_linker_arg("kernel32.lib");
+}
+#public {
+run :: () -> s32 #foreign helper "config_reload_app_test";
+}

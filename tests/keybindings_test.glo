@@ -1,0 +1,144 @@
+K :: #import "../src/keybindings.glo";
+#import "Io";
+#import "Context";
+
+contains :: (text: str,needle: str) -> bool {
+    if text.count<needle.count return false;
+    for i: 0..text.count-needle.count+1 if text[i..i+needle.count]==needle return true;
+    return false;
+}
+check :: (condition: bool,message: str) {
+    if !condition { print("FAIL: {}\n",message); exit(1); }
+}
+
+main :: () {
+    table:=K.defaults();
+    #assert table.count==30 && K.validate(&table),"default bindings are unique";
+    #assert K.lookup(&table,67,3)==.Copy;
+    #assert K.lookup(&table,86,3)==.Paste && K.lookup(&table,45,1)==.Paste;
+    #assert K.lookup(&table,187,2)==.Zoom_In && K.lookup(&table,187,3)==.Zoom_In;
+    #assert K.lookup(&table,107,2)==.Zoom_In && K.lookup(&table,107,3)==.Zoom_In;
+    #assert K.lookup(&table,189,2)==.Zoom_Out && K.lookup(&table,109,3)==.Zoom_Out;
+    #assert K.lookup(&table,48,2)==.Reset_Zoom && K.lookup(&table,96,2)==.Reset_Zoom;
+    #assert K.lookup(&table,33,1)==.Scroll_Page_Up && K.lookup(&table,34,1)==.Scroll_Page_Down;
+    #assert K.lookup(&table,36,1)==.Scroll_Top && K.lookup(&table,35,1)==.Scroll_Bottom;
+    #assert K.lookup(&table,67,2)==.None && K.lookup(&table,187,6)==.None,"unmapped keys reach the shell";
+    #assert K.lookup(&table,48,3)==.None,"Ctrl+Shift+0 is not consumed";
+    #assert K.lookup(&table,84,3)==.New_Tab && K.lookup(&table,87,3)==.Close_Tab;
+    #assert K.lookup(&table,9,2)==.Next_Tab && K.lookup(&table,9,3)==.Previous_Tab;
+    #assert K.lookup(&table,79,3)==.Split_Horizontal && K.lookup(&table,69,3)==.Split_Vertical;
+    #assert K.lookup(&table,88,3)==.Close_Pane;
+    #assert K.lookup(&table,34,4)==.Next_Pane && K.lookup(&table,33,4)==.Previous_Pane;
+    #assert K.lookup(&table,37,6)==.Focus_Pane_Left && K.lookup(&table,39,6)==.Focus_Pane_Right;
+    #assert K.lookup(&table,38,6)==.Focus_Pane_Up && K.lookup(&table,40,6)==.Focus_Pane_Down;
+    #assert cast(s32)K.Action.New_Tab==13 && cast(s32)K.Action.Focus_Pane_Down==25,"native action ABI remains stable";
+    for i:0..table.count #assert table.profile_ids[i]==0,"default bindings carry no explicit profile";
+    profiles:K.Bindings;
+    #assert K.add_profile(&profiles,"F1",.New_Tab,2) && K.add_profile(&profiles,"F2",.Split_Vertical,32);
+    #assert K.add_profile(&profiles,"F3",.Split_Horizontal,1) && K.add(&profiles,"F4",.Copy);
+    #assert K.profile_for(&profiles,112,0)==2 && K.profile_for(&profiles,113,0)==32 && K.profile_for(&profiles,115,0)==0;
+    #assert K.validate(&profiles) && !K.add_profile(&profiles,"F5",.Copy,1),"only shell-launch actions accept profile targets";
+    #assert !K.add_profile(&profiles,"F5",.New_Tab,-1) && !K.add_profile(&profiles,"F5",.New_Tab,33);
+    K.clear_action(&profiles,.New_Tab);
+    #assert profiles.count==3 && K.profile_for(&profiles,113,0)==32 && K.profile_for(&profiles,114,0)==1,
+        "clearing an action compacts profile metadata with native binding entries";
+    #assert K.add_profile(&profiles,"F2",.Split_Horizontal,3) && !K.validate(&profiles),"profiles do not hide chord conflicts";
+    K.clear_action(&profiles,.Split_Horizontal);
+    profiles.profile_ids[0]=33;
+    #assert !K.validate(&profiles),"invalid companion profile targets are rejected";
+
+    workspace:=K.defaults();
+    K.clear_action(&workspace,.New_Tab);
+    #assert K.lookup(&workspace,84,3)==.None;
+    #assert K.add(&workspace,"F1",.New_Tab) && K.add(&workspace,"Shift+F1",.New_Tab);
+    #assert K.lookup(&workspace,112,0)==.New_Tab && K.lookup(&workspace,112,1)==.New_Tab;
+    #assert K.add(&workspace,"Ctrl+Shift+W",.New_Tab) && !K.validate(&workspace),"workspace actions share normal conflict validation";
+    K.clear_action(&workspace,.Close_Tab);
+    #assert K.validate(&workspace),"a tab binding may take a chord released by another action";
+    K.clear_action(&workspace,.Focus_Pane_Down);
+    #assert K.lookup(&workspace,40,6)==.None && K.lookup(&workspace,38,6)==.Focus_Pane_Up;
+
+    K.clear_action(&table,.Copy);
+    #assert K.lookup(&table,67,3)==.None && table.count==29;
+    #assert K.add(&table,"  Control + alt + f12  ",.Copy);
+    #assert K.lookup(&table,123,6)==.Copy,"case-insensitive modifier/key parsing";
+    #assert K.add(&table,"Ctrl++",.Scroll_Line_Up);
+    #assert K.lookup(&table,187,2)==.Zoom_In,"conflicts are pending until final validation";
+    #assert !K.validate(&table),"conflicting actions are rejected at commit";
+    check(contains(K.error_message(),"zoom_in") && contains(K.error_message(),"scroll_line_up"),
+        "conflict diagnostics identify both actions");
+    check(contains(K.error_message(),"187") && contains(K.error_message(),"modifiers 2"),
+        "conflict diagnostics identify the shared chord");
+    K.clear_action(&table,.Zoom_In);
+    #assert K.validate(&table) && K.lookup(&table,187,2)==.Scroll_Line_Up;
+
+    empty: K.Bindings;
+    #assert K.add(&empty,"A",.Copy) && K.add(&empty,"Shift+A",.Paste),"explicit printable bindings are supported";
+    #assert K.lookup(&empty,65,0)==.Copy && K.lookup(&empty,65,1)==.Paste;
+    #assert K.add(&empty,"Space",.Close_Window) && K.add(&empty,"Enter",.Reset_Zoom);
+    #assert K.add(&empty,"Shift+Tab",.Scroll_Bottom);
+    #assert K.add(&empty,"Ctrl+Num9",.Zoom_Out) && K.lookup(&empty,105,2)==.Zoom_Out;
+    #assert K.add(&empty,"Alt+Numpad0",.Scroll_Top) && K.lookup(&empty,96,4)==.Scroll_Top;
+    #assert K.add(&empty,"Ctrl+Shift+Equal",.Zoom_In) && K.lookup(&empty,187,3)==.Zoom_In;
+    #assert K.add(&empty,"Ctrl+-",.Scroll_Line_Down) && K.lookup(&empty,189,2)==.Scroll_Line_Down;
+    #assert !K.add(&empty,"Ctrl+Minus",.Scroll_Line_Down),"aliases cannot duplicate the same chord";
+    #assert K.add(&empty,"Alt+PageUp",.Scroll_Page_Up) && K.lookup(&empty,33,4)==.Scroll_Page_Up;
+    #assert K.add(&empty,"Alt+PgDn",.Scroll_Page_Down) && K.lookup(&empty,34,4)==.Scroll_Page_Down;
+    #assert K.validate(&empty);
+
+    punctuation: K.Bindings;
+    for chord: .["Ctrl+Semicolon","Ctrl+Comma","Ctrl+Period","Ctrl+Slash","Ctrl+Backtick",
+                   "Ctrl+LeftBracket","Ctrl+Backslash","Ctrl+RightBracket","Ctrl+Quote",
+                   "Ctrl+NumMultiply","Ctrl+NumDivide","Ctrl+NumDecimal"]
+        #assert K.add(&punctuation,chord,.Copy);
+    for key: .[186,188,190,191,192,219,220,221,222,106,111,110]
+        #assert K.lookup(&punctuation,cast(s32)key,2)==.Copy;
+    for chord: .[";",",",".","/","`","[","\\","]","'","+","-"]
+        #assert K.add(&punctuation,chord,.Paste);
+    #assert K.add(&punctuation,"Ctrl + +",.Zoom_In),"spaces around the plus-key separator";
+    #assert K.lookup(&punctuation,187,2)==.Zoom_In && K.lookup(&punctuation,187,0)==.Paste;
+    #assert K.validate(&punctuation);
+
+    // Action swaps are independent of Lua table iteration order.
+    swap:=K.defaults();
+    K.clear_action(&swap,.Copy);
+    #assert K.add(&swap,"Ctrl+Shift+V",.Copy);
+    K.clear_action(&swap,.Paste);
+    #assert K.add(&swap,"Ctrl+Shift+C",.Paste);
+    #assert K.validate(&swap);
+    #assert K.lookup(&swap,86,3)==.Copy && K.lookup(&swap,67,3)==.Paste;
+
+    for invalid: .["", "Ctrl", "Ctrl+", "+A", "Ctrl+++", "Ctrl++A", "Ctrl+Ctrl+C",
+                    "Control+Ctrl+C", "Win+C", "Meta+K", "Alt+F4", "Ctrl+Alt+F4",
+                    "Ctrl+F0", "Ctrl+F13", "Ctrl+F01", "Ctrl+Unknown", "Ctrl+Shift",
+                    "Ctrl+Num10", "Ctrl+\x00A", "Ctrl+é", "Ctrl+\nA"] {
+        count:=empty.count;
+        #assert !K.add(&empty,invalid,.Copy),"malformed chords must be rejected";
+        #assert empty.count==count,"bad chords do not mutate bindings";
+    }
+    #assert !K.add(&empty,"Ctrl+Z",.None),"None is not a bindable action";
+    #assert !K.add(&empty,"Ctrl+NotAKey",.Copy);
+    diagnostic:=K.error_message();
+    check(contains(diagnostic,"Ctrl+NotAKey") && contains(diagnostic,"supported key name"),"parser diagnostic is visible");
+    reset_temporary_storage();
+    check(contains(diagnostic,"Ctrl+NotAKey") && contains(K.error_message(),"supported key name"),
+        "diagnostics outlive temporary formatting storage");
+    for name: .["copy","paste","zoom_in","zoom_out","reset_zoom","scroll_page_up",
+                 "scroll_page_down","scroll_top","scroll_bottom","scroll_line_up",
+                 "scroll_line_down","close_window","new_tab","close_tab","next_tab","previous_tab",
+                 "split_horizontal","split_vertical","close_pane","next_pane","previous_pane",
+                 "focus_pane_left","focus_pane_right","focus_pane_up","focus_pane_down"]
+        #assert K.action_from_name(name)!=.None && K.action_name(K.action_from_name(name))==name;
+    #assert K.action_from_name("unknown")==.None && K.action_from_name("Zoom_In")==.None;
+
+    full: K.Bindings;
+    full.count=128;
+    #assert !K.add(&full,"Ctrl+A",.Copy),"fixed capacity is enforced";
+    malformed: K.Bindings;
+    malformed.count= -1;
+    #assert !K.validate(&malformed);
+    malformed.count=1;
+    malformed.items[0]=.{65,0,26};
+    #assert !K.validate(&malformed),"action IDs beyond the tab/pane action range are rejected";
+    print("keybinding tests passed: defaults, parser, rebinding, swaps, conflicts, printable keys, bounds.\n");
+}

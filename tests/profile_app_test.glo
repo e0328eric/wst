@@ -1,0 +1,7 @@
+//! Named profile launch/reload behavior through the real hidden application.
+H :: #import "profile_app_helper.glo";
+#import "Io";
+main :: () {
+    #assert H.run()!=0,"profile bindings launch independent tabs/panes, inherit directories and reload affected sessions atomically";
+    print("profile application test passed: named/default profiles, targeted tab/split bindings, directories, inheritance and selective reload/rollback.\n");
+}

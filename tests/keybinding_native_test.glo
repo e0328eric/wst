@@ -1,0 +1,78 @@
+//! Exercise the actual native message pump, including TranslateMessage filtering.
+P :: #import "../src/platform.glo";
+H :: #import "keybinding_native_helper.glo";
+#import "Io";
+
+drain :: () {
+    event:P.Event;
+    while P.next_event(&event)!=0 {}
+}
+check_key :: (window:usize,key:s32,mods:s32,bound:bool) {
+    drain();
+    #assert H.post_key(window,key,mods)!=0,"post a software-only test key";
+    matching:s32; text:s32; old_copy_paste:s32;
+    event:P.Event;
+    while P.next_event(&event)!=0 {
+        if event.kind==1 {
+            #assert event.a==key && event.b==mods,"native key reports exact chord";
+            matching+=1;
+        }
+        if event.kind==2 text+=event.length;
+        if event.kind==9 || event.kind==10 old_copy_paste+=1;
+    }
+    if bound {
+        #assert matching==1,"registered chord reaches the Glosso action dispatcher";
+        #assert text==0,"registered chord must not leak WM_CHAR into the shell";
+    } else {
+        #assert matching==0,"unregistered printable chord is not intercepted";
+        #assert text>0,"unregistered chord is translated back into shell text";
+    }
+    #assert old_copy_paste==0,"hard-coded keyboard copy/paste does not bypass Lua bindings";
+}
+main :: () {
+    #assert P.open("Consolas",16,80,24,12,1)!=0;
+    defer P.close();
+    window:=H.test_window();
+    #assert window!=0,"find exactly this process's hidden window";
+    drain();
+
+    bindings:[2]P.Key_Binding=.[.{65,0,1},.{13,0,2}];
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&bindings,2)!=0;
+    check_key(window,65,0,true); // Actual production archive intercepts A.
+    check_key(window,13,0,true); // Enter must not leak a carriage return.
+    bindings[0].mods=3;
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&bindings,2)!=0;
+    check_key(window,65,0,false); // Ctrl+Shift+A does not intercept plain A.
+    bindings[0].mods=0;
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&bindings,2)!=0;
+    check_key(window,67,0,false); // Ordinary typing stays available.
+
+    // Every invalid replacement leaves the previously installed bindings intact.
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&bindings,-1)==0;
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&bindings,129)==0;
+    invalid:[1]P.Key_Binding=.[.{0,3,1}];
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&invalid,1)==0;
+    invalid[0].key=256;
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&invalid,1)==0;
+    invalid[0].key=66; invalid[0].mods=8;
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&invalid,1)==0;
+    check_key(window,65,0,true);
+
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&bindings,0)!=0;
+    check_key(window,65,0,false);
+    check_key(window,13,0,false);
+    // Navigation remains a VT key event even when there is no terminal action.
+    #assert H.post_key(window,38,0)!=0;
+    event:P.Event; navigation:=false;
+    while P.next_event(&event)!=0 if event.kind==1 && event.a==38 navigation=true;
+    #assert navigation,"unbound navigation stays available to the shell";
+
+    #assert P.set_keybindings(cast([*]const P.Key_Binding)&bindings,2)!=0;
+    P.close();
+    #assert P.open("Consolas",16,80,24,12,1)!=0;
+    window=H.test_window();
+    #assert window!=0;
+    drain();
+    check_key(window,65,0,false);
+    print("native keybinding tests passed: configurable routing, no text leaks, exact modifiers, rejection, clear/reopen.\n");
+}

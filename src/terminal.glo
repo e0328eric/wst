@@ -1,0 +1,969 @@
+//! Streaming UTF-8/VT terminal model. No window or operating-system dependencies.
+//! Coordinates are zero based; callers consume replies then call replies.clear().
+#import "Format";
+Colors :: #import "colors.glo";
+
+#public {
+
+// Color origin is retained independently of RGB values. Applications may use
+// the same RGB as a configured default explicitly; those colors stay explicit.
+CELL_DEFAULT_FG: u32 :: 32;
+CELL_DEFAULT_BG: u32 :: 64;
+CELL_INDEXED_FG: u32 :: 128;
+CELL_INDEXED_BG: u32 :: 256;
+CELL_FG_INDEX_MASK: u32 :: 16#1fe00;
+CELL_BG_INDEX_MASK: u32 :: 16#1fe0000;
+CELL_COLOR_ORIGIN: u32 :: CELL_DEFAULT_FG | CELL_DEFAULT_BG | CELL_INDEXED_FG |
+    CELL_INDEXED_BG | CELL_FG_INDEX_MASK | CELL_BG_INDEX_MASK;
+
+Cell :: struct #c_call {
+    codepoint: u32 = 32;
+    fg: u32;
+    bg: u32;
+    flags: u32;
+}
+
+Terminal :: struct {
+    cols: s32;
+    rows: s32;
+    cursor_x: s32;
+    cursor_y: s32;
+    cursor_visible: bool = true;
+    application_cursor: bool;
+    bracketed_paste: bool;
+    alternate: bool;
+    title: [..]u8;
+    replies: [..]u8;
+    view_offset: s32;
+    cells: [..]Cell;
+    alt_cells: [..]Cell;
+    history: [..]Cell;
+    history_limit: s32;
+    history_count: s32;
+    history_start: s32;
+    // Historical rows retain their widest stored columns across zoom changes.
+    history_stride: s32;
+    default_fg: u32;
+    default_bg: u32;
+    palette: [16]u32;
+    fg: u32;
+    bg: u32;
+    attributes: u32;
+    saved_x: s32;
+    saved_y: s32;
+    saved_fg: u32;
+    saved_bg: u32;
+    saved_attributes: u32;
+    primary_x: s32;
+    primary_y: s32;
+    primary_fg: u32;
+    primary_bg: u32;
+    primary_attributes: u32;
+    top: s32;
+    bottom: s32;
+    autowrap: bool = true;
+    pending_wrap: bool;
+    origin: bool;
+    insert_mode: bool;
+    state: s32;
+    args: [32]s32;
+    argc: s32 = 1;
+    private_mode: bool;
+    intermediate: bool;
+    osc: [..]u8;
+    utf_value: u32;
+    utf_min: u32;
+    utf_remaining: s32;
+    last_codepoint: u32;
+}
+
+init :: (t: *Terminal, cols: s32, rows: s32, scrollback: s32, fg: u32, bg: u32) {
+    t.default_fg = fg;
+    t.default_bg = bg;
+    t.fg = fg;
+    t.bg = bg;
+    t.attributes = CELL_DEFAULT_FG | CELL_DEFAULT_BG;
+    t.palette = Colors.default_palette();
+    t.history_limit = term_clamp(scrollback, 0, 10000);
+    t.cursor_visible = true;
+    t.autowrap = true;
+    resize(t, cols, rows);
+    term_save(t);
+}
+
+/// Change configured default colors without changing text, cursor/parser state,
+/// scrollback position, or explicit SGR palette/true-color attributes.
+set_default_colors :: (t: *Terminal, fg: u32, bg: u32) {
+    if fg == t.default_fg && bg == t.default_bg return;
+    t.default_fg = fg;
+    t.default_bg = bg;
+    if (t.attributes & CELL_DEFAULT_FG) != 0         t.fg = fg;
+    if (t.attributes & CELL_DEFAULT_BG) != 0         t.bg = bg;
+    if (t.saved_attributes & CELL_DEFAULT_FG) != 0   t.saved_fg = fg;
+    if (t.saved_attributes & CELL_DEFAULT_BG) != 0   t.saved_bg = bg;
+    if (t.primary_attributes & CELL_DEFAULT_FG) != 0 t.primary_fg = fg;
+    if (t.primary_attributes & CELL_DEFAULT_BG) != 0 t.primary_bg = bg;
+    for i: 0..t.cells.count {
+        if (t.cells[i].flags & CELL_DEFAULT_FG) != 0 t.cells[i].fg = fg;
+        if (t.cells[i].flags & CELL_DEFAULT_BG) != 0 t.cells[i].bg = bg;
+    }
+    for i: 0..t.alt_cells.count {
+        if (t.alt_cells[i].flags & CELL_DEFAULT_FG) != 0 t.alt_cells[i].fg = fg;
+        if (t.alt_cells[i].flags & CELL_DEFAULT_BG) != 0 t.alt_cells[i].bg = bg;
+    }
+    // History may retain columns hidden by the current zoom level. Update all
+    // stored cells so widening the viewport cannot reveal stale theme colors.
+    for i: 0..t.history.count {
+        if (t.history[i].flags & CELL_DEFAULT_FG) != 0 t.history[i].fg = fg;
+        if (t.history[i].flags & CELL_DEFAULT_BG) != 0 t.history[i].bg = bg;
+    }
+}
+
+/// Recolor indexed ANSI output while retaining literal RGB colors and text.
+set_palette :: (t: *Terminal, palette: *const [16]u32) {
+    changed:=false;
+    for i:0..16 if t.palette[i]!=palette.*[i] changed=true;
+    if !changed return;
+    t.palette=palette.*;
+    term_recolor_attributes(t,t.attributes,&t.fg,&t.bg);
+    term_recolor_attributes(t,t.saved_attributes,&t.saved_fg,&t.saved_bg);
+    term_recolor_attributes(t,t.primary_attributes,&t.primary_fg,&t.primary_bg);
+    for i:0..t.cells.count term_recolor_attributes(t,t.cells[i].flags,&t.cells[i].fg,&t.cells[i].bg);
+    for i:0..t.alt_cells.count term_recolor_attributes(t,t.alt_cells[i].flags,&t.alt_cells[i].fg,&t.alt_cells[i].bg);
+    for i:0..t.history.count term_recolor_attributes(t,t.history[i].flags,&t.history[i].fg,&t.history[i].bg);
+}
+
+/// Change the retained scrollback limit without resetting the active terminal.
+/// Shrinking keeps the newest rows; view_offset remains relative to live output.
+set_history_limit :: (t: *Terminal, limit: s32) {
+    next_limit := term_clamp(limit, 0, 10000);
+    if next_limit == t.history_limit return;
+    retained := term_clamp(t.history_count, 0, next_limit);
+    next: [..]Cell;
+    next.reserve(cast(ssize)(retained * t.history_stride));
+    first := t.history_count - retained;
+    row: s32 = 0;
+    while row < retained {
+        slot := (t.history_start + first + row) % t.history_limit;
+        x: s32 = 0;
+        while x < t.history_stride {
+            next.push(t.history[cast(ssize)(slot * t.history_stride + x)]);
+            x += 1;
+        }
+        row += 1;
+    }
+    t.history.reset();
+    t.history = next.take();
+    t.history_limit = next_limit;
+    t.history_count = retained;
+    t.history_start = 0;
+    t.view_offset = term_clamp(t.view_offset, 0, retained);
+}
+
+/// Start a replacement shell on a clean terminal while retaining old output.
+/// This directly resets state, including incomplete OSC/UTF-8 sequences that
+/// would otherwise consume bytes of a reset escape sequence from the new shell.
+begin_session :: (t: *Terminal) {
+    last: s32 = -1;
+    for row: 0..t.rows {
+        for x: 0..t.cols {
+            cp := t.cells[row * cast(ssize) t.cols + x].codepoint;
+            if cp != 0 && cp != 32 last = cast(s32) row;
+        }
+    }
+    row: s32 = 0;
+    while row <= last {
+        term_history_row(t, row);
+        row += 1;
+    }
+
+    // Move retained storage into a freshly initialized record. Every session
+    // mode, saved cursor and decoder state gets its normal default, while the
+    // old buffer allocations can be reused without losing their ownership.
+    t.title.clear();
+    t.replies.clear();
+    t.osc.clear();
+    next: Terminal;
+    next.cols = t.cols;
+    next.rows = t.rows;
+    next.default_fg = t.default_fg;
+    next.default_bg = t.default_bg;
+    next.palette = t.palette;
+    next.fg = t.default_fg;
+    next.bg = t.default_bg;
+    next.attributes = CELL_DEFAULT_FG | CELL_DEFAULT_BG;
+    next.primary_fg = t.default_fg;
+    next.primary_bg = t.default_bg;
+    next.primary_attributes = next.attributes;
+    next.bottom = t.rows - 1;
+    next.cells = t.cells.take();
+    next.alt_cells = t.alt_cells.take();
+    next.history = t.history.take();
+    next.history_limit = t.history_limit;
+    next.history_count = t.history_count;
+    next.history_start = t.history_start;
+    next.history_stride = t.history_stride;
+    next.title = t.title.take();
+    next.replies = t.replies.take();
+    next.osc = t.osc.take();
+    t.* = next;
+    blank := term_default_blank(t);
+    for i: 0..t.cells.count t.cells[i] = blank;
+    for i: 0..t.alt_cells.count t.alt_cells[i] = blank;
+    term_save(t);
+}
+
+release :: (t: *Terminal) {
+    t.cells.reset();
+    t.alt_cells.reset();
+    t.history.reset();
+    t.title.reset();
+    t.replies.reset();
+    t.osc.reset();
+}
+
+resize :: (t: *Terminal, cols: s32, rows: s32) {
+    width := term_clamp(cols, 2, 512);
+    height := term_clamp(rows, 1, 256);
+    if width == t.cols && height == t.rows return;
+    next: [..]Cell;
+    next_alt: [..]Cell;
+    next.reserve(cast(ssize)(width * height));
+    next_alt.reserve(cast(ssize)(width * height));
+    y: s32 = 0;
+    while y < height {
+        x: s32 = 0;
+        while x < width {
+            c := term_blank(t);
+            a := c;
+            if x < t.cols && y < t.rows {
+                c = t.cells[cast(ssize)(y * t.cols + x)];
+                a = t.alt_cells[cast(ssize)(y * t.cols + x)];
+            }
+            if x == width - 1 {
+                if (c.flags & 8) != 0 c = term_blank(t);
+                if (a.flags & 8) != 0 a = term_blank(t);
+            }
+            next.push(c);
+            next_alt.push(a);
+            x += 1;
+        }
+        y += 1;
+    }
+    t.cells.reset();
+    t.alt_cells.reset();
+    t.cells = next.take();
+    t.alt_cells = next_alt.take();
+    term_grow_history(t, width);
+    t.cols = width;
+    t.rows = height;
+    t.cursor_x = term_clamp(t.cursor_x, 0, width - 1);
+    t.cursor_y = term_clamp(t.cursor_y, 0, height - 1);
+    t.saved_x = term_clamp(t.saved_x, 0, width - 1);
+    t.saved_y = term_clamp(t.saved_y, 0, height - 1);
+    t.primary_x = term_clamp(t.primary_x, 0, width - 1);
+    t.primary_y = term_clamp(t.primary_y, 0, height - 1);
+    t.top = 0;
+    t.bottom = height - 1;
+    t.pending_wrap = false;
+}
+
+visible_cell :: (t: *Terminal, x: s32, y: s32) -> Cell {
+    if x < 0 || x >= t.cols || y < 0 || y >= t.rows return term_blank(t);
+    if !t.alternate && t.view_offset > 0 {
+        row := t.history_count - t.view_offset + y;
+        if row < t.history_count {
+            slot := (t.history_start + row) % t.history_limit;
+            c := t.history[cast(ssize)(slot * t.history_stride + x)];
+            // Clip a wide glyph at the viewport edge without modifying the
+            // stored pair, so changing zoom back reveals the complete glyph.
+            if (c.flags & 8) != 0 && x == t.cols - 1 {
+                c.codepoint = 32;
+                c.flags &= 7 | CELL_COLOR_ORIGIN;
+            } else if (c.flags & 16) != 0 {
+                valid := false;
+                if x > 0
+                    valid = (t.history[cast(ssize)(slot * t.history_stride + x - 1)].flags & 8) != 0;
+                if !valid {
+                    c.codepoint = 32;
+                    c.flags &= 7 | CELL_COLOR_ORIGIN;
+                }
+            }
+            return c;
+        }
+        return term_get(t, x, row - t.history_count);
+    }
+    return term_get(t, x, y);
+}
+
+scroll_view :: (t: *Terminal, delta: s32) {
+    if t.alternate {
+        t.view_offset = 0;
+        return;
+    }
+    t.view_offset = term_clamp(t.view_offset + delta, 0, t.history_count);
+}
+
+feed :: (t: *Terminal, text: str) {
+    i: ssize = 0;
+    while i < text.count {
+        term_byte(t, text[i]);
+        i += 1;
+    }
+}
+
+}
+
+term_clamp :: (value: s32, lo: s32, hi: s32) -> s32 {
+    if value < lo return lo;
+    if value > hi return hi;
+    return value;
+}
+term_blank :: (t: *Terminal) -> Cell {
+    return .{
+        .codepoint = 32,
+        .fg = t.fg,
+        .bg = t.bg,
+        .flags = t.attributes & (7 | CELL_COLOR_ORIGIN)
+    };
+}
+term_default_blank :: (t: *Terminal) -> Cell {
+    return .{
+        .codepoint = 32,
+        .fg = t.default_fg,
+        .bg = t.default_bg,
+        .flags = CELL_DEFAULT_FG | CELL_DEFAULT_BG
+    };
+}
+term_grow_history :: (t: *Terminal, width: s32) {
+    if width <= t.history_stride return;
+    next: [..]Cell;
+    next.reserve(cast(ssize)(width * t.history_count));
+    row: s32 = 0;
+    while row < t.history_count {
+        slot := (t.history_start + row) % t.history_limit;
+        x: s32 = 0;
+        while x < width {
+            c := term_default_blank(t);
+            if x < t.history_stride c = t.history[cast(ssize)(slot * t.history_stride + x)];
+            next.push(c);
+            x += 1;
+        }
+        row += 1;
+    }
+    t.history.reset();
+    t.history = next.take();
+    t.history_stride = width;
+    t.history_start = 0;
+}
+term_get :: (t: *Terminal, x: s32, y: s32) -> Cell {
+    index := cast(ssize)(y * t.cols + x);
+    if t.alternate return t.alt_cells[index];
+    return t.cells[index];
+}
+term_set :: (t: *Terminal, x: s32, y: s32, c: Cell) {
+    index := cast(ssize)(y * t.cols + x);
+    if t.alternate t.alt_cells[index] = c;
+    else           t.cells[index] = c;
+}
+term_erase :: (t: *Terminal, x: s32, y: s32) {
+    if x < 0 || x >= t.cols || y < 0 || y >= t.rows return;
+    c := term_get(t, x, y);
+    if (c.flags & 16) != 0 && x > 0         term_set(t, x - 1, y, term_blank(t));
+    if (c.flags & 8) != 0 && x + 1 < t.cols term_set(t, x + 1, y, term_blank(t));
+    term_set(t, x, y, term_blank(t));
+}
+term_clear :: (t: *Terminal, first: s32, last: s32) {
+    i := term_clamp(first, 0, t.cols * t.rows - 1);
+    end := term_clamp(last, 0, t.cols * t.rows - 1);
+    while i <= end {
+        term_erase(t, i % t.cols, i / t.cols);
+        i += 1;
+    }
+}
+term_history :: (t: *Terminal) {
+    if t.alternate || t.history_limit <= 0 return;
+    term_history_row(t, 0);
+}
+term_history_row :: (t: *Terminal, row: s32) {
+    if t.history_limit <= 0 return;
+    slot: s32 = 0;
+    if t.history_count < t.history_limit {
+        slot = t.history_count;
+        x: s32 = 0;
+        while x < t.history_stride {
+            c := term_default_blank(t);
+            if x < t.cols c = t.cells[cast(ssize)(row * t.cols + x)];
+            t.history.push(c);
+            x += 1;
+        }
+        t.history_count += 1;
+    } else {
+        slot = t.history_start;
+        x: s32 = 0;
+        while x < t.history_stride {
+            c := term_default_blank(t);
+            if x < t.cols c = t.cells[cast(ssize)(row * t.cols + x)];
+            t.history[cast(ssize)(slot * t.history_stride + x)] = c;
+            x += 1;
+        }
+        t.history_start = (t.history_start + 1) % t.history_limit;
+    }
+    if t.view_offset > 0 t.view_offset = term_clamp(t.view_offset + 1, 0, t.history_count);
+}
+term_scroll_up :: (t: *Terminal, top: s32, bottom: s32, count: s32, save: bool) {
+    n := term_clamp(count, 1, bottom - top + 1);
+    k: s32 = 0;
+    while k < n {
+        if save && top == 0 && bottom == t.rows - 1 term_history(t);
+        y := top;
+        while y < bottom {
+            x: s32 = 0;
+            while x < t.cols {
+                term_set(t, x, y, term_get(t, x, y + 1));
+                x += 1;
+            }
+            y += 1;
+        }
+        term_clear(t, bottom * t.cols, (bottom + 1) * t.cols - 1);
+        k += 1;
+    }
+}
+term_scroll_down :: (t: *Terminal, top: s32, bottom: s32, count: s32) {
+    n := term_clamp(count, 1, bottom - top + 1);
+    k: s32 = 0;
+    while k < n {
+        y := bottom;
+        while y > top {
+            x: s32 = 0;
+            while x < t.cols {
+                term_set(t, x, y, term_get(t, x, y - 1));
+                x += 1;
+            }
+            y -= 1;
+        }
+        term_clear(t, top * t.cols, (top + 1) * t.cols - 1);
+        k += 1;
+    }
+}
+term_move :: (t: *Terminal, x: s32, y: s32) {
+    t.cursor_x = term_clamp(x, 0, t.cols - 1);
+    lo: s32 = 0;
+    hi := t.rows - 1;
+    if t.origin {
+        lo = t.top;
+        hi = t.bottom;
+    }
+    t.cursor_y = term_clamp(y, lo, hi);
+    t.pending_wrap = false;
+}
+term_newline :: (t: *Terminal) {
+    t.pending_wrap = false;
+    if      t.cursor_y == t.bottom  term_scroll_up(t, t.top, t.bottom, 1, true);
+    else if t.cursor_y < t.rows - 1 t.cursor_y += 1;
+}
+term_save :: (t: *Terminal) {
+    t.saved_x = t.cursor_x;
+    t.saved_y = t.cursor_y;
+    t.saved_fg = t.fg;
+    t.saved_bg = t.bg;
+    t.saved_attributes = t.attributes;
+}
+term_restore :: (t: *Terminal) {
+    term_move(t, t.saved_x, t.saved_y);
+    t.fg = t.saved_fg;
+    t.bg = t.saved_bg;
+    t.attributes = t.saved_attributes;
+}
+term_width :: (u: u32) -> s32 {
+    // Combining marks are consumed without advancing. Full grapheme shaping is
+    // intentionally left to a future renderer; common CJK/emoji occupy two cells.
+    if (u >= 16#300 && u <= 16#36f) || (u >= 16#1ab0 && u <= 16#1aff) ||
+       (u >= 16#1dc0 && u <= 16#1dff) || (u >= 16#20d0 && u <= 16#20ff) ||
+       (u >= 16#fe00 && u <= 16#fe0f) || (u >= 16#fe20 && u <= 16#fe2f) ||
+       u == 16#200d
+        return 0;
+    if (u >= 16#1100 && u <= 16#115f) || (u >= 16#2329 && u <= 16#232a) ||
+       (u >= 16#2e80 && u <= 16#a4cf && u != 16#303f) ||
+       (u >= 16#ac00 && u <= 16#d7a3) || (u >= 16#f900 && u <= 16#faff) ||
+       (u >= 16#fe10 && u <= 16#fe19) || (u >= 16#fe30 && u <= 16#fe6f) ||
+       (u >= 16#ff00 && u <= 16#ff60) || (u >= 16#ffe0 && u <= 16#ffe6) ||
+       (u >= 16#1f300 && u <= 16#1faff) || (u >= 16#20000 && u <= 16#3fffd)
+        return 2;
+    return 1;
+}
+term_print :: (t: *Terminal, u: u32) {
+    width := term_width(u);
+    if width == 0 return;
+    if t.pending_wrap && t.autowrap {
+        t.cursor_x = 0;
+        term_newline(t);
+    }
+    t.pending_wrap = false;
+    if width == 2 && t.cursor_x == t.cols - 1 {
+        if t.autowrap {
+            t.cursor_x = 0;
+            term_newline(t);
+        } else return;
+    }
+    if t.insert_mode {
+        x := t.cols - 1;
+        while x >= t.cursor_x + width {
+            term_set(t, x, t.cursor_y, term_get(t, x - width, t.cursor_y));
+            x -= 1;
+        }
+        // The shifted glyph may now start immediately after the inserted span.
+        // Blank the vacated slots directly: erasing their old wide flags would
+        // incorrectly erase that newly shifted glyph's leading cell.
+        x = t.cursor_x;
+        while x < t.cursor_x + width {
+            term_set(t, x, t.cursor_y, term_blank(t));
+            x += 1;
+        }
+    }
+    term_erase(t, t.cursor_x, t.cursor_y);
+    c: Cell = .{ .codepoint = u, .fg = t.fg, .bg = t.bg, .flags = t.attributes };
+    if width == 2 {
+        term_erase(t, t.cursor_x + 1, t.cursor_y);
+        c.flags |= 8;
+        term_set(
+            t,
+            t.cursor_x + 1,
+            t.cursor_y,
+            .{
+                .codepoint = 0,
+                .fg = t.fg,
+                .bg = t.bg,
+                .flags = 16 | (t.attributes & CELL_COLOR_ORIGIN)
+            }
+        );
+    }
+    term_set(t, t.cursor_x, t.cursor_y, c);
+    if t.insert_mode term_repair_row(t, t.cursor_y);
+    t.last_codepoint = u;
+    if t.cursor_x + width >= t.cols t.pending_wrap = true;
+    else                            t.cursor_x += width;
+}
+term_repair_row :: (t: *Terminal, y: s32) {
+    x: s32 = 0;
+    while x < t.cols {
+        c := term_get(t, x, y);
+        if (c.flags & 8) != 0 {
+            if x + 1 >= t.cols term_set(t, x, y, term_blank(t));
+            else {
+                next := term_get(t, x + 1, y);
+                if (next.flags & 16) == 0 term_set(t, x, y, term_blank(t));
+            }
+        } else if (c.flags & 16) != 0 {
+            if x == 0 term_set(t, x, y, term_blank(t));
+            else {
+                previous := term_get(t, x - 1, y);
+                if (previous.flags & 8) == 0 term_set(t, x, y, term_blank(t));
+            }
+        }
+        x += 1;
+    }
+}
+term_recolor_attributes :: (t:*const Terminal,flags:u32,fg:*u32,bg:*u32) {
+    if (flags&CELL_INDEXED_FG)!=0 fg.*=Colors.indexed(&t.palette,cast(s32)((flags&CELL_FG_INDEX_MASK)>>9));
+    if (flags&CELL_INDEXED_BG)!=0 bg.*=Colors.indexed(&t.palette,cast(s32)((flags&CELL_BG_INDEX_MASK)>>17));
+}
+term_indexed :: (t:*Terminal,foreground:bool,index:s32) {
+    n:=term_clamp(index,0,255);
+    if foreground {
+        t.fg=Colors.indexed(&t.palette,n);
+        t.attributes &= ~(CELL_DEFAULT_FG|CELL_INDEXED_FG|CELL_FG_INDEX_MASK);
+        t.attributes |= CELL_INDEXED_FG|(cast(u32)n<<9);
+    } else {
+        t.bg=Colors.indexed(&t.palette,n);
+        t.attributes &= ~(CELL_DEFAULT_BG|CELL_INDEXED_BG|CELL_BG_INDEX_MASK);
+        t.attributes |= CELL_INDEXED_BG|(cast(u32)n<<17);
+    }
+}
+term_sgr :: (t: *Terminal) {
+    i: s32 = 0;
+    while i < t.argc {
+        a := t.args[i];
+        if a == 0 {
+            t.fg = t.default_fg;
+            t.bg = t.default_bg;
+            t.attributes = CELL_DEFAULT_FG | CELL_DEFAULT_BG;
+        } else if a == 1 t.attributes |= 1;
+        else if a == 4 t.attributes |= 2;
+        else if a == 7 t.attributes |= 4;
+        else if a == 22 t.attributes &= ~cast(u32) 1;
+        else if a == 24 t.attributes &= ~cast(u32) 2;
+        else if a == 27 t.attributes &= ~cast(u32) 4;
+        else if a == 39 {
+            t.fg = t.default_fg;
+            t.attributes &= ~(CELL_INDEXED_FG|CELL_FG_INDEX_MASK);
+            t.attributes |= CELL_DEFAULT_FG;
+        } else if a == 49 {
+            t.bg = t.default_bg;
+            t.attributes &= ~(CELL_INDEXED_BG|CELL_BG_INDEX_MASK);
+            t.attributes |= CELL_DEFAULT_BG;
+        } else if a >= 30 && a <= 37 {
+            term_indexed(t,true,a-30);
+        } else if a >= 40 && a <= 47 {
+            term_indexed(t,false,a-40);
+        } else if a >= 90 && a <= 97 {
+            term_indexed(t,true,a-90+8);
+        } else if a >= 100 && a <= 107 {
+            term_indexed(t,false,a-100+8);
+        } else if (a == 38 || a == 48) && i + 1 < t.argc {
+            color: u32 = 0;
+            valid := false;
+            palette_index:s32= -1;
+            if t.args[i + 1] == 5 && i + 2 < t.argc {
+                palette_index=term_clamp(t.args[i+2],0,255);
+                i += 2;
+                valid = true;
+            } else if t.args[i + 1] == 2 && i + 4 < t.argc {
+                color = cast(u32)(
+                    term_clamp(t.args[i + 2], 0, 255) * 65536 + term_clamp(t.args[i + 3], 0, 255) * 256 + term_clamp(
+                        t.args[i + 4],
+                        0,
+                        255
+                    )
+                );
+                i += 4;
+                valid = true;
+            }
+            if valid {
+                if palette_index>=0 term_indexed(t,a==38,palette_index);
+                else if a == 38 {
+                    t.fg = color;
+                    t.attributes &= ~(CELL_DEFAULT_FG|CELL_INDEXED_FG|CELL_FG_INDEX_MASK);
+                } else {
+                    t.bg = color;
+                    t.attributes &= ~(CELL_DEFAULT_BG|CELL_INDEXED_BG|CELL_BG_INDEX_MASK);
+                }
+            }
+        }
+        i += 1;
+    }
+}
+term_alt :: (t: *Terminal, enable: bool) {
+    if enable == t.alternate return;
+    t.top = 0;
+    t.bottom = t.rows - 1;
+    if enable {
+        t.primary_x = t.cursor_x;
+        t.primary_y = t.cursor_y;
+        t.primary_fg = t.fg;
+        t.primary_bg = t.bg;
+        t.primary_attributes = t.attributes;
+        term_save(t);
+        t.alternate = true;
+        term_clear(t, 0, t.cols * t.rows - 1);
+        term_move(t, 0, 0);
+    } else {
+        t.alternate = false;
+        term_restore(t);
+        term_move(t, t.primary_x, t.primary_y);
+        t.fg = t.primary_fg;
+        t.bg = t.primary_bg;
+        t.attributes = t.primary_attributes;
+    }
+    t.view_offset = 0;
+}
+term_mode :: (t: *Terminal, enable: bool) {
+    i: s32 = 0;
+    while i < t.argc {
+        a := t.args[i];
+        if t.private_mode {
+            if a == 1 t.application_cursor = enable;
+            else if a == 7 {
+                t.autowrap = enable;
+                t.pending_wrap = false;
+            } else if a == 25 t.cursor_visible = enable;
+            else if a == 2004 t.bracketed_paste = enable;
+            else if a == 47 || a == 1047 || a == 1049 term_alt(t, enable);
+            else if a == 1048 {
+                if enable term_save(t);
+                else      term_restore(t);
+            } else if a == 6 {
+                t.origin = enable;
+                if enable term_move(t, 0, t.top);
+                else      term_move(t, 0, 0);
+            }
+        } else if a == 4 t.insert_mode = enable;
+        i += 1;
+    }
+}
+term_reply :: (t: *Terminal, text: str) {
+    i: ssize = 0;
+    while i < text.count {
+        t.replies.push(text[i]);
+        i += 1;
+    }
+}
+term_csi :: (t: *Terminal, final: u8) {
+    n := t.args[0];
+    if n == 0 n = 1;
+    x := t.cursor_x;
+    y := t.cursor_y;
+    if final == 65 term_move(t, x, y - n);
+    else if final == 66 || final == 101 term_move(t, x, y + n);
+    else if final == 67 || final == 97 term_move(t, x + n, y);
+    else if final == 68 term_move(t, x - n, y);
+    else if final == 69 term_move(t, 0, y + n);
+    else if final == 70 term_move(t, 0, y - n);
+    else if final == 71 || final == 96 term_move(t, n - 1, y);
+    else if final == 72 || final == 102 {
+        column: s32 = 1;
+        if t.argc > 1 && t.args[1] > 0 column = t.args[1];
+        row := n - 1;
+        if t.origin row += t.top;
+        term_move(t, column - 1, row);
+    } else if final == 100 {
+        row := n - 1;
+        if t.origin row += t.top;
+        term_move(t, x, row);
+    } else if final == 74 {
+        if t.args[0] == 0 term_clear(t, y * t.cols + x, t.rows * t.cols - 1);
+        else if t.args[0] == 1 term_clear(t, 0, y * t.cols + x);
+        else if t.args[0] == 2 term_clear(t, 0, t.rows * t.cols - 1);
+        else if t.args[0] == 3 {
+            t.history.clear();
+            t.history_count = 0;
+            t.history_start = 0;
+            t.view_offset = 0;
+        }
+    } else if final == 75 {
+        if      t.args[0] == 0 term_clear(t, y * t.cols + x, (y + 1) * t.cols - 1);
+        else if t.args[0] == 1 term_clear(t, y * t.cols, y * t.cols + x);
+        else if t.args[0] == 2 term_clear(t, y * t.cols, (y + 1) * t.cols - 1);
+    } else if final == 88 term_clear(
+        t,
+        y * t.cols + x,
+        y * t.cols + term_clamp(x + n - 1, 0, t.cols - 1)
+    );
+    else if final == 80 {
+        n = term_clamp(n, 1, t.cols - x);
+        at := x;
+        while at < t.cols - n {
+            term_set(t, at, y, term_get(t, at + n, y));
+            at += 1;
+        }
+        at = t.cols - n;
+        while at < t.cols {
+            term_set(t, at, y, term_blank(t));
+            at += 1;
+        }
+        term_repair_row(t, y);
+    } else if final == 64 {
+        n = term_clamp(n, 1, t.cols - x);
+        at := t.cols - 1;
+        while at >= x + n {
+            term_set(t, at, y, term_get(t, at - n, y));
+            at -= 1;
+        }
+        at = x;
+        while at < x + n {
+            term_set(t, at, y, term_blank(t));
+            at += 1;
+        }
+        term_repair_row(t, y);
+    } else if final == 76 {
+        if y >= t.top && y <= t.bottom term_scroll_down(t, y, t.bottom, n);
+    } else if final == 77 {
+        if y >= t.top && y <= t.bottom term_scroll_up(t, y, t.bottom, n, false);
+    } else if final == 83 term_scroll_up(t, t.top, t.bottom, n, true);
+    else if final == 84 term_scroll_down(t, t.top, t.bottom, n);
+    else if final == 109 term_sgr(t);
+    else if final == 104 term_mode(t, true);
+    else if final == 108 term_mode(t, false);
+    else if final == 114 && !t.private_mode {
+        top := n - 1;
+        bottom := t.rows - 1;
+        if t.argc > 1 && t.args[1] > 0 bottom = t.args[1] - 1;
+        if top >= 0 && bottom < t.rows && top < bottom {
+            t.top = top;
+            t.bottom = bottom;
+            if t.origin term_move(t, 0, top);
+            else        term_move(t, 0, 0);
+        }
+    } else if final == 115 term_save(t);
+    else if final == 117 term_restore(t);
+    else if final == 99 && !t.private_mode term_reply(t, "\x1b[?1;2c");
+    else if final == 110 && !t.private_mode {
+        if      t.args[0] == 5 term_reply(t, "\x1b[0n");
+        else if t.args[0] == 6 term_reply(t, tprint("\x1b[{};{}R", y + 1, x + 1));
+    } else if final == 98 && t.last_codepoint != 0 {
+        count := term_clamp(n, 1, 65535);
+        i: s32 = 0;
+        while i < count {
+            term_print(t, t.last_codepoint);
+            i += 1;
+        }
+    }
+}
+term_osc_finish :: (t: *Terminal) {
+    if t.osc.count >= 2 && (t.osc[0] == 48 || t.osc[0] == 50) && t.osc[1] == 59 {
+        t.title.clear();
+        i: ssize = 2;
+        while i < t.osc.count {
+            if t.osc[i] >= 32 t.title.push(t.osc[i]);
+            i += 1;
+        }
+    }
+    t.osc.clear();
+    t.state = 0;
+}
+term_reset :: (t: *Terminal) {
+    if t.alternate term_alt(t, false);
+    t.fg = t.default_fg;
+    t.bg = t.default_bg;
+    t.attributes = CELL_DEFAULT_FG | CELL_DEFAULT_BG;
+    t.top = 0;
+    t.bottom = t.rows - 1;
+    t.cursor_visible = true;
+    t.autowrap = true;
+    t.origin = false;
+    t.insert_mode = false;
+    t.application_cursor = false;
+    t.bracketed_paste = false;
+    term_move(t, 0, 0);
+    term_clear(t, 0, t.rows * t.cols - 1);
+    term_save(t);
+}
+term_byte :: (t: *Terminal, b: u8) {
+    // OSC and ignored string payloads are bounded and never reach the grid.
+    if t.state == 3 {
+        if b == 7 {
+            term_osc_finish(t);
+            return;
+        }
+        if b == 27 {
+            t.state = 4;
+            return;
+        }
+        if b == 24 || b == 26 {
+            t.osc.clear();
+            t.state = 0;
+            return;
+        }
+        if t.osc.count < 4096 t.osc.push(b);
+        return;
+    }
+    if t.state == 4 {
+        if b == 92 {
+            term_osc_finish(t);
+            return;
+        }
+        t.state = 3;
+        if t.osc.count < 4096 t.osc.push(b);
+        return;
+    }
+    if t.state == 5 {
+        if      b == 27            t.state = 6;
+        else if b == 24 || b == 26 t.state = 0;
+        return;
+    }
+    if t.state == 6 {
+        if b == 92 t.state = 0;
+        else       t.state = 5;
+        return;
+    }
+    if b == 27 {
+        t.state = 1;
+        t.utf_remaining = 0;
+        return;
+    }
+    if b == 24 || b == 26 {
+        t.state = 0;
+        t.utf_remaining = 0;
+        return;
+    }
+    if b < 32 || b == 127 {
+        if t.utf_remaining > 0 {
+            t.utf_remaining = 0;
+            term_print(t, 16#fffd);
+        }
+        if      b == 13                       term_move(t, 0, t.cursor_y);
+        else if b == 10 || b == 11 || b == 12 term_newline(t);
+        else if b == 8                        term_move(t, t.cursor_x - 1, t.cursor_y);
+        else if b == 9                        term_move(t, ((t.cursor_x / 8) + 1) * 8, t.cursor_y);
+        return;
+    }
+    if t.state == 7 {
+        t.state = 0;
+        return;
+    }
+    if t.state == 1 {
+        t.state = 0;
+        if b == 91 {
+            t.state = 2;
+            t.argc = 1;
+            t.private_mode = false;
+            t.intermediate = false;
+            i: s32 = 0;
+            while i < 32 {
+                t.args[i] = 0;
+                i += 1;
+            }
+        } else if b == 93 {
+            t.state = 3;
+            t.osc.clear();
+        } else if b == 80 || b == 94 || b == 95 t.state = 5;
+        else if b == 40 || b == 41 || b == 42 || b == 43 || b == 35 || b == 37 t.state = 7;
+        else if b == 55 term_save(t);
+        else if b == 56 term_restore(t);
+        else if b == 68 term_newline(t);
+        else if b == 69 {
+            t.cursor_x = 0;
+            term_newline(t);
+        } else if b == 77 {
+            if t.cursor_y == t.top term_scroll_down(t, t.top, t.bottom, 1);
+            else                   term_move(t, t.cursor_x, t.cursor_y - 1);
+        } else if b == 99 term_reset(t);
+        else if b == 90 term_reply(t, "\x1b[?1;2c");
+        return;
+    }
+    if t.state == 2 {
+        if b >= 48 && b <= 57 {
+            if t.args[t.argc - 1] < 1000000
+                t.args[t.argc - 1] = t.args[t.argc - 1] * 10 + cast(s32)(b - 48);
+        } else if b == 59 || b == 58 {
+            if t.argc < 32 t.argc += 1;
+        } else if b == 63 t.private_mode = true;
+        else if b == 60 || b == 61 || b == 62 t.intermediate = true;
+        else if b >= 32 && b <= 47 t.intermediate = true;
+        else if b >= 64 && b <= 126 {
+            if !t.intermediate term_csi(t, b);
+            t.state = 0;
+        } else {
+            t.state = 0;
+        }
+        return;
+    }
+    if t.utf_remaining > 0 {
+        if b >= 128 && b <= 191 {
+            t.utf_value = (t.utf_value << 6) | cast(u32)(b & 63);
+            t.utf_remaining -= 1;
+            if t.utf_remaining == 0 {
+                u := t.utf_value;
+                if u < t.utf_min || u > 16#10ffff || (u >= 16#d800 && u <= 16#dfff) u = 16#fffd;
+                term_print(t, u);
+            }
+            return;
+        }
+        t.utf_remaining = 0;
+        term_print(t, 16#fffd);
+    }
+    if b < 128 term_print(t, cast(u32) b);
+    else if b >= 194 && b <= 223 {
+        t.utf_value = cast(u32)(b & 31);
+        t.utf_remaining = 1;
+        t.utf_min = 128;
+    } else if b >= 224 && b <= 239 {
+        t.utf_value = cast(u32)(b & 15);
+        t.utf_remaining = 2;
+        t.utf_min = 2048;
+    } else if b >= 240 && b <= 244 {
+        t.utf_value = cast(u32)(b & 7);
+        t.utf_remaining = 3;
+        t.utf_min = 65536;
+    } else term_print(t, 16#fffd);
+}

@@ -1,0 +1,45 @@
+#import "../src/input.glo";
+#import "Io";
+
+check :: (ok: bool, message: str) {
+    if !ok { print("FAIL: {}\n", message); exit(1); }
+}
+
+main :: () {
+    check(key_sequence(38, 0, false) == "\x1b[A", "normal cursor up");
+    check(key_sequence(40, 0, true) == "\x1bOB", "application cursor down");
+    check(key_sequence(37, 0, true) == "\x1bOD", "application cursor left");
+    check(key_sequence(39, 0, false) == "\x1b[C", "normal cursor right");
+    check(key_sequence(36, 0, false) == "\x1b[H", "normal home");
+    check(key_sequence(35, 0, true) == "\x1bOF", "application end");
+    // Modifier bits differ from xterm's order: Ctrl=2 here, Alt=4 here.
+    check(key_sequence(38, 1, true) == "\x1b[1;2A", "shift arrow");
+    check(key_sequence(38, 2, true) == "\x1b[1;5A", "control arrow");
+    check(key_sequence(38, 4, false) == "\x1b[1;3A", "alt arrow");
+    check(key_sequence(38, 3, false) == "\x1b[1;6A", "shift control arrow");
+    check(key_sequence(38, 5, false) == "\x1b[1;4A", "shift alt arrow");
+    check(key_sequence(38, 6, false) == "\x1b[1;7A", "control alt arrow");
+    check(key_sequence(38, 7, false) == "\x1b[1;8A", "all modifiers");
+    check(key_sequence(112, 0, false) == "\x1bOP", "F1");
+    check(key_sequence(115, 2, false) == "\x1b[1;5S", "control F4");
+    check(key_sequence(116, 0, false) == "\x1b[15~", "F5");
+    check(key_sequence(117, 0, false) == "\x1b[17~", "F6");
+    check(key_sequence(118, 0, false) == "\x1b[18~", "F7");
+    check(key_sequence(119, 0, false) == "\x1b[19~", "F8");
+    check(key_sequence(120, 0, false) == "\x1b[20~", "F9");
+    check(key_sequence(121, 0, false) == "\x1b[21~", "F10");
+    check(key_sequence(122, 0, false) == "\x1b[23~", "F11");
+    check(key_sequence(123, 4, false) == "\x1b[24;3~", "alt F12");
+    check(key_sequence(45, 0, false) == "\x1b[2~", "insert");
+    check(key_sequence(46, 2, false) == "\x1b[3;5~", "control delete");
+    check(key_sequence(33, 0, false) == "\x1b[5~", "page up");
+    check(key_sequence(34, 0, false) == "\x1b[6~", "page down");
+    check(key_sequence(9, 1, false) == "\x1b[Z", "shift tab");
+    check(key_sequence(65, 0, false) == "", "text keys handled by character input");
+    check(paste("a\r\nb\nc\rd", false) == "a\rb\rc\rd", "clipboard line ending normalization");
+    check(paste("한😀", true) == "\x1b[200~한😀\x1b[201~", "Unicode bracketed paste");
+    check(paste("before\x1b[201~after", true) == "\x1b[200~before[201~after\x1b[201~", "bracketed paste escape injection");
+    check(paste("", false) == "", "empty plain paste");
+    check(paste("", true) == "\x1b[200~\x1b[201~", "empty bracketed paste");
+    print("input tests passed\n");
+}

@@ -1,0 +1,47 @@
+V :: #import "../src/controls.glo";
+#import "Io";
+
+main :: () {
+    #assert V.font_size(16,16,1)==17 && V.font_size(16,16,-1)==15;
+    #assert V.font_size(24,16,2)==16,"reset uses configured starting size";
+    #assert V.font_size(8,16,-1)==8 && V.font_size(72,16,1)==72,"zoom limits";
+    #assert V.font_size(16,1,2)==8 && V.font_size(16,100,2)==72,"reset bounds";
+    #assert V.font_size(2147483647,16,2147483647)==72,"large inputs do not overflow";
+
+    state: V.Scroll_State;
+    r:=V.wheel(&state,120,0,3,24);
+    #assert r.scroll_lines==3 && r.zoom_steps==0 && state.wheel_remainder==0;
+    r=V.wheel(&state,-120,0,3,24);
+    #assert r.scroll_lines== -3,"downward wheel scrolls toward live output";
+    r=V.wheel(&state,40,0,3,24);
+    #assert r.scroll_lines==1,"partial notch can scroll a whole line";
+    r=V.wheel(&state,20,0,3,24);
+    #assert r.scroll_lines==0 && state.wheel_remainder==60;
+    r=V.wheel(&state,-20,0,3,24);
+    #assert r.scroll_lines==0 && state.wheel_remainder==0,"opposing partial deltas cancel";
+    r=V.wheel(&state,30,0,1,24);
+    #assert r.scroll_lines==0 && state.wheel_remainder==30;
+    r=V.wheel(&state,90,0,1,24);
+    #assert r.scroll_lines==1 && state.wheel_remainder==0,"small deltas accumulate";
+    r=V.wheel(&state,120,0,-1,23);
+    #assert r.scroll_lines==23,"system page-scroll setting uses viewport rows";
+    r=V.wheel(&state,120,0,0,24);
+    #assert r.scroll_lines==0,"system-disabled scrolling is respected";
+
+    r=V.wheel(&state,40,2,0,24);
+    #assert r.zoom_steps==0 && state.zoom_remainder==40,"zoom keeps partial notches";
+    r=V.wheel(&state,40,0,1,24);
+    #assert state.wheel_remainder==40 && state.zoom_remainder==40,"scroll and zoom fractions are independent";
+    r=V.wheel(&state,80,3,0,24);
+    #assert r.zoom_steps==1 && r.scroll_lines==0 && state.zoom_remainder==0;
+    #assert state.wheel_remainder==40,"zoom does not consume scroll fraction";
+    r=V.wheel(&state,-240,2,3,24);
+    #assert r.zoom_steps== -2 && r.scroll_lines==0,"multiple wheel zoom notches";
+    r=V.wheel(&state,120,6,3,24);
+    #assert r.zoom_steps==0 && r.scroll_lines==3,"Ctrl+Alt wheel does not trigger zoom";
+    r=V.wheel(&state,2147483647,0,2147483647,2147483647);
+    #assert r.scroll_lines==10000 && state.wheel_remainder<120,"large scroll settings are bounded";
+    r=V.wheel(&state,-2147483648,2,3,24);
+    #assert r.zoom_steps== -64 && state.zoom_remainder> -120,"large negative zoom is bounded";
+    print("control tests passed: zoom limits, smooth wheel fractions, page scrolling.\n");
+}

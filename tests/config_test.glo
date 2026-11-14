@@ -1,0 +1,185 @@
+Cfg :: #import "../src/config.glo";
+K :: #import "../src/keybindings.glo";
+#import "Io";
+#import "Strings/Utf8";
+#import "Context";
+
+check :: (condition: bool, message: str) {
+    if !condition { print("FAIL: {}\n",message); exit(1); }
+}
+contains :: (text: str, needle: str) -> bool {
+    if text.count < needle.count return false;
+    for i: 0..text.count-needle.count+1 if text[i..i+needle.count] == needle return true;
+    return false;
+}
+error_contains :: (needle: str) {
+    message := Cfg.error_message();
+    if !contains(message,needle) {
+        print("Expected diagnostic containing '{}', got '{}'\n",needle,message);
+        exit(1);
+    }
+}
+
+same_bindings :: (actual: *const K.Bindings, expected: *const K.Bindings) {
+    #assert actual.count == expected.count, "failed configuration preserves binding count";
+    for i: 0..expected.count {
+        a := actual.items[i]; b := expected.items[i];
+        #assert a.key == b.key && a.mods == b.mods && a.action == b.action,
+            "failed configuration preserves every binding";
+    }
+}
+
+tab_binding_tests :: () {
+    cfg:=Cfg.defaults();
+    defer Cfg.release(&cfg);
+    #assert Cfg.load("tests/fixtures/config_tabs_good.lua",&cfg),"Lua accepts every tab and pane action";
+    #assert K.lookup(&cfg.keybindings,112,0)==K.Action.New_Tab && K.lookup(&cfg.keybindings,112,1)==K.Action.New_Tab,
+        "tab actions accept multiple chords";
+    #assert K.lookup(&cfg.keybindings,113,0)==K.Action.Close_Tab;
+    #assert K.lookup(&cfg.keybindings,114,0)==K.Action.Next_Tab && K.lookup(&cfg.keybindings,115,0)==K.Action.Previous_Tab;
+    #assert K.lookup(&cfg.keybindings,116,0)==K.Action.Split_Horizontal && K.lookup(&cfg.keybindings,117,0)==K.Action.Split_Vertical;
+    #assert K.lookup(&cfg.keybindings,118,0)==K.Action.Close_Pane;
+    #assert K.lookup(&cfg.keybindings,119,0)==K.Action.Next_Pane && K.lookup(&cfg.keybindings,120,0)==K.Action.Previous_Pane;
+    #assert K.lookup(&cfg.keybindings,121,0)==K.Action.Focus_Pane_Left && K.lookup(&cfg.keybindings,122,0)==K.Action.Focus_Pane_Right;
+    #assert K.lookup(&cfg.keybindings,123,0)==K.Action.Focus_Pane_Up && K.lookup(&cfg.keybindings,123,1)==K.Action.Focus_Pane_Down;
+    #assert K.lookup(&cfg.keybindings,84,3)==K.Action.None && K.lookup(&cfg.keybindings,9,2)==K.Action.None &&
+        K.lookup(&cfg.keybindings,9,3)==K.Action.None,"reconfigured workspace actions release their defaults";
+    #assert K.lookup(&cfg.keybindings,67,3)==K.Action.Copy,"workspace overrides retain unrelated actions";
+    expected:=cfg.keybindings;
+    #assert !Cfg.load("tests/fixtures/config_tabs_conflict.lua",&cfg),"tab actions cannot reuse another active action's chord";
+    error_contains("new_tab"); error_contains("copy");
+    same_bindings(&cfg.keybindings,&expected);
+    #assert cfg.font_size==16,"workspace binding conflicts reject the entire candidate";
+    #assert Cfg.load("tests/fixtures/config_tabs_disable.lua",&cfg),"workspace actions accept false and empty arrays";
+    #assert K.lookup(&cfg.keybindings,112,0)==K.Action.None && K.lookup(&cfg.keybindings,112,1)==K.Action.None &&
+        K.lookup(&cfg.keybindings,113,0)==K.Action.None && K.lookup(&cfg.keybindings,116,0)==K.Action.None &&
+        K.lookup(&cfg.keybindings,117,0)==K.Action.None,"disabling workspace actions removes all their chords";
+    #assert K.lookup(&cfg.keybindings,114,0)==K.Action.Next_Tab && K.lookup(&cfg.keybindings,123,1)==K.Action.Focus_Pane_Down,
+        "disabling actions leaves other workspace overrides available";
+}
+
+keybinding_tests :: () {
+    cfg := Cfg.defaults();
+    defer Cfg.release(&cfg);
+    #assert K.lookup(&cfg.keybindings,67,3) == K.Action.Copy;
+    #assert Cfg.load("tests/fixtures/config_keys_good.lua", &cfg);
+    check(Cfg.error_message().count==0,"successful load clears stale diagnostics");
+    #assert K.lookup(&cfg.keybindings,67,6) == K.Action.Copy, "computed Lua chord overrides copy";
+    #assert K.lookup(&cfg.keybindings,67,3) == K.Action.None, "overridden action loses its default chord";
+    #assert K.lookup(&cfg.keybindings,86,6) == K.Action.Paste && K.lookup(&cfg.keybindings,45,4) == K.Action.Paste;
+    #assert K.lookup(&cfg.keybindings,86,3) == K.Action.None && K.lookup(&cfg.keybindings,45,1) == K.Action.None;
+    #assert K.lookup(&cfg.keybindings,187,2) == K.Action.Zoom_In, "unmentioned actions retain defaults";
+    #assert K.lookup(&cfg.keybindings,189,2) == K.Action.Zoom_Out && K.lookup(&cfg.keybindings,189,3) == K.Action.None;
+    #assert K.lookup(&cfg.keybindings,48,2) == K.Action.None && K.lookup(&cfg.keybindings,96,2) == K.Action.None;
+    #assert K.lookup(&cfg.keybindings,38,4) == K.Action.Scroll_Line_Up && K.lookup(&cfg.keybindings,40,4) == K.Action.Scroll_Line_Down;
+    #assert K.lookup(&cfg.keybindings,81,3) == K.Action.Close_Window;
+    expected := cfg.keybindings;
+    #assert Cfg.load("tests/fixtures/config_keys_empty.lua", &cfg);
+    same_bindings(&cfg.keybindings, &expected);
+    for path: .[
+        "tests/fixtures/config_keys_unknown.lua",
+        "tests/fixtures/config_keys_chord.lua",
+        "tests/fixtures/config_keys_type.lua",
+        "tests/fixtures/config_keys_table_type.lua",
+        "tests/fixtures/config_keys_array_type.lua",
+        "tests/fixtures/config_keys_array_hole.lua",
+        "tests/fixtures/config_keys_array_extra.lua",
+        "tests/fixtures/config_keys_array_zero.lua",
+        "tests/fixtures/config_keys_array_fraction.lua",
+        "tests/fixtures/config_keys_array_long.lua",
+        "tests/fixtures/config_keys_duplicate.lua",
+        "tests/fixtures/config_keys_nul.lua",
+        "tests/fixtures/config_keys_nonstring.lua",
+    ] {
+        #assert !Cfg.load(path, &cfg);
+        error_contains("keybindings");
+        if path=="tests/fixtures/config_keys_chord.lua" {
+            error_contains("keybindings.copy");
+            error_contains("Ctrl+NotAKey");
+            reset_temporary_storage();
+            error_contains("Ctrl+NotAKey");
+        }
+        same_bindings(&cfg.keybindings, &expected);
+        #assert cfg.font_size == 16;
+    }
+    // Conflict validation happens after all overrides, making swaps legal in
+    // either Lua traversal order. This separate config retains default chords.
+    swapped := Cfg.defaults();
+    defer Cfg.release(&swapped);
+    original := swapped.keybindings;
+    #assert !Cfg.load("tests/fixtures/config_keys_conflict.lua", &swapped);
+    error_contains("keybindings");
+    error_contains("copy"); error_contains("paste");
+    same_bindings(&swapped.keybindings, &original);
+    #assert swapped.font_size == 16, "bindings failures roll back scalar settings too";
+    #assert Cfg.load("tests/fixtures/config_keys_swap.lua", &swapped);
+    check(Cfg.error_message().count==0,"valid swap clears conflict diagnostic");
+    #assert K.lookup(&swapped.keybindings,86,3) == K.Action.Copy && K.lookup(&swapped.keybindings,67,3) == K.Action.Paste;
+    #assert Cfg.load("tests/fixtures/config_keys_disable.lua", &swapped);
+    #assert K.lookup(&swapped.keybindings,86,3) == K.Action.None && K.lookup(&swapped.keybindings,67,3) == K.Action.None;
+    #assert K.lookup(&swapped.keybindings,187,2) == K.Action.None && K.lookup(&swapped.keybindings,107,2) == K.Action.None;
+    #assert K.lookup(&swapped.keybindings,33,1) == K.Action.Scroll_Page_Up, "disabling actions preserves other defaults";
+    // Clear every overridden action before any additions. Otherwise Lua's
+    // traversal order can fill the table while old defaults still occupy it.
+    for 0..8 {
+        #assert Cfg.load("tests/fixtures/config_keys_capacity.lua", &swapped);
+        #assert swapped.keybindings.count==128;
+        #assert K.lookup(&swapped.keybindings,65,0)==K.Action.Copy;
+        #assert K.lookup(&swapped.keybindings,88,4)==K.Action.Copy;
+        #assert K.lookup(&swapped.keybindings,89,4)==K.Action.None;
+        #assert K.lookup(&swapped.keybindings,33,1)==K.Action.None;
+        check(Cfg.error_message().count==0,"capacity-boundary success has no error");
+    }
+}
+
+main :: () {
+    cfg := Cfg.defaults();
+    defer Cfg.release(&cfg);
+    #assert cfg.shell == "powershell" && cfg.font_size == 16 && cfg.columns == 100;
+    #assert cfg.foreground == 16#d8dee9 && cfg.close_on_exit;
+    #assert cfg.font_ligatures, "font ligatures default to enabled";
+    #assert Cfg.load("tests/fixtures/config_good.lua", &cfg);
+    #assert cfg.shell == "cmd" && cfg.command == "cmd.exe /d";
+    #assert cfg.font_family == "Consolas" && cfg.font_size == 20;
+    #assert !cfg.font_ligatures, "Lua can disable ligatures";
+    #assert cfg.columns == 120 && cfg.rows == 40 && cfg.padding == 8 && cfg.scrollback == 1234;
+    #assert cfg.foreground == 16#abcdef && cfg.background == 16#102030;
+    #assert cfg.accent == 16#aabbcc && cfg.cursor == 16#ffcc00 && !cfg.close_on_exit;
+    // Each failure must preserve every previously accepted setting.
+    for path: .[
+        "tests/fixtures/config_type.lua",
+        "tests/fixtures/config_ligatures_type.lua",
+        "tests/fixtures/config_range.lua",
+        "tests/fixtures/config_scrollback.lua",
+        "tests/fixtures/config_unknown.lua",
+        "tests/fixtures/config_shell.lua",
+        "tests/fixtures/config_color.lua",
+        "tests/fixtures/config_return.lua",
+        "tests/fixtures/config_syntax.lua",
+        "tests/fixtures/config_runtime.lua",
+        "tests/fixtures/config_nul.lua",
+        "tests/fixtures/config_missing.lua",
+    ] {
+        #assert !Cfg.load(path, &cfg);
+        check(Cfg.error_message().count>0,"all configuration failures expose a GUI diagnostic");
+        if path=="tests/fixtures/config_type.lua" error_contains("font_size");
+        if path=="tests/fixtures/config_ligatures_type.lua" error_contains("font_ligatures");
+        if path=="tests/fixtures/config_syntax.lua" error_contains("config_syntax.lua");
+        if path=="tests/fixtures/config_runtime.lua" error_contains("test failure");
+        if path=="tests/fixtures/config_return.lua" error_contains("must return a table");
+        if path=="tests/fixtures/config_missing.lua" error_contains("config_missing.lua");
+        #assert cfg.shell == "cmd" && cfg.command == "cmd.exe /d" && cfg.font_family == "Consolas";
+        #assert cfg.font_size == 20 && cfg.columns == 120 && cfg.rows == 40;
+        #assert cfg.scrollback == 1234;
+        #assert !cfg.font_ligatures, "rejected candidates preserve the ligature setting";
+        #assert cfg.foreground == 16#abcdef && cfg.background == 16#102030;
+        #assert !cfg.close_on_exit;
+    }
+    #assert Cfg.load("config.example.lua", &cfg);
+    check(Cfg.error_message().count==0,"valid file clears a previous error");
+    #assert cfg.shell == "powershell" && cfg.command == "" && cfg.columns == 100;
+    #assert cfg.font_ligatures, "the example configuration enables ligatures";
+    keybinding_tests();
+    tab_binding_tests();
+    print("config tests passed: Lua evaluation, fields, colors, defaults, rejection, transaction rollback.\n");
+}

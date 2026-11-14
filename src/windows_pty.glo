@@ -1,0 +1,440 @@
+//! Windows ConPTY sessions implemented directly in Glosso. Blocking pipe IO
+//! runs on dedicated workers; the window thread reads bounded byte queues.
+#import "Meta";
+#import "Memory/Raw";
+#import "Strings/Utf8";
+#import "Format";
+#import "Thread/Atomic";
+T :: #import "platform_types.glo";
+kernel32 :: #library,system "kernel32";
+user32 :: #library,system "user32";
+
+Handle :: usize;
+Coord :: struct #c_call { x:s16; y:s16; }
+Critical_Section :: struct #c_call {
+    debug:usize; lock_count:s32; recursion:s32; owner:usize; semaphore:usize; spin:usize;
+}
+Startup_Info :: struct #c_call {
+    cb:u32; reserved:usize; desktop:usize; title:usize;
+    x:u32; y:u32; width:u32; height:u32; chars_x:u32; chars_y:u32;
+    fill:u32; flags:u32; show:u16; reserved_count:u16; reserved_bytes:usize;
+    input:Handle; output:Handle; error:Handle;
+}
+Startup_Info_Ex :: struct #c_call { info:Startup_Info; attributes:usize; }
+Process_Info :: struct #c_call { process:Handle; thread:Handle; process_id:u32; thread_id:u32; }
+File_Info :: struct #c_call {
+    attributes:u32; created_low:u32; created_high:u32; accessed_low:u32; accessed_high:u32;
+    modified_low:u32; modified_high:u32; volume:u32; size_high:u32; size_low:u32;
+    links:u32; index_high:u32; index_low:u32;
+}
+Thread_Proc :: #fn_ptr(parameter:usize)->u32 #c_call;
+GetLastError :: ()->u32 #foreign kernel32;
+SetLastError :: (code:u32) #foreign kernel32;
+GetTickCount64 :: ()->u64 #foreign kernel32;
+GetProcessHeap :: ()->Handle #foreign kernel32;
+HeapAlloc :: (heap:Handle,flags:u32,bytes:usize)->usize #foreign kernel32;
+HeapFree :: (heap:Handle,flags:u32,memory:usize)->s32 #foreign kernel32;
+MultiByteToWideChar :: (page:u32,flags:u32,text:cstr,count:s32,wide:usize,capacity:s32)->s32 #foreign kernel32;
+WideCharToMultiByte :: (page:u32,flags:u32,wide:usize,count:s32,text:usize,capacity:s32,default_char:usize,used_default:usize)->s32 #foreign kernel32;
+FormatMessageW :: (flags:u32,source:usize,code:u32,language:u32,buffer:usize,capacity:u32,args:usize)->u32 #foreign kernel32;
+ExpandEnvironmentStringsW :: (source:usize,destination:usize,capacity:u32)->u32 #foreign kernel32;
+GetFileAttributesW :: (path:usize)->u32 #foreign kernel32;
+CreateFileW :: (path:usize,access:u32,share:u32,security:usize,creation:u32,flags:u32,template_file:Handle)->Handle #foreign kernel32;
+GetFileInformationByHandle :: (file:Handle,info:*File_Info)->s32 #foreign kernel32;
+CloseHandle :: (handle:Handle)->s32 #foreign kernel32;
+CreatePipe :: (read:*Handle,write:*Handle,security:usize,size:u32)->s32 #foreign kernel32;
+CreatePseudoConsole :: (size:Coord,input:Handle,output:Handle,flags:u32,pseudo:*Handle)->s32 #foreign kernel32;
+ResizePseudoConsole :: (pseudo:Handle,size:Coord)->s32 #foreign kernel32;
+ClosePseudoConsole :: (pseudo:Handle) #foreign kernel32;
+InitializeProcThreadAttributeList :: (list:usize,count:u32,flags:u32,size:*usize)->s32 #foreign kernel32;
+UpdateProcThreadAttribute :: (list:usize,flags:u32,attribute:usize,value:usize,size:usize,previous:usize,returned_size:usize)->s32 #foreign kernel32;
+DeleteProcThreadAttributeList :: (list:usize) #foreign kernel32;
+CreateProcessW :: (application:usize,command:usize,process_security:usize,thread_security:usize,inherit:s32,flags:u32,environment:usize,directory:usize,startup:*Startup_Info,process:*Process_Info)->s32 #foreign kernel32;
+CreateThread :: (security:usize,stack:usize,proc:Thread_Proc,data:usize,flags:u32,id:usize)->Handle #foreign kernel32;
+ResumeThread :: (thread:Handle)->u32 #foreign kernel32;
+CancelSynchronousIo :: (thread:Handle)->s32 #foreign kernel32;
+WaitForSingleObject :: (handle:Handle,milliseconds:u32)->u32 #foreign kernel32;
+TerminateProcess :: (process:Handle,code:u32)->s32 #foreign kernel32;
+GetExitCodeProcess :: (process:Handle,code:*u32)->s32 #foreign kernel32;
+CreateEventW :: (security:usize,manual:s32,initial:s32,name:usize)->Handle #foreign kernel32;
+SetEvent :: (event:Handle)->s32 #foreign kernel32;
+ResetEvent :: (event:Handle)->s32 #foreign kernel32;
+ReadFile :: (file:Handle,data:usize,count:u32,read:*u32,overlapped:usize)->s32 #foreign kernel32;
+WriteFile :: (file:Handle,data:usize,count:u32,written:*u32,overlapped:usize)->s32 #foreign kernel32;
+InitializeCriticalSection :: (section:*Critical_Section) #foreign kernel32;
+DeleteCriticalSection :: (section:*Critical_Section) #foreign kernel32;
+EnterCriticalSection :: (section:*Critical_Section) #foreign kernel32;
+LeaveCriticalSection :: (section:*Critical_Section) #foreign kernel32;
+InitializeConditionVariable :: (condition:*usize) #foreign kernel32;
+SleepConditionVariableCS :: (condition:*usize,section:*Critical_Section,milliseconds:u32)->s32 #foreign kernel32;
+WakeConditionVariable :: (condition:*usize) #foreign kernel32;
+WakeAllConditionVariable :: (condition:*usize) #foreign kernel32;
+MsgWaitForMultipleObjectsEx :: (count:u32,handles:usize,milliseconds:u32,wake:u32,flags:u32)->u32 #foreign user32;
+
+SESSION_LIMIT :: 32;
+RING_SIZE :: 4*1024*1024;
+INVALID_HANDLE :: 16#ffff_ffff_ffff_ffff;
+INFINITE :: 16#ffff_ffff;
+Byte_Queue :: struct {
+    lock:Critical_Section; changed:usize; bytes:usize; head:usize; tail:usize; count:usize;
+}
+Pty_Session :: struct {
+    output_queue:Byte_Queue; input_queue:Byte_Queue;
+    input_pipe:Handle; output_pipe:Handle; reader_thread:Handle; writer_thread:Handle;
+    process:Handle; primary_thread:Handle; ready:Handle; pseudo:Handle;
+    stopping:Atomic(s32); queues_ready:bool;
+}
+Pty_Slot :: struct { active:usize; pending:usize; allocated:bool; }
+slots:[SESSION_LIMIT+1]Pty_Slot;
+selected:s32;
+error_storage:[2048]u8;
+
+allocate :: (bytes:usize)->usize { return HeapAlloc(GetProcessHeap(),8,bytes); }
+release :: (memory:usize) {
+    // Cleanup must not replace the failure code the caller is reporting.
+    if memory!=0 {
+        code:=GetLastError(); _:=HeapFree(GetProcessHeap(),0,memory); SetLastError(code);
+    }
+}
+copy :: (destination:usize,source:usize,count:usize) {
+    if count>0 _:=mem_copy_nonoverlapping(cast(*void)destination,cast(*const void)source,cast(ssize)count);
+}
+wide :: (text:cstr)->usize {
+    if cast(usize)text.data==0 return 0;
+    count:=MultiByteToWideChar(65001,8,text,-1,0,0);
+    if count==0 return 0;
+    result:=allocate(cast(usize)count*2);
+    if result==0 { SetLastError(8); return 0; }
+    if MultiByteToWideChar(65001,8,text,-1,result,count)==0 { release(result); return 0; }
+    return result;
+}
+expanded :: (text:cstr)->usize {
+    source:=wide(text);
+    if source==0 { SetLastError(123); return 0; }
+    defer release(source);
+    required:=ExpandEnvironmentStringsW(source,0,0);
+    if required==0 return 0;
+    if required>32767 { SetLastError(206); return 0; }
+    result:=allocate(cast(usize)required*2);
+    if result==0 { SetLastError(8); return 0; }
+    count:=ExpandEnvironmentStringsW(source,result,required);
+    code:=GetLastError();
+    if count==0 || count>required {
+        release(result); if count>required code=122; SetLastError(code); return 0;
+    }
+    return result;
+}
+queue_init :: (queue:*Byte_Queue) {
+    InitializeCriticalSection(&queue.lock); InitializeConditionVariable(&queue.changed);
+    queue.bytes=allocate(RING_SIZE);
+}
+queue_destroy :: (queue:*Byte_Queue) { release(queue.bytes); DeleteCriticalSection(&queue.lock); }
+append :: (queue:*Byte_Queue,data:usize,count:usize) {
+    first:usize=RING_SIZE-queue.head; if first>count first=count;
+    copy(queue.bytes+queue.head,data,first); copy(queue.bytes,data+first,count-first);
+    queue.head=(queue.head+count)%RING_SIZE; queue.count+=count;
+}
+take :: (queue:*Byte_Queue,data:usize,count:usize)->usize {
+    size:=count; if size>queue.count size=queue.count;
+    first:usize=RING_SIZE-queue.tail; if first>size first=size;
+    copy(data,queue.bytes+queue.tail,first); copy(data+first,queue.bytes,size-first);
+    queue.tail=(queue.tail+size)%RING_SIZE; queue.count-=size; return size;
+}
+read_output :: (parameter:usize)->u32 #c_call {
+    session:=cast(*Pty_Session)parameter; queue:=&session.output_queue;
+    buffer:[16384]u8;
+    while session.stopping.load()==0 {
+        count:u32;
+        if ReadFile(session.output_pipe,cast(usize)&buffer,16384,&count,0)==0 || count==0 break;
+        EnterCriticalSection(&queue.lock);
+        while RING_SIZE-queue.count<cast(usize)count && session.stopping.load()==0
+            _:=SleepConditionVariableCS(&queue.changed,&queue.lock,INFINITE);
+        if session.stopping.load()==0 { append(queue,cast(usize)&buffer,count); _:=SetEvent(session.ready); }
+        LeaveCriticalSection(&queue.lock);
+    }
+    return 0;
+}
+write_input :: (parameter:usize)->u32 #c_call {
+    session:=cast(*Pty_Session)parameter; queue:=&session.input_queue;
+    buffer:[16384]u8;
+    while session.stopping.load()==0 {
+        EnterCriticalSection(&queue.lock);
+        while queue.count==0 && session.stopping.load()==0
+            _:=SleepConditionVariableCS(&queue.changed,&queue.lock,INFINITE);
+        count:usize;
+        if session.stopping.load()==0 count=take(queue,cast(usize)&buffer,16384);
+        LeaveCriticalSection(&queue.lock);
+        if count==0 break;
+        sent:usize;
+        while sent<count && session.stopping.load()==0 {
+            written:u32;
+            if WriteFile(session.input_pipe,cast(usize)&buffer+sent,cast(u32)(count-sent),&written,0)==0 || written==0 return 0;
+            sent+=written;
+        }
+    }
+    return 0;
+}
+close_session :: (value:usize) {
+    if value==0 return;
+    session:=cast(*Pty_Session)value;
+    session.stopping.store(1);
+    if session.queues_ready {
+        EnterCriticalSection(&session.output_queue.lock);
+        WakeAllConditionVariable(&session.output_queue.changed);
+        LeaveCriticalSection(&session.output_queue.lock);
+        EnterCriticalSection(&session.input_queue.lock);
+        WakeAllConditionVariable(&session.input_queue.changed);
+        LeaveCriticalSection(&session.input_queue.lock);
+    }
+    // Repeated cancellation closes the check-before-blocking-IO race. Close
+    // the output pipe before ClosePseudoConsole on older Windows versions.
+    for thread:.[session.reader_thread,session.writer_thread] if thread!=0 {
+        while true {
+            _:=CancelSynchronousIo(thread);
+            if WaitForSingleObject(thread,10)!=258 break;
+        }
+        _:=CloseHandle(thread);
+    }
+    if session.output_pipe!=0 _:=CloseHandle(session.output_pipe);
+    if session.input_pipe!=0 _:=CloseHandle(session.input_pipe);
+    if session.primary_thread!=0 && session.process!=0 _:=TerminateProcess(session.process,1);
+    if session.pseudo!=0 ClosePseudoConsole(session.pseudo);
+    if session.process!=0 {
+        if WaitForSingleObject(session.process,500)==258 _:=TerminateProcess(session.process,1);
+        _:=CloseHandle(session.process);
+    }
+    if session.primary_thread!=0 _:=CloseHandle(session.primary_thread);
+    if session.queues_ready { queue_destroy(&session.output_queue); queue_destroy(&session.input_queue); }
+    if session.ready!=0 _:=CloseHandle(session.ready);
+    release(value);
+}
+
+prepare_session :: (session:*Pty_Session,line:usize,directory:cstr,cwd:*usize,input_read:*Handle,output_write:*Handle,attrs:*usize,initialized:*bool,cols:s32,rows:s32)->bool {
+    if line==0 return false;
+    if (cast([*]u16)line)[0]==0 { SetLastError(87); return false; }
+    if cast(usize)directory.data!=0 && text_view(directory).count>0 {
+        cwd.*=expanded(directory);
+        if cwd.*==0 return false;
+        if (cast([*]u16)cwd.*)[0]==0 { SetLastError(123); return false; }
+    }
+    if CreatePipe(input_read,&session.input_pipe,0,0)==0 return false;
+    if CreatePipe(&session.output_pipe,output_write,0,0)==0 return false;
+    result:=CreatePseudoConsole(.{cast(s16)cols,cast(s16)rows},input_read.*,output_write.*,0,&session.pseudo);
+    if result<0 { SetLastError(cast(u32)result); return false; }
+    bytes:usize;
+    _:=InitializeProcThreadAttributeList(0,1,0,&bytes);
+    attrs.*=allocate(bytes);
+    if attrs.*==0 { SetLastError(8); return false; }
+    if InitializeProcThreadAttributeList(attrs.*,1,0,&bytes)==0 return false;
+    initialized.*=true;
+    if UpdateProcThreadAttribute(attrs.*,0,16#20016,session.pseudo,cast(usize)size_of(Handle),0,0)==0 return false;
+    queue_init(&session.output_queue); queue_init(&session.input_queue); session.queues_ready=true;
+    if session.output_queue.bytes==0 || session.input_queue.bytes==0 { SetLastError(8); return false; }
+    session.ready=CreateEventW(0,1,0,0); if session.ready==0 return false;
+    session.reader_thread=CreateThread(0,0,read_output,cast(usize)session,0,0);
+    session.writer_thread=CreateThread(0,0,write_input,cast(usize)session,0,0);
+    if session.reader_thread==0 || session.writer_thread==0 return false;
+    startup:Startup_Info_Ex; startup.info.cb=cast(u32)size_of(Startup_Info_Ex); startup.attributes=attrs.*;
+    startup.info.flags=16#100;
+    startup.info.input=INVALID_HANDLE; startup.info.output=INVALID_HANDLE; startup.info.error=INVALID_HANDLE;
+    process:Process_Info;
+    if CreateProcessW(0,line,0,0,0,16#0008_0404,0,cwd.*,&startup.info,&process)==0 return false;
+    session.process=process.process; session.primary_thread=process.thread;
+    return true;
+}
+
+// These APIs observe mutable operating-system state. Glosso probes #assert
+// conditions at compile time; a foreign call prevents it from treating an
+// initially empty slot table as a constant and erasing a real session operation.
+// The query preserves LastError and introduces no change to process state.
+runtime_only :: () #inline,always { _:=GetLastError(); }
+#public {
+error :: ()->cstr #inline,never { runtime_only(); return cstring_view(cast([*]u8)&error_storage); }
+set_error :: (message:cstr)->s32 { runtime_only();
+    text:str; if cast(usize)message.data!=0 text=text_view(message);
+    count:=text.count; if count>2047 count=2047;
+    copy(cast(usize)&error_storage,cast(usize)text.data,cast(usize)count);
+    error_storage[count]=0; return 0;
+}
+windows_error :: (operation:cstr)->s32 {
+    code:=GetLastError(); units:[512]u16; message:[1536]u8;
+    if FormatMessageW(16#1200,0,code,0,cast(usize)&units,512,0)!=0
+        _:=WideCharToMultiByte(65001,0,cast(usize)&units,-1,cast(usize)&message,1536,0,0);
+    return set_error(tprint("{} failed (Windows error {}): {}",text_view(operation),code,text_view(cstring_view(cast([*]u8)&message))).c_string());
+}
+ticks :: ()->u64 { return GetTickCount64(); }
+wait :: (milliseconds:s32) {
+    handles:[SESSION_LIMIT+1]Handle; count:u32;
+    for i:0..SESSION_LIMIT+1 if slots[i].active!=0 {
+        handles[count]=(cast(*Pty_Session)slots[i].active).ready; count+=1;
+    }
+    duration:s32=milliseconds; if duration<0 duration=0;
+    _:=MsgWaitForMultipleObjectsEx(count,cast(usize)&handles,cast(u32)duration,16#4ff,4);
+}
+file_exists :: (path:cstr)->s32 {
+    name:=wide(path); attributes:u32=INFINITE;
+    if name!=0 attributes=GetFileAttributesW(name);
+    release(name);
+    if attributes!=INFINITE && (attributes&16)==0 return 1;
+    return 0;
+}
+file_stamp :: (path:cstr,stamp:*T.File_Stamp)->s32 {
+    if cast(usize)stamp==0 { SetLastError(87); _:=windows_error("Reading config metadata"); return -1; }
+    empty:T.File_Stamp; stamp.*=empty;
+    name:=wide(path);
+    if name==0 { SetLastError(123); _:=windows_error("Reading config metadata"); return -1; }
+    file:=CreateFileW(name,16#80,7,0,3,16#0200_0000,0); release(name);
+    if file==INVALID_HANDLE {
+        code:=GetLastError(); if code==2 || code==3 return 0;
+        SetLastError(code); _:=windows_error("Reading config metadata"); return -1;
+    }
+    info:File_Info;
+    if GetFileInformationByHandle(file,&info)==0 {
+        code:=GetLastError(); _:=CloseHandle(file); SetLastError(code);
+        _:=windows_error("Reading config metadata"); return -1;
+    }
+    _:=CloseHandle(file);
+    stamp.modified=(cast(u64)info.modified_high<<32)|cast(u64)info.modified_low;
+    stamp.size=(cast(u64)info.size_high<<32)|cast(u64)info.size_low;
+    stamp.identity=(cast(u64)info.index_high<<32)|cast(u64)info.index_low;
+    return 1;
+}
+pty_discard :: () { runtime_only();
+    discarded:=slots[selected].pending; slots[selected].pending=0; close_session(discarded);
+}
+pty_prepare :: (command:cstr,cols:s32,rows:s32)->s32 { runtime_only(); return pty_prepare_at(command,"",cols,rows); }
+pty_prepare_at :: (command:cstr,directory:cstr,cols:s32,rows:s32)->s32 { runtime_only();
+    pty_discard(); error_storage[0]=0;
+    if cast(usize)command.data==0 || text_view(command).count==0 || cols<1 || cols>512 || rows<1 || rows>256 {
+        SetLastError(87); return windows_error("Preparing ConPTY shell");
+    }
+    value:=allocate(cast(usize)size_of(Pty_Session));
+    if value==0 { SetLastError(8); return windows_error("Preparing ConPTY shell"); }
+    session:=cast(*Pty_Session)value;
+    input_read:Handle; output_write:Handle; attrs:usize; initialized:bool;
+    line:=expanded(command); cwd:usize; success:bool;
+    defer {
+        if attrs!=0 { if initialized DeleteProcThreadAttributeList(attrs); release(attrs); }
+        if input_read!=0 _:=CloseHandle(input_read);
+        if output_write!=0 _:=CloseHandle(output_write);
+        release(line); release(cwd);
+        if !success close_session(value);
+    }
+    if !prepare_session(session,line,directory,&cwd,&input_read,&output_write,&attrs,&initialized,cols,rows)
+        return windows_error("Starting ConPTY shell");
+    slots[selected].pending=value; success=true; return 1;
+}
+pty_resize_prepared :: (cols:s32,rows:s32)->s32 { runtime_only();
+    value:=slots[selected].pending;
+    if value==0 || cols<1 || cols>512 || rows<1 || rows>256 { SetLastError(87); return windows_error("Resizing prepared ConPTY shell"); }
+    result:=ResizePseudoConsole((cast(*Pty_Session)value).pseudo,.{cast(s16)cols,cast(s16)rows});
+    if result<0 { SetLastError(cast(u32)result); return windows_error("Resizing prepared ConPTY shell"); }
+    return 1;
+}
+pty_commit :: ()->s32 { runtime_only();
+    value:=slots[selected].pending;
+    if value==0 { SetLastError(87); return windows_error("Committing ConPTY shell"); }
+    session:=cast(*Pty_Session)value;
+    if ResumeThread(session.primary_thread)==INFINITE {
+        _:=windows_error("Starting prepared ConPTY shell"); pty_discard(); return 0;
+    }
+    _:=CloseHandle(session.primary_thread); session.primary_thread=0;
+    previous:=slots[selected].active; slots[selected].active=value; slots[selected].pending=0;
+    close_session(previous); return 1;
+}
+pty_commit_all :: ()->s32 { runtime_only();
+    // Retain every old session until every replacement can execute. A failed
+    // resume discards all staged children, including already resumed ones.
+    for i:0..SESSION_LIMIT+1 if slots[i].pending!=0 {
+        session:=cast(*Pty_Session)slots[i].pending;
+        if ResumeThread(session.primary_thread)==INFINITE {
+            _:=windows_error("Starting prepared ConPTY sessions");
+            for j:0..SESSION_LIMIT+1 {
+                discarded:=slots[j].pending; slots[j].pending=0; close_session(discarded);
+            }
+            return 0;
+        }
+    }
+    retired:[SESSION_LIMIT+1]usize;
+    for i:0..SESSION_LIMIT+1 if slots[i].pending!=0 {
+        session:=cast(*Pty_Session)slots[i].pending;
+        _:=CloseHandle(session.primary_thread); session.primary_thread=0;
+        retired[i]=slots[i].active; slots[i].active=slots[i].pending; slots[i].pending=0;
+    }
+    for value:retired close_session(value);
+    return 1;
+}
+pty_start :: (command:cstr,cols:s32,rows:s32)->s32 { runtime_only();
+    if pty_prepare(command,cols,rows)==0 return 0; return pty_commit();
+}
+pty_read :: (data:[*]u8,capacity:s32)->s32 { runtime_only();
+    value:=slots[selected].active;
+    if value==0 || capacity<=0 return 0;
+    session:=cast(*Pty_Session)value; if !session.queues_ready return 0;
+    queue:=&session.output_queue; EnterCriticalSection(&queue.lock);
+    count:=take(queue,cast(usize)data,cast(usize)capacity);
+    if queue.count==0 _:=ResetEvent(session.ready);
+    WakeAllConditionVariable(&queue.changed); LeaveCriticalSection(&queue.lock);
+    return cast(s32)count;
+}
+pty_send :: (data:[*]const u8,length:s32)->s32 { runtime_only();
+    value:=slots[selected].active;
+    if value==0 || length<0 || (length!=0 && cast(usize)data==0) return 0;
+    session:=cast(*Pty_Session)value;
+    if !session.queues_ready || session.stopping.load()!=0 return 0;
+    queue:=&session.input_queue; EnterCriticalSection(&queue.lock);
+    fits:=cast(usize)length<=RING_SIZE-queue.count;
+    if fits append(queue,cast(usize)data,cast(usize)length);
+    WakeConditionVariable(&queue.changed); LeaveCriticalSection(&queue.lock);
+    if fits return 1; return 0;
+}
+pty_resize :: (cols:s32,rows:s32)->s32 { runtime_only();
+    value:=slots[selected].active;
+    if value==0 || cols<1 || cols>512 || rows<1 || rows>256 { SetLastError(87); return windows_error("Resizing ConPTY shell"); }
+    result:=ResizePseudoConsole((cast(*Pty_Session)value).pseudo,.{cast(s16)cols,cast(s16)rows});
+    if result<0 { SetLastError(cast(u32)result); return windows_error("Resizing ConPTY shell"); }
+    return 1;
+}
+pty_status :: (code:*s32)->s32 { runtime_only();
+    value:=slots[selected].active; if value==0 return -1;
+    session:=cast(*Pty_Session)value;
+    if WaitForSingleObject(session.process,0)!=0 return 0;
+    result:u32; _:=GetExitCodeProcess(session.process,&result); code.*=cast(s32)result; return 1;
+}
+pty_close :: () { runtime_only();
+    previous:=slots[selected].active; slots[selected].active=0; pty_discard(); close_session(previous);
+}
+pty_select :: (id:s32)->s32 { runtime_only();
+    if id<0 || id>SESSION_LIMIT || (id!=0 && !slots[id].allocated) { SetLastError(87); return windows_error("Selecting ConPTY session"); }
+    selected=id; return 1;
+}
+pty_selected :: ()->s32 { runtime_only(); return selected; }
+pty_create :: (command:cstr,cols:s32,rows:s32)->s32 { runtime_only(); return pty_create_at(command,"",cols,rows); }
+pty_create_at :: (command:cstr,directory:cstr,cols:s32,rows:s32)->s32 { runtime_only();
+    id:s32=1; while id<=SESSION_LIMIT && slots[id].allocated id+=1;
+    if id>SESSION_LIMIT { SetLastError(69); return windows_error("Creating ConPTY session"); }
+    previous:=selected; slots[id].allocated=true; selected=id;
+    success:=pty_prepare_at(command,directory,cols,rows)!=0 && pty_commit()!=0;
+    selected=previous;
+    if !success { slots[id].allocated=false; return 0; }
+    return id;
+}
+pty_destroy :: (id:s32)->s32 { runtime_only();
+    if id<0 || id>SESSION_LIMIT || (id!=0 && !slots[id].allocated) { SetLastError(87); return windows_error("Destroying ConPTY session"); }
+    previous:=selected; selected=id; pty_close(); slots[id].allocated=false;
+    selected=previous; if previous==id selected=0;
+    return 1;
+}
+close_sessions :: () { runtime_only();
+    for i:0..SESSION_LIMIT+1 { selected=cast(s32)i; pty_close(); slots[i].allocated=false; }
+    selected=0;
+}
+}
+
+cstring_view :: (data:[*]const u8)->cstr #magic "string_from_raw_parts";
+
+
+
+byte_view :: (data:[*]const u8,count:ssize)->[]const u8 #magic "slice_from_pointer"; text_view :: (text:cstr)->str { return cast(str)byte_view(text.data,text.count); }
+
+

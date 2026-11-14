@@ -1,0 +1,44 @@
+//! Shared ANSI palette defaults and the fixed xterm 256-color extension.
+#public {
+
+default_palette :: () -> [16]u32 {
+    return .[
+        16#1e1e2e,
+        16#f38ba8,
+        16#a6e3a1,
+        16#f9e2af,
+        16#89b4fa,
+        16#cba6f7,
+        16#94e2d5,
+        16#bac2de,
+        16#585b70,
+        16#f38ba8,
+        16#a6e3a1,
+        16#f9e2af,
+        16#89b4fa,
+        16#cba6f7,
+        16#94e2d5,
+        16#ffffff
+    ];
+}
+indexed :: (palette: *const [16]u32, index: s32) -> u32 {
+    n := index;
+    if n < 0   n = 0;
+    if n > 255 n = 255;
+    if n < 16  return palette.*[n];
+    if n >= 232 {
+        value := cast(u32)(8 + (n - 232) * 10);
+        return value * 16#010101;
+    }
+    cube := n - 16;
+    r := cube / 36;
+    g := (cube / 6) % 6;
+    b := cube % 6;
+    red, green, blue: s32;
+    if r > 0 red = 55 + r * 40;
+    if g > 0 green = 55 + g * 40;
+    if b > 0 blue = 55 + b * 40;
+    return cast(u32)(red * 65536 + green * 256 + blue);
+}
+
+}

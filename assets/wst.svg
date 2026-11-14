@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>wst terminal</title>
+  <rect x="16" y="24" width="224" height="208" rx="36" fill="#111820" stroke="#80a0ff" stroke-width="8"/>
+  <line x1="21" y1="78" x2="235" y2="78" stroke="#34445c" stroke-width="6"/>
+  <circle cx="49" cy="51" r="5" fill="#80a0ff"/>
+  <circle cx="68" cy="51" r="5" fill="#79dac8"/>
+  <path d="M 71 112 L 108 149 L 71 186" fill="none" stroke="#b2ceee" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="143" y1="186" x2="187" y2="186" stroke="#79dac8" stroke-width="18" stroke-linecap="round"/>
+</svg>

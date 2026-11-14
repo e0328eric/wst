@@ -1,0 +1,6 @@
+/build/
+/tests/*.exe
+/config.lua
+*.obj
+*.pdb
+*.ilk

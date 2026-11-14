@@ -1,0 +1,65 @@
+Config_Paths :: #import "../src/config_paths.glo";
+Directories :: #import "File_System/Directory_Paths";
+Paths :: #import "File_System/Path";
+FS :: #import "File_System/Directory";
+System :: #import "File_System/System";
+#import "File_System/File";
+#import "Io";
+#import "Format";
+
+check :: (condition: bool, message: str) {
+    if !condition { print("FAIL: {}\n", message); exit(1); }
+}
+
+main :: () {
+    expected := "config.lua".clone();
+    defer expected.free();
+    if #pattern ?directory = Directories.get_config_dir() {
+        defer directory.free();
+        base := directory.to_string();
+        defer base.free();
+        expected.free();
+        expected = Paths.path_join(base, "wst/config.lua");
+    }
+    actual := Config_Paths.user_path();
+    defer actual.free();
+    check(actual == expected, "user path uses std roaming config directory and wst/config.lua");
+
+    original := System.current_path().unwrap_or("");
+    check(original.count != 0, "read original working directory");
+    defer original.free();
+    // A fresh directory below build isolates local-config precedence from the
+    // repository and never writes to the real roaming configuration directory.
+    workspace: str = "";
+    for i: 0..100 {
+        candidate := Paths.path_join(original, tprint("build/config_paths_test_{}", i));
+        if FS.create_directory(candidate).is_ok() { workspace = candidate; break; }
+        candidate.free();
+    }
+    check(workspace.count != 0, "create isolated working directory below build");
+    defer workspace.free();
+    defer { check(FS.remove(workspace).is_ok(), "remove isolated working directory"); }
+    check(System.set_current_directory(workspace).is_ok(), "enter isolated working directory");
+    defer { check(System.set_current_directory(original).is_ok(), "restore working directory"); }
+
+    absent := Config_Paths.select_path();
+    check(absent == expected, "missing local config selects user path even when that file is absent");
+    absent.free();
+    check(write_file("config.lua", "return {}\n").is_ok(), "create isolated local config");
+    local := Config_Paths.select_path();
+    check(local == "config.lua", "existing local config takes priority over user config");
+    local.free();
+
+    explicit_source := "missing/custom.lua".clone();
+    explicit := Config_Paths.select_path(explicit_source);
+    check(explicit == "missing/custom.lua" && explicit.data != explicit_source.data,
+        "explicit config takes priority and owns its path copy");
+    explicit_source.free(); explicit.free();
+    check(FS.remove("config.lua").is_ok(), "remove isolated local config");
+    check(FS.create_directory("config.lua").is_ok(), "create same-name directory");
+    non_file := Config_Paths.select_path("");
+    check(non_file == expected, "a directory named config.lua does not mask the user config");
+    non_file.free();
+    check(FS.remove("config.lua").is_ok(), "remove same-name directory");
+    print("Configuration path tests passed: std roaming path, explicit/local/user precedence and missing-file selection.\n");
+}

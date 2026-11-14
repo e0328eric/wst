@@ -1,0 +1,52 @@
+//! Terminal view controls, independent of Win32 handles and rendering.
+//! Modifiers follow input.glo: Shift=1, Ctrl=2, Alt=4.
+#public {
+
+Scroll_State :: struct {
+    // Fractions of a line and zoom notch are kept independently.
+    wheel_remainder: s32;
+    zoom_remainder: s32;
+}
+
+Wheel_Result :: struct {
+    zoom_steps: s32;
+    scroll_lines: s32;
+}
+
+// The reset action is 2; positive/negative wheel step counts are deltas.
+font_size :: (current: s32, base: s32, action: s32) -> s32 {
+    target := cast(s64)current + cast(s64)action;
+    if action == 2 target = cast(s64)base;
+    return bounded(target, 8, 72);
+}
+
+// A positive wheel delta moves toward older output. Windows reports 120 units
+// per notch; high-resolution wheels can send smaller deltas. Scaling before
+// division preserves one-line movement from e.g. 40 units at three lines/notch.
+// lines_per_notch=-1 requests one viewport page, and zero disables scrolling.
+wheel :: (state: *Scroll_State, delta: s32, mods: s32,
+          lines_per_notch: s32, page_rows: s32) -> Wheel_Result {
+    result: Wheel_Result;
+    if (mods & 2) != 0 && (mods & 4) == 0 {
+        total := cast(s64)state.zoom_remainder + cast(s64)delta;
+        result.zoom_steps = bounded(total / 120, -64, 64);
+        state.zoom_remainder = cast(s32)(total % 120);
+        return result;
+    }
+    lines := bounded(cast(s64)lines_per_notch, 0, 10000);
+    if lines_per_notch == -1 lines = bounded(cast(s64)page_rows, 1, 256);
+    if lines == 0 return result;
+    // s64 intermediates keep even unusual s32 deltas/settings from overflowing.
+    total := cast(s64)state.wheel_remainder + cast(s64)delta * cast(s64)lines;
+    result.scroll_lines = bounded(total / 120, -10000, 10000);
+    state.wheel_remainder = cast(s32)(total % 120);
+    return result;
+}
+
+}
+
+bounded :: (value: s64, low: s32, high: s32) -> s32 {
+    if value < cast(s64)low return low;
+    if value > cast(s64)high return high;
+    return cast(s32)value;
+}

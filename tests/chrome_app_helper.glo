@@ -1,0 +1,26 @@
+#import "Compiler";
+#import "Format";
+#import "Io";
+bindings :: ()->str {
+    if Native_Compile_Output.compile_c_archive("wst_chrome_app_test",.["tests/chrome_app_helper.c"],
+        .compiler_args=.["-Wall","-Wextra","-Werror"])== {
+    case .Ok(built); return tprint("helper :: #library,static \"{}\";",built.artifact.replace("\\","/"));
+    case .Err(error); print("Chrome helper build failed: {}\n",error.message); return "#comptime { #compile_error \"chrome helper build failed\"; }";
+    }
+}
+#insert #comptime bindings();
+#comptime { add_current_linker_arg("user32.lib"); add_current_linker_arg("kernel32.lib"); }
+#public {
+start :: ()->s32 #foreign helper "chrome_app_start";
+close :: () #foreign helper "chrome_app_close";
+wait :: (active:s32,tabs:s32,shells:s32,profile:cstr)->s32 #foreign helper "chrome_app_wait";
+stable :: (active:s32,tabs:s32,shells:s32,profile:cstr)->s32 #foreign helper "chrome_app_stable";
+metrics :: (width:*s32,height:*s32,dpi:*s32)->s32 #foreign helper "chrome_app_metrics";
+resize :: (width:s32,height:s32)->s32 #foreign helper "chrome_app_resize";
+click :: (x:s32,y:s32)->s32 #foreign helper "chrome_app_click";
+key :: (key:s32)->s32 #foreign helper "chrome_app_key";
+wheel :: (x:s32,y:s32,delta:s32)->s32 #foreign helper "chrome_app_wheel";
+zoomed :: (expected:s32)->s32 #foreign helper "chrome_app_zoomed";
+private_desktop :: ()->s32 #foreign helper "chrome_app_private_desktop";
+closed :: ()->s32 #foreign helper "chrome_app_closed";
+}

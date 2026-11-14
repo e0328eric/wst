@@ -1,0 +1,97 @@
+//! Real profile launches resolve environment variables and independent CWDs.
+P :: #import "../src/platform.glo";
+H :: #import "profile_native_helper.glo";
+FS :: #import "File_System/Directory";
+#import "Io";
+#import "Format";
+#import "Strings/Utf8";
+kernel32 :: #library,system "kernel32";
+Sleep :: (milliseconds:u32) #foreign kernel32;
+
+check :: (ok:bool,message:str) { if !ok { print("FAIL: {}\n",message); exit(1); } }
+contains :: (text:str,needle:str)->bool {
+    if text.count<needle.count return false;
+    for i:0..text.count-needle.count+1 if text[i..i+needle.count]==needle return true;
+    return false;
+}
+pump :: () { event:P.Event; while P.next_event(&event)!=0 {} }
+send :: (command:str) { check(P.pty_send(command.data,cast(s32)command.count)!=0,"send to the owned child session"); }
+read_until :: (expected:str,directory:str="",exited:bool=false) {
+    output:[..]u8; defer output.free();
+    data:[65536]u8;
+    start:=P.ticks(); found:=false; finished:=false; code:s32;
+    while P.ticks()-start<15000 {
+        pump();
+        n:=P.pty_read(cast([*]u8)&data,65536);
+        for i:0..n output.push(data[i]);
+        text:=cast(str)output.view();
+        found=contains(text,expected) && (directory.count==0 || contains(text,directory));
+        finished=P.pty_status(&code)==1;
+        if found && (!exited || finished) break;
+        P.wait(10);
+    }
+    if !found print("Expected {} in profile output:\n{}\n",expected,cast(str)output.view());
+    check(found,"profile output confirms command execution and actual working directory");
+    if exited check(finished && code==0,"one-shot profile exits successfully");
+}
+query :: (suffix:str,directory:str) {
+    send(tprint("echo %ST_WIN_PROFILE_TOKEN%_{}\rcd\r",suffix));
+    read_until(tprint("ORIGINAL_{}",suffix),directory);
+}
+
+main :: () {
+    defer H.cleanup();
+    check(H.init()!=0,"create owned directories with spaces and process-local test environment");
+    first_dir:=H.directory(1).to_string(); second_dir:=H.directory(2).to_string();
+    parent_dir:=H.directory(0).to_string(); home_dir:=H.directory(3).to_string();
+    check(P.open("Consolas",16,120,30,12,1)!=0,"open hidden test window");
+    defer P.close();
+    command:cstr="\"%SystemRoot%\\System32\\cmd.exe\" /d /q /c \"echo ENV_COMMAND_EXPANDED && cd\"";
+    profile:=P.pty_create_at(command,"%ST_WIN_NATIVE_TEST_CWD%",200,40);
+    check(profile>0 && P.pty_selected()==0,"profile creation preserves selected pane");
+    check(P.pty_select(profile)!=0,"select owned profile");
+    read_until("ENV_COMMAND_EXPANDED",first_dir,true);
+    check(P.pty_destroy(profile)!=0,"close one-shot profile");
+
+    // A literal path containing spaces also reaches CreateProcess unchanged.
+    profile=P.pty_create_at("cmd.exe /d /q /k set ST_WIN_PROFILE_TOKEN=ORIGINAL",first_dir.c_string(),200,40);
+    check(profile>0 && P.pty_select(profile)!=0,"start persistent custom profile in literal directory");
+    query("BEFORE_FAILURE",first_dir);
+    missing:=tprint("{}\\does not exist",first_dir);
+    check(P.pty_prepare_at("cmd.exe /d /q",missing.c_string(),200,40)==0,
+        "a missing profile working directory rejects preparation");
+    check(P.pty_selected()==profile && contains(P.error().to_string(),"Starting ConPTY shell"),
+        "failed preparation retains selection and reports its launch error");
+    query("AFTER_FAILED_PREPARATION",first_dir);
+    check(P.pty_create_at("cmd.exe /d /q",missing.c_string(),200,40)==0 && P.pty_selected()==profile,
+        "failed profile creation releases its slot and preserves native selection");
+    query("AFTER_FAILED_CREATION",first_dir);
+
+    artifact:=tprint("{}\\staged_profile_must_not_run.txt",second_dir);
+    defer { _:=FS.remove(artifact); }
+    check(P.file_exists(artifact.c_string())==0,"suspended profile artifact starts absent");
+    check(P.pty_prepare_at("cmd.exe /d /q /c echo SHOULD_NOT_RUN > staged_profile_must_not_run.txt",
+        second_dir.c_string(),200,40)!=0,"prepare replacement in a different directory");
+    Sleep(150);
+    check(P.file_exists(artifact.c_string())==0,"profile command stays suspended while staged");
+    query("WHILE_REPLACEMENT_STAGED",first_dir);
+    P.pty_discard();
+    check(P.file_exists(artifact.c_string())==0,"discard never executes the staged command");
+    check(P.pty_prepare_at("cmd.exe /d /q /c \"echo REPLACEMENT_CWD && cd\"",second_dir.c_string(),200,40)!=0,
+        "prepare successful replacement working directory");
+    check(P.pty_commit()!=0,"commit the prepared profile");
+    read_until("REPLACEMENT_CWD",second_dir,true);
+    check(P.pty_destroy(profile)!=0,"destroy replacement profile");
+
+    profile=P.pty_create_at(command,"%USERPROFILE%",200,40);
+    check(profile>0 && P.pty_select(profile)!=0,"expand Windows Terminal style USERPROFILE directory");
+    read_until("ENV_COMMAND_EXPANDED",home_dir,true);
+    check(P.pty_destroy(profile)!=0,"close home-directory profile");
+    profile=P.pty_create_at(command,"",200,40);
+    check(profile>0 && P.pty_select(profile)!=0,"empty directory inherits parent directory");
+    read_until("ENV_COMMAND_EXPANDED",parent_dir,true);
+    check(P.pty_destroy(profile)!=0,"close inherited-directory profile");
+    check(P.pty_start(command,200,40)!=0,"legacy startup wrapper expands command variables too");
+    read_until("ENV_COMMAND_EXPANDED",parent_dir,true);
+    print("Native profile tests passed: environment expansion, spaced/custom working directories, inherited CWD, staging and failure rollback.\n");
+}

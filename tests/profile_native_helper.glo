@@ -1,0 +1,22 @@
+#import "Compiler";
+#import "Format";
+#import "Io";
+#import "Strings/Utf8";
+
+test_bindings :: () -> str {
+    if Native_Compile_Output.compile_c_archive("st_win_profile_native_test",
+        .["tests/profile_native_helper.c"],
+        .compiler_args=.["-Wall","-Wextra","-Werror"]) == {
+    case .Ok(built);
+        return tprint("helper :: #library,static \"{}\";",built.artifact.replace("\\","/"));
+    case .Err(error);
+        print("profile native helper build failed: {}\n",error.message);
+        return "#comptime { #compile_error \"profile native helper build failed\"; }";
+    }
+}
+#insert #comptime test_bindings();
+#public {
+init :: ()->s32 #foreign helper "profile_native_init";
+directory :: (which:s32)->cstr #foreign helper "profile_native_directory";
+cleanup :: () #foreign helper "profile_native_cleanup";
+}

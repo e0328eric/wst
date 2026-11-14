@@ -1,0 +1,11 @@
+//! Stable terminal-facing records shared by the Gui adapter and shell bridge.
+#public {
+Event :: struct #c_call {
+    kind: s32; a: s32; b: s32; c: s32; length: s32;
+    text: [16]u8;
+}
+Render_Cell :: struct #c_call { codepoint: u32; fg: u32; bg: u32; flags: u32; }
+Key_Binding :: struct #c_call { key: s32; mods: s32; action: s32; }
+Divider_Hit :: struct #c_call { x: s32; y: s32; width: s32; height: s32; axis: s32; }
+File_Stamp :: struct #c_call { modified: u64; size: u64; identity: u64; }
+}

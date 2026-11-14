@@ -1,0 +1,7 @@
+//! Exercise production grid conversion through the logical-layout regression.
+G :: #import "../src/windows_gui.glo";
+#public {
+client_pixels :: (count:s32,cell:s32,padding:s32,chrome:s32,dpi:s32)->s32 {
+    return G.grid_client_pixels(count,cell,padding,chrome,dpi);
+}
+}

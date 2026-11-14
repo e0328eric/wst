@@ -1,0 +1,257 @@
+//! Exercise complete Lua reload transactions against a real hidden ConPTY.
+R :: #import "../src/config_reload.glo";
+C :: #import "../src/config.glo";
+K :: #import "../src/keybindings.glo";
+P :: #import "../src/platform.glo";
+T :: #import "../src/terminal.glo";
+L :: #import "../src/layout.glo";
+H :: #import "keybinding_native_helper.glo";
+FS :: #import "File_System/Directory";
+#import "Io";
+#import "Format";
+#import "Context";
+#import "File_System/File";
+
+check :: (ok: bool,message: str) {
+    if !ok { print("FAIL: {}\n",message); exit(1); }
+}
+contains :: (text: str,needle: str) -> bool {
+    if text.count<needle.count return false;
+    for i:0..text.count-needle.count+1 if text[i..i+needle.count]==needle return true;
+    return false;
+}
+drain :: () { event:P.Event; while P.next_event(&event)!=0 {} }
+native_key :: (window: usize,key: s32,bound: bool) {
+    drain();
+    check(H.post_key(window,key,0)!=0,"post to this process's hidden window");
+    keys,bytes:s32;
+    event:P.Event;
+    while P.next_event(&event)!=0 {
+        if event.kind==1 && event.a==key keys+=1;
+        if event.kind==2 bytes+=event.length;
+    }
+    if bound check(keys==1 && bytes==0,"new action consumes its key without shell text");
+    else check(keys==0 && bytes>0,"released action key reaches normal text input");
+}
+same_bindings :: (actual: *const K.Bindings,expected: *const K.Bindings) {
+    check(actual.count==expected.count,"binding count");
+    for i:0..expected.count {
+        a:=actual.items[i]; b:=expected.items[i];
+        check(a.key==b.key && a.mods==b.mods && a.action==b.action,"binding contents");
+    }
+}
+model_checksum :: (terminal: *T.Terminal) -> u64 {
+    result:u64;
+    for c:terminal.cells result+=cast(u64)c.codepoint+cast(u64)c.fg+cast(u64)c.bg+cast(u64)c.flags;
+    for c:terminal.alt_cells result+=cast(u64)c.codepoint+cast(u64)c.fg+cast(u64)c.bg+cast(u64)c.flags;
+    for c:terminal.history result+=cast(u64)c.codepoint+cast(u64)c.fg+cast(u64)c.bg+cast(u64)c.flags;
+    return result;
+}
+write_source :: (path: str,source: str) {
+    check(write_file(path,source).is_ok(),"write Lua edit");
+}
+// Fixtures only use strings without Lua quote/backslash escapes.
+write_config :: (path: str,cfg: *const C.Config,key: str="B") {
+    write_source(path,tprint("return {{shell='{}',command='{}',font_family='{}',font_size={},font_ligatures={},columns={},rows={},scrollback={},padding={},foreground={},background={},accent={},cursor={},close_on_exit={},keybindings={{copy='{}',paste=false}}}}\n",
+        cfg.shell,cfg.command,cfg.font_family,cfg.font_size,cfg.font_ligatures,cfg.columns,cfg.rows,cfg.scrollback,cfg.padding,
+        cfg.foreground,cfg.background,cfg.accent,cfg.cursor,cfg.close_on_exit,key));
+}
+replace_string :: (destination: *str,value: str) {
+    destination.free(); destination.*=value.clone();
+}
+shell_marker :: (command: str,marker: str) {
+    check(!contains(command,marker),"input echo cannot satisfy the environment-token proof");
+    check(P.pty_send(command.data,cast(s32)command.count)!=0,"query child shell state");
+    data:[65536]u8; output:[..]u8;
+    defer output.free();
+    started:=P.ticks();
+    while P.ticks()-started<10000 {
+        drain();
+        count:=P.pty_read(cast([*]u8)&data,65536);
+        for i:0..count output.push(data[i]);
+        if contains(cast(str)output.view(),marker) return;
+        P.wait(10);
+    }
+    print("Shell output:\n{}\n",cast(str)output.view());
+    check(false,"shell expanded its retained environment token");
+}
+grid_matches_window :: (terminal: *T.Terminal,padding: s32) {
+    w,h,cw,ch:s32;
+    P.metrics(&w,&h,&cw,&ch);
+    layout:=L.compute(w,h,padding,cast(f32)P.dpi()/96.0);
+    check(terminal.cols==cast(s32)layout.viewport_width/cw && terminal.rows==cast(s32)layout.viewport_height/ch,
+        "terminal geometry matches the new Clay viewport and native font metrics");
+}
+failed_reload :: (path: str,active: *C.Config,terminal: *T.Terminal,state: *R.State,window: usize) {
+    expected:=active.*;
+    checksum:=model_checksum(terminal);
+    cols:=terminal.cols; rows:=terminal.rows; history:=terminal.history_count; offset:=terminal.view_offset;
+    baseline_shell:=state.file_config.shell; baseline_command:=state.file_config.command;
+    baseline_size:=state.configured_font_size;
+    w,h,cw,ch:s32; P.metrics(&w,&h,&cw,&ch);
+    check(!R.reload(path,active,terminal,state),"invalid edit rejects the complete transaction");
+    same_bindings(&active.keybindings,&expected.keybindings);
+    check(active.shell==expected.shell && active.command==expected.command && active.font_family==expected.font_family &&
+        active.font_size==expected.font_size && active.padding==expected.padding && active.scrollback==expected.scrollback &&
+        active.columns==expected.columns && active.rows==expected.rows && active.close_on_exit==expected.close_on_exit &&
+        active.foreground==expected.foreground && active.background==expected.background &&
+        active.accent==expected.accent && active.cursor==expected.cursor && active.font_ligatures==expected.font_ligatures,
+        "failed edit retains every active setting");
+    check(P.ligatures_enabled()==expected.font_ligatures,"failed edit retains the renderer's ligature setting");
+    check(state.file_config.shell==baseline_shell && state.file_config.command==baseline_command &&
+        state.configured_font_size==baseline_size && !state.session_replaced && !state.grid_changed,"failed edit retains the file baseline and outcome");
+    check(model_checksum(terminal)==checksum && terminal.cols==cols && terminal.rows==rows &&
+        terminal.history_count==history && terminal.view_offset==offset,"failed edit retains the complete terminal model");
+    next_w,next_h,next_cw,next_ch:s32; P.metrics(&next_w,&next_h,&next_cw,&next_ch);
+    check(next_w==w && next_h==h && next_cw==cw && next_ch==ch,"failed edit retains native window and font metrics");
+    check(R.error_message().count>0,"failed edit has a nonmodal diagnostic");
+    reset_temporary_storage();
+    check(R.error_message().count>0,"diagnostic survives temporary storage and Lua cleanup");
+    native_key(window,66,true); native_key(window,65,false);
+}
+
+main :: () {
+    path:str="build/config_reload_test.lua";
+    staged_marker:str="build/config_reload_suspended.txt";
+    defer { _:=FS.remove(path); _:=FS.remove(staged_marker); }
+    _:=FS.remove(staged_marker);
+    file:=C.defaults(); defer C.release(&file);
+    replace_string(&file.font_family,"Consolas");
+    file.columns=80; file.rows=24; file.scrollback=8;
+    file.foreground=16#eeeeee; file.background=16#111111;
+    write_config(path,&file);
+    active:=C.defaults(); defer C.release(&active);
+    check(C.load(path,&active),"load initial file");
+    state:R.State; R.start(&state,&active); defer R.close(&state);
+    // Apply CLI overrides after capturing the file baseline.
+    replace_string(&active.shell,"cmd");
+    replace_string(&active.command,"cmd.exe /d /q");
+    active.close_on_exit=false;
+    check(P.open(active.font_family.c_string(),active.font_size,active.columns,active.rows,active.padding,1)!=0,"hidden reload window");
+    defer P.close();
+    window:=H.test_window(); check(window!=0,"locate reload test window");
+    command:=R.launch_command(&active); defer command.free();
+    check(P.pty_start(command.c_string(),active.columns,active.rows)!=0,"start persistent CLI shell");
+    token:str="set ST_WIN_RELOAD_TOKEN=SESSION_SURVIVED\r";
+    check(P.pty_send(token.data,cast(s32)token.count)!=0,"save state in the running shell");
+    terminal:T.Terminal;
+    T.init(&terminal,active.columns,active.rows,active.scrollback,active.foreground,active.background);
+    defer T.release(&terminal);
+    for i:0..40 T.feed(&terminal,"one\r\n");
+    T.feed(&terminal,"\x1b[H\x1b[38;2;238;238;238;48;2;17;17;17mX\x1b[0m");
+    T.scroll_view(&terminal,2);
+    history:=terminal.history_count;
+    check(history==8 && terminal.view_offset==2,"test starts with bounded history and a scrolled viewport");
+    active.font_size=24;
+    check(P.set_font_size(24)!=0,"establish runtime zoom independently of the file base");
+    width,height,cw,ch:s32; P.metrics(&width,&height,&cw,&ch);
+    previous_ch:=ch;
+
+    file.font_size=32; file.scrollback=40; file.font_ligatures=false;
+    file.foreground=16#123456; file.background=16#102030; file.accent=16#30a0c0; file.cursor=16#f0c060;
+    write_config(path,&file,"A");
+    check(R.reload(path,&active,&terminal,&state),"reload font, colors, keybindings and history limit together");
+    check(active.shell=="cmd" && active.command=="cmd.exe /d /q" && !active.close_on_exit && !state.session_replaced,
+        "unrelated file edit preserves CLI shell, command and hold overrides");
+    check(active.font_size==32 && state.configured_font_size==32,"explicit font size updates actual and reset sizes");
+    check(!active.font_ligatures && !P.ligatures_enabled(),"successful reload disables font ligatures in the renderer");
+    check(active.scrollback==40 && terminal.history_limit==40 && terminal.history_count==history && terminal.view_offset==2,"growing history preserves retained output and viewport");
+    check(active.foreground==file.foreground && active.background==file.background && active.accent==file.accent && active.cursor==file.cursor,"all configured colors apply");
+    check(terminal.cells[1].fg==file.foreground && terminal.cells[1].bg==file.background && terminal.history[0].fg==file.foreground,"default-colored screen and history recolor");
+    check(terminal.cells[0].codepoint==88 && terminal.cells[0].fg==16#eeeeee && terminal.cells[0].bg==16#111111,"explicit RGB remains literal across theme edits");
+    w,h:s32; P.metrics(&w,&h,&cw,&ch);
+    check(w==width && h==height && ch>previous_ch && state.grid_changed,"font edit changes grid while retaining actual window dimensions");
+    grid_matches_window(&terminal,active.padding); native_key(window,65,true);
+
+    active.font_size=36; check(P.set_font_size(36)!=0,"temporary zoom after changing the base");
+    check(P.resize_client(width+29,height+17)!=0,"simulate manual window resizing");
+    P.metrics(&width,&height,&cw,&ch);
+    replace_string(&file.font_family,"Cascadia Mono");
+    file.font_ligatures=true;
+    file.foreground=16#abcdef; file.background=16#222222;
+    write_config(path,&file);
+    check(R.reload(path,&active,&terminal,&state),"family, theme and keyboard edits apply");
+    check(active.font_family=="Cascadia Mono" && active.font_size==36 && state.configured_font_size==32,"unrelated edits preserve runtime zoom");
+    check(active.font_ligatures && P.ligatures_enabled(),"successful reload enables font ligatures in the renderer");
+    P.metrics(&w,&h,&cw,&ch);
+    check(w==width && h==height,"unrelated edits preserve manual window sizing");
+    check(terminal.cells[0].fg==16#eeeeee && terminal.cells[1].fg==file.foreground && terminal.history[0].fg==file.foreground,"repeated theme changes preserve color origin");
+    native_key(window,65,false); native_key(window,66,true);
+    for bad: .["return {keybindings={", "return {keybindings={copy='B',paste='B'}}", "return {font_size=2,keybindings={copy='A'}}",
+        "return {command='cmd.exe /d /q /c echo MUST_NOT_RUN>build/config_reload_suspended.txt',font_family=string.rep('x',200),font_size=20,font_ligatures=false,columns=120,rows=40,padding=20,foreground='#ffffff',keybindings={copy='A',paste=false}}"] {
+        write_source(path,bad); failed_reload(path,&active,&terminal,&state,window);
+    }
+    check(P.file_exists(staged_marker.c_string())==0,"failed native preparation never resumes a replacement command");
+    replace_string(&file.command,"st_win_missing_reload_command_91f8.exe");
+    write_config(path,&file); failed_reload(path,&active,&terminal,&state,window);
+    replace_string(&file.command,"");
+    failed_reload("tests/fixtures/config_missing.lua",&active,&terminal,&state,window);
+    shell_marker("echo %ST_WIN_RELOAD_TOKEN%_BEFORE_REPLACEMENT\r","SESSION_SURVIVED_BEFORE_REPLACEMENT");
+
+    file.columns=92; file.rows=18;
+    write_config(path,&file);
+    check(R.reload(path,&active,&terminal,&state),"explicit columns and rows resize the existing window and shell");
+    check(active.columns==92 && active.rows==18 && !state.session_replaced,"configured grid dimensions apply without a new child");
+    grid_matches_window(&terminal,active.padding);
+    P.metrics(&width,&height,&cw,&ch);
+    check(width!=w && height!=h,"both configured axes change their client dimensions");
+    check(P.resize_client(width+23,height+17)!=0,"resize both axes manually again");
+    P.metrics(&width,&height,&cw,&ch);
+    file.columns=96;
+    write_config(path,&file);
+    check(R.reload(path,&active,&terminal,&state),"changing only columns applies one window axis");
+    P.metrics(&w,&h,&cw,&ch);
+    check(w!=width && h==height,"unchanged rows preserve the manually resized height");
+    width=w; height=h;
+    file.padding=24; file.scrollback=3;
+    write_config(path,&file);
+    check(R.reload(path,&active,&terminal,&state),"padding and reduced history reload");
+    P.metrics(&w,&h,&cw,&ch);
+    check(w==width && h==height && active.padding==24,"padding updates the viewport without resetting window dimensions");
+    check(terminal.history_limit==3 && terminal.history_count==3 && terminal.view_offset==2,"shrinking history preserves the newest rows and valid scroll position");
+    grid_matches_window(&terminal,active.padding);
+    file.close_on_exit=false; write_config(path,&file);
+    check(R.reload(path,&active,&terminal,&state) && !active.close_on_exit,"explicit close_on_exit=false reloads");
+    file.close_on_exit=true; write_config(path,&file);
+    check(R.reload(path,&active,&terminal,&state) && active.close_on_exit,"explicit close_on_exit change replaces the CLI hold override");
+
+    replace_string(&file.shell,"cmd"); replace_string(&file.command,"cmd.exe /d /q");
+    write_config(path,&file);
+    check(R.reload(path,&active,&terminal,&state) && !state.session_replaced,"changing file launch fields to the same effective command preserves the child");
+    replace_string(&file.shell,"nushell"); write_config(path,&file);
+    check(R.reload(path,&active,&terminal,&state) && active.shell=="nushell" && !state.session_replaced,"shell label changes with a fixed custom command do not restart it");
+    shell_marker("echo %ST_WIN_RELOAD_TOKEN%_UNCHANGED_COMMAND\r","SESSION_SURVIVED_UNCHANGED_COMMAND");
+    T.feed(&terminal,"\x1b[?2004h\x1b]2;incomplete old shell title");
+    replace_string(&file.command,"cmd.exe /d /q /k set ST_WIN_RELOAD_TOKEN=REPLACED");
+    write_config(path,&file);
+    check(R.reload(path,&active,&terminal,&state) && state.session_replaced,"changing the effective command replaces only the child shell");
+    check(terminal.history_count==3 && !terminal.bracketed_paste && terminal.state==0 && terminal.title.count==0 && terminal.cells[0].codepoint==32,
+        "replacement preserves bounded history and resets old screen, parser and modes");
+    shell_marker("echo %ST_WIN_RELOAD_TOKEN%_AFTER_REPLACEMENT\r","REPLACED_AFTER_REPLACEMENT");
+    token="set ST_WIN_RELOAD_TOKEN=SECOND_STATE\r";
+    check(P.pty_send(token.data,cast(s32)token.count)!=0,"set state in the replacement shell");
+    check(R.reload(path,&active,&terminal,&state) && !state.session_replaced,"saving unchanged launch settings keeps the replacement child");
+    shell_marker("echo %ST_WIN_RELOAD_TOKEN%_SAME_REPLACEMENT\r","SECOND_STATE_SAME_REPLACEMENT");
+
+    file.scrollback=0; file.font_ligatures=false; write_config(path,&file);
+    check(R.reload(path,&active,&terminal,&state) && terminal.history_count==0 && terminal.history.count==0 && terminal.view_offset==0,"zero scrollback immediately releases retained history");
+    check(!active.font_ligatures && !P.ligatures_enabled(),"ligatures remain independently configurable after shell replacement");
+    write_source(path,"return {}\n");
+    check(R.reload(path,&active,&terminal,&state),"removing all overrides restores fresh defaults");
+    defaults:=C.defaults(); defer C.release(&defaults);
+    check(active.shell==defaults.shell && active.command==defaults.command && active.font_family==defaults.font_family &&
+        active.font_size==defaults.font_size && state.configured_font_size==defaults.font_size && active.columns==defaults.columns &&
+        active.rows==defaults.rows && active.padding==defaults.padding && active.scrollback==defaults.scrollback &&
+        active.close_on_exit==defaults.close_on_exit && active.foreground==defaults.foreground && active.background==defaults.background &&
+        active.accent==defaults.accent && active.cursor==defaults.cursor && state.session_replaced,"every removed field restores its documented default");
+    check(active.font_ligatures && P.ligatures_enabled(),"removing the ligature override restores its enabled default");
+    same_bindings(&active.keybindings,&defaults.keybindings);
+    grid_matches_window(&terminal,active.padding);
+    P.pty_close();
+    write_source(path,"return {font_size=20,foreground='#123456'}\n");
+    check(R.reload(path,&active,&terminal,&state) && active.font_size==20 && !state.session_replaced,"appearance reload also works with no active shell");
+    check(R.error_message().count==0,"successful recovery clears the last diagnostic");
+    R.close(&state);
+    check(state.file_config.shell.count==0 && state.file_config.command.count==0 && state.file_config.font_family.count==0,"closing reload state releases its owned snapshot");
+    print("config reload tests passed: every Lua field, CLI/zoom/window preservation, shell replacement, rollback and history.\n");
+}

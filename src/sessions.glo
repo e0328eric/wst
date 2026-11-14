@@ -1,0 +1,148 @@
+//! Runtime state for independently owned terminal panes.
+P :: #import "platform.glo";
+T :: #import "terminal.glo";
+C :: #import "config.glo";
+L :: #import "layout.glo";
+V :: #import "controls.glo";
+M :: #import "workspace.glo";
+H :: #import "launch.glo";
+#import "Strings/Utf8";
+#export "config.glo" { Config };
+#export "terminal.glo" { Terminal, Cell };
+#export "layout.glo" { Layout };
+#export "controls.glo" { Scroll_State };
+#export "workspace.glo" { Workspace, Rect };
+#export "launch.glo" { Launch };
+
+#public {
+Selection :: struct { active:bool; dragging:bool; start:s32; end:s32; }
+Pane :: struct {
+    used:bool;
+    handle:s32;
+    launch:H.Launch;
+    terminal:T.Terminal;
+    selection:Selection;
+    wheel:V.Scroll_State;
+    scroll_dragging:bool;
+    scroll_grab:s32;
+    exited:bool;
+    code:s32;
+    exit_seen:u64;
+    last_output:u64;
+    layout:L.Layout;
+}
+Book :: struct {
+    panes:[32]Pane;
+    rects:[32]M.Rect;
+}
+
+free_id :: (book:*const Book)->s32 {
+    for i:0..32 if !book.panes[i].used return cast(s32)i+1;
+    return 0;
+}
+
+open :: (book:*Book,id:s32,cfg:*const C.Config,command:str,cols:s32,rows:s32)->bool {
+    launch:H.Launch;
+    _:=H.resolve(cfg,"",&launch);
+    defer H.release(&launch);
+    launch.command.free(); launch.command=command.clone();
+    return open_launch(book,id,cfg,&launch,cols,rows);
+}
+
+open_launch :: (book:*Book,id:s32,cfg:*const C.Config,launch:*const H.Launch,cols:s32,rows:s32)->bool {
+    if id<1 || id>32 || book.panes[id-1].used return false;
+    handle:=P.pty_create_at(launch.command.c_string(),launch.directory.c_string(),cols,rows);
+    if handle==0 return false;
+    fresh:Pane;
+    fresh.used=true; fresh.handle=handle; fresh.last_output=P.ticks();
+    fresh.launch=H.clone(launch);
+    T.init(&fresh.terminal,cols,rows,cfg.scrollback,cfg.foreground,cfg.background);
+    T.set_palette(&fresh.terminal,&cfg.palette);
+    book.panes[id-1]=fresh;
+    return true;
+}
+
+close :: (book:*Book,id:s32) {
+    if id<1 || id>32 || !book.panes[id-1].used return;
+    p:=&book.panes[id-1];
+    _:=P.pty_destroy(p.handle);
+    H.release(&p.launch);
+    T.release(&p.terminal);
+    fresh:Pane;
+    p.*=fresh;
+    empty:M.Rect;
+    book.rects[id-1]=empty;
+}
+
+release :: (book:*Book) { for i:1..33 close(book,cast(s32)i); }
+
+end_drag :: (book:*Book) {
+    for i:0..32 if book.panes[i].used {
+        book.panes[i].selection.dragging=false;
+        book.panes[i].scroll_dragging=false;
+    }
+}
+
+body_rect :: (layout:L.Layout)->M.Rect {
+    return .{cast(s32)layout.viewport_x,cast(s32)layout.viewport_y,
+        cast(s32)(layout.viewport_width+layout.scrollbar_width),cast(s32)layout.viewport_height};
+}
+
+pane_layout :: (base:L.Layout,rect:M.Rect)->L.Layout {
+    result:=base;
+    gutter:=12*P.dpi()/96;
+    if gutter>rect.width gutter=rect.width;
+    if gutter<0 gutter=0;
+    result.viewport_x=cast(f32)rect.x; result.viewport_y=cast(f32)rect.y;
+    result.viewport_width=cast(f32)(rect.width-gutter);
+    result.viewport_height=cast(f32)rect.height;
+    result.scrollbar_x=cast(f32)(rect.x+rect.width-gutter);
+    result.scrollbar_y=cast(f32)rect.y;
+    result.scrollbar_width=cast(f32)gutter;
+    result.scrollbar_height=cast(f32)rect.height;
+    return result;
+}
+
+geometry :: (workspace:*const M.Workspace,base:L.Layout,rects:*[32]M.Rect) {
+    for i:0..workspace.count M.arrange(workspace,cast(s32)i,body_rect(base),6*P.dpi()/96,rects);
+}
+
+columns :: (layout:L.Layout,cw:s32)->s32 { return bound(cast(s32)layout.viewport_width/cw,2,512); }
+rows :: (layout:L.Layout,ch:s32)->s32 { return bound(cast(s32)layout.viewport_height/ch,1,256); }
+
+/// Recompute all tabs, including hidden children, after a resize or zoom.
+resize :: (book:*Book,workspace:*const M.Workspace,base:L.Layout,cw:s32,ch:s32)->bool {
+    geometry(workspace,base,&book.rects);
+    previous:=P.pty_selected();
+    ok:=true;
+    for i:0..32 if book.panes[i].used {
+        p:=&book.panes[i];
+        next:=pane_layout(base,book.rects[i]);
+        cols:=columns(next,cw); line_count:=rows(next,ch);
+        if cols!=p.terminal.cols || line_count!=p.terminal.rows {
+            _:=P.pty_select(p.handle);
+            code:s32;
+            if P.pty_status(&code)==0 && P.pty_resize(cols,line_count)==0 ok=false;
+            T.resize(&p.terminal,cols,line_count);
+            p.selection.active=false;
+        }
+        p.layout=next;
+        p.selection.dragging=false; p.scroll_dragging=false;
+    }
+    _:=P.pty_select(previous);
+    return ok;
+}
+
+reset_session :: (p:*Pane) {
+    T.begin_session(&p.terminal);
+    p.exited=false; p.code=0; p.exit_seen=0; p.last_output=P.ticks();
+    selection:Selection; wheel:V.Scroll_State;
+    p.selection=selection; p.wheel=wheel; p.scroll_dragging=false;
+}
+}
+
+bound :: (n:s32,low:s32,high:s32)->s32 {
+    if n<low return low;
+    if n>high return high;
+    return n;
+}
