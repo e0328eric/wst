@@ -15,242 +15,408 @@ FS :: #import "File_System/Directory";
 #import "Context";
 #import "File_System/File";
 kernel32 :: #library,system "kernel32";
-Sleep :: (milliseconds:u32) #foreign kernel32;
+Sleep :: (milliseconds: u32) #foreign kernel32;
 
-check :: (ok:bool,message:str) { if !ok { print("FAIL: {}\n",message); exit(1); } }
-contains :: (text:str,needle:str)->bool {
-    if text.count<needle.count return false;
-    for i:0..text.count-needle.count+1 if text[i..i+needle.count]==needle return true;
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
+}
+contains :: (text: str, needle: str) -> bool {
+    if text.count < needle.count return false;
+    for i: 0..text.count - needle.count + 1 if text[i..i + needle.count] == needle return true;
     return false;
 }
-pump :: () { event:P.Event; while P.next_event(&event)!=0 {} }
-replace_string :: (target:*str,value:str) { target.free(); target.*=value.clone(); }
-write_config :: (path:str,cfg:*const C.Config,new_tab_key:str="A") {
-    source:=tprint("return {{shell='{}',command='{}',font_family='{}',font_size={},font_ligatures={},columns={},rows={},scrollback={},padding={},foreground={},background={},accent={},cursor={},close_on_exit={},keybindings={{new_tab='{}',split_vertical='B',close_pane='C'}}}}\n",
-        cfg.shell,cfg.command,cfg.font_family,cfg.font_size,cfg.font_ligatures,cfg.columns,cfg.rows,cfg.scrollback,cfg.padding,
-        cfg.foreground,cfg.background,cfg.accent,cfg.cursor,cfg.close_on_exit,new_tab_key);
-    #assert write_file(path,source).is_ok(),"write a complete Lua candidate";
+pump :: () {
+    event: P.Event;
+    while P.next_event(&event) != 0 {}
 }
-send :: (command:str) { #assert P.pty_send(command.data,cast(s32)command.count)!=0; }
-marker :: (handle:s32,command:str,expected:str) {
-    #assert !contains(command,expected),"command echo cannot satisfy shell-state proof";
-    #assert P.pty_select(handle)!=0;
+replace_string :: (target: *str, value: str) {
+    target.free();
+    target.* = value.clone();
+}
+write_config :: (
+    path: str,
+    cfg: *const C.Config,
+    new_tab_key: str = "A",
+    include_opacity: bool = true
+) {
+    opacity_field: str;
+    if include_opacity opacity_field = tprint("window_opacity={},", cfg.window_opacity);
+    source := tprint(
+        "return {{shell='{}',command='{}',font_family='{}',font_size={},font_ligatures={},{}columns={},rows={},scrollback={},padding={},foreground={},background={},accent={},cursor={},close_on_exit={},keybindings={{new_tab='{}',split_vertical='B',close_pane='C'}}}}\n",
+        cfg.shell,
+        cfg.command,
+        cfg.font_family,
+        cfg.font_size,
+        cfg.font_ligatures,
+        opacity_field,
+        cfg.columns,
+        cfg.rows,
+        cfg.scrollback,
+        cfg.padding,
+        cfg.foreground,
+        cfg.background,
+        cfg.accent,
+        cfg.cursor,
+        cfg.close_on_exit,
+        new_tab_key
+    );
+    #assert write_file(path, source).is_ok(), "write a complete Lua candidate";
+}
+send :: (command: str) {
+    #assert P.pty_send(command.data, cast(s32) command.count) != 0;
+}
+marker :: (handle: s32, command: str, expected: str) {
+    #assert !contains(command, expected), "command echo cannot satisfy shell-state proof";
+    #assert P.pty_select(handle) != 0;
     send(command);
-    data:[65536]u8; output:[..]u8; defer output.free();
-    started:=P.ticks(); found:=false;
-    while P.ticks()-started<10000 {
+    data: [65536]u8;
+    output: [..]u8;
+    defer output.free();
+    started := P.ticks();
+    found := false;
+    while P.ticks() - started < 10000 {
         pump();
-        n:=P.pty_read(cast([*]u8)&data,65536);
-        for i:0..n output.push(data[i]);
-        if contains(cast(str)output.view(),expected) { found=true; break; }
+        n := P.pty_read(cast([*]u8) &data, 65536);
+        for i: 0..n output.push(data[i]);
+        if contains(cast(str) output.view(), expected) {
+            found = true;
+            break;
+        }
         Sleep(5);
     }
-    if !found print("Missing {} in pane handle {} output:\n{}\n",expected,handle,cast(str)output.view());
-    #assert found,"each pane retains or replaces its own child environment as requested";
+    if !found
+        print(
+            "Missing {} in pane handle {} output:\n{}\n",
+            expected,
+            handle,
+            cast(str) output.view()
+        );
+    #assert found, "each pane retains or replaces its own child environment as requested";
 }
-original_markers :: (book:*U.Book,suffix:str) {
-    for i:0..3 marker(book.panes[i].handle,tprint("echo %ST_WIN_PANE_TOKEN%_{}\r",suffix),tprint("PANE_{}_{}",i+1,suffix));
+original_markers :: (book: *U.Book, suffix: str) {
+    for i: 0..3 marker(
+        book.panes[i].handle,
+        tprint("echo %ST_WIN_PANE_TOKEN%_{}\r", suffix),
+        tprint("PANE_{}_{}", i + 1, suffix)
+    );
 }
-native_tab_key :: (window:usize,key:s32,bound:bool) {
+native_tab_key :: (window: usize, key: s32, bound: bool) {
     pump();
-    #assert H.post_key(window,key,0)!=0;
-    event:P.Event; actions,bytes:s32;
-    while P.next_event(&event)!=0 {
-        if event.kind==1 && event.a==key actions+=1;
-        if event.kind==2 bytes+=event.length;
+    #assert H.post_key(window, key, 0) != 0;
+    event: P.Event;
+    actions, bytes: s32;
+    while P.next_event(&event) != 0 {
+        if event.kind == 1 && event.a == key actions += 1;
+        if event.kind == 2                   bytes += event.length;
     }
-    if bound #assert actions==1 && bytes==0,"reloaded tab binding is installed in the native text filter";
-    else #assert actions==0 && bytes>0,"released tab binding resumes normal shell text routing";
+    if bound
+        #assert actions == 1 && bytes == 0, "reloaded tab binding is installed in the native text filter";
+    else
+        #assert actions == 0 && bytes > 0, "released tab binding resumes normal shell text routing";
 }
-model_checksum :: (t:*const T.Terminal)->u64 {
-    result:u64;
-    for c:t.cells result+=cast(u64)c.codepoint+cast(u64)c.fg+cast(u64)c.bg+cast(u64)c.flags;
-    for c:t.alt_cells result+=cast(u64)c.codepoint+cast(u64)c.fg+cast(u64)c.bg+cast(u64)c.flags;
-    for c:t.history result+=cast(u64)c.codepoint+cast(u64)c.fg+cast(u64)c.bg+cast(u64)c.flags;
+model_checksum :: (t: *const T.Terminal) -> u64 {
+    result: u64;
+    for c: t.cells result += cast(u64) c.codepoint + cast(u64) c.fg + cast(u64) c.bg + cast(u64) c.flags;
+    for c: t.alt_cells result += cast(u64) c.codepoint + cast(u64) c.fg + cast(u64) c.bg + cast(u64) c.flags;
+    for c: t.history result += cast(u64) c.codepoint + cast(u64) c.fg + cast(u64) c.bg + cast(u64) c.flags;
     return result;
 }
-Snapshot :: struct { checksum:u64; cols:s32; rows:s32; history:s32; offset:s32; rect:M.Rect; }
-failed_reload :: (path:str,cfg:*C.Config,book:*U.Book,w:*M.Workspace,state:*R.State) {
-    before:[3]Snapshot;
-    for i:0..3 {
-        t:=&book.panes[i].terminal;
-        before[i]=.{model_checksum(t),t.cols,t.rows,t.history_count,t.view_offset,book.rects[i]};
+Snapshot :: struct {
+    checksum: u64;
+    cols: s32;
+    rows: s32;
+    history: s32;
+    offset: s32;
+    rect: M.Rect;
+}
+failed_reload :: (path: str, cfg: *C.Config, book: *U.Book, w: *M.Workspace, state: *R.State) {
+    before: [3]Snapshot;
+    for i: 0..3 {
+        t := &book.panes[i].terminal;
+        before[i] = .{
+            model_checksum(t),
+            t.cols,
+            t.rows,
+            t.history_count,
+            t.view_offset,
+            book.rects[i]
+        };
     }
-    selected:=P.pty_selected();
-    width,height,cw,ch:s32; P.metrics(&width,&height,&cw,&ch);
-    old_size:=cfg.font_size; old_padding:=cfg.padding;
-    old_ligatures:=cfg.font_ligatures;
-    #assert !R.reload_workspace(path,cfg,book,w,state),"invalid candidate rejects every pane's transaction";
-    #assert P.pty_selected()==selected,"failed reload restores the previously selected native handle";
-    #assert cfg.command=="cmd.exe /d /q" && cfg.font_size==old_size && cfg.padding==old_padding &&
-        cfg.columns==120 && cfg.rows==34 && cfg.scrollback==4 && !cfg.close_on_exit,
+    selected := P.pty_selected();
+    width, height, cw, ch: s32;
+    P.metrics(&width, &height, &cw, &ch);
+    old_size := cfg.font_size;
+    old_padding := cfg.padding;
+    old_ligatures := cfg.font_ligatures;
+    old_opacity := cfg.window_opacity;
+    #assert !R.reload_workspace(path, cfg, book, w, state), "invalid candidate rejects every pane's transaction";
+    #assert P.pty_selected() == selected, "failed reload restores the previously selected native handle";
+    #assert cfg.command == "cmd.exe /d /q" && cfg.font_size == old_size && cfg.padding == old_padding &&
+        cfg.columns == 120 && cfg.rows == 34 && cfg.scrollback == 4 && !cfg.close_on_exit,
         "failed candidate preserves active settings including CLI overrides";
-    #assert cfg.font_ligatures==old_ligatures && P.ligatures_enabled()==old_ligatures,
-        "failed candidate preserves the ligature setting in config and renderer";
-    #assert state.file_config.command=="" && state.configured_font_size==20 && !state.session_replaced && !state.grid_changed,
-        "failed candidate preserves the successful file baseline and clears outcome flags";
-    check(R.error_message().count>0,"failed workspace candidate exposes a diagnostic");
+    #assert cfg.font_ligatures == old_ligatures && P.ligatures_enabled() == old_ligatures,
+    "failed candidate preserves the ligature setting in config and renderer";
+    #assert cfg.window_opacity == old_opacity && P.window_opacity() == old_opacity,
+    "failed candidate preserves configured and native opacity";
+    #assert state.file_config.command == "" && state.configured_font_size == 20 && !state.session_replaced && !state.grid_changed,
+    "failed candidate preserves the successful file baseline and clears outcome flags";
+    check(R.error_message().count > 0, "failed workspace candidate exposes a diagnostic");
     reset_temporary_storage();
-    check(R.error_message().count>0,"workspace error survives Lua and temporary storage cleanup");
-    next_width,next_height,next_cw,next_ch:s32; P.metrics(&next_width,&next_height,&next_cw,&next_ch);
-    #assert next_width==width && next_height==height && next_cw==cw && next_ch==ch,
-        "failed candidate preserves exact window size and native metrics";
-    for i:0..3 {
-        t:=&book.panes[i].terminal; saved:=before[i]; rect:=book.rects[i];
-        #assert model_checksum(t)==saved.checksum && t.cols==saved.cols && t.rows==saved.rows &&
-            t.history_count==saved.history && t.view_offset==saved.offset,"failed candidate preserves every terminal and history";
-        #assert rect.x==saved.rect.x && rect.y==saved.rect.y && rect.width==saved.rect.width && rect.height==saved.rect.height,
-            "failed candidate preserves pane rectangles on visible and background tabs";
+    check(R.error_message().count > 0, "workspace error survives Lua and temporary storage cleanup");
+    next_width, next_height, next_cw, next_ch: s32;
+    P.metrics(&next_width, &next_height, &next_cw, &next_ch);
+    #assert next_width == width && next_height == height && next_cw == cw && next_ch == ch,
+    "failed candidate preserves exact window size and native metrics";
+    for i: 0..3 {
+        t := &book.panes[i].terminal;
+        saved := before[i];
+        rect := book.rects[i];
+        #assert model_checksum(t) == saved.checksum && t.cols == saved.cols && t.rows == saved.rows &&
+            t.history_count == saved.history && t.view_offset == saved.offset, "failed candidate preserves every terminal and history";
+        #assert rect.x == saved.rect.x && rect.y == saved.rect.y && rect.width == saved.rect.width && rect.height == saved.rect.height,
+        "failed candidate preserves pane rectangles on visible and background tabs";
     }
 }
-assert_geometry :: (book:*U.Book,w:*M.Workspace,cfg:*const C.Config) {
-    width,height,cw,ch:s32; P.metrics(&width,&height,&cw,&ch);
-    base:=L.compute(width,height,cfg.padding,cast(f32)P.dpi()/96.0);
-    rects:[32]M.Rect; U.geometry(w,base,&rects);
-    for i:0..3 {
-        layout:=U.pane_layout(base,rects[i]);
-        p:=&book.panes[i];
-        #assert p.terminal.cols==U.columns(layout,cw) && p.terminal.rows==U.rows(layout,ch),
-            "each shell model uses its own current Clay pane geometry";
-        #assert p.layout.viewport_x==layout.viewport_x && p.layout.viewport_y==layout.viewport_y &&
-            p.layout.viewport_width==layout.viewport_width && p.layout.viewport_height==layout.viewport_height,
+assert_geometry :: (book: *U.Book, w: *M.Workspace, cfg: *const C.Config) {
+    width, height, cw, ch: s32;
+    P.metrics(&width, &height, &cw, &ch);
+    base := L.compute(width, height, cfg.padding, cast(f32) P.dpi() / 96.0);
+    rects: [32]M.Rect;
+    U.geometry(w, base, &rects);
+    for i: 0..3 {
+        layout := U.pane_layout(base, rects[i]);
+        p := &book.panes[i];
+        #assert p.terminal.cols == U.columns(layout, cw) && p.terminal.rows == U.rows(layout, ch),
+        "each shell model uses its own current Clay pane geometry";
+        #assert p.layout.viewport_x == layout.viewport_x && p.layout.viewport_y == layout.viewport_y &&
+            p.layout.viewport_width == layout.viewport_width && p.layout.viewport_height == layout.viewport_height,
             "render geometry applies to hidden as well as visible panes";
     }
-    #assert book.panes[0].terminal.cols<book.panes[2].terminal.cols,
-        "split panes and the full-width background tab retain different grids";
+    #assert book.panes[0].terminal.cols < book.panes[2].terminal.cols,
+    "split panes and the full-width background tab retain different grids";
 }
 
 main :: () {
-    path:str="build/workspace_reload_test.lua";
-    side_effect:str="build/workspace_reload_unexpected.txt";
-    _:=FS.remove(side_effect);
-    defer { _:=FS.remove(path); _:=FS.remove(side_effect); }
-    file:=C.defaults(); defer C.release(&file);
-    replace_string(&file.font_family,"Consolas");
-    file.scrollback=8; file.foreground=16#eeeeee; file.background=16#111111;
-    write_config(path,&file,"D");
-    cfg:=C.defaults(); defer C.release(&cfg);
-    #assert C.load(path,&cfg);
-    state:R.State; R.start(&state,&cfg); defer R.close(&state);
+    path: str = "build/workspace_reload_test.lua";
+    side_effect: str = "build/workspace_reload_unexpected.txt";
+    _ := FS.remove(side_effect);
+    defer {
+        _ := FS.remove(path);
+        _ := FS.remove(side_effect);
+    }
+    file := C.defaults();
+    defer C.release(&file);
+    replace_string(&file.font_family, "Consolas");
+    file.scrollback = 8;
+    file.foreground = 16#eeeeee;
+    file.background = 16#111111;
+    file.window_opacity = 0.9;
+    write_config(path, &file, "D");
+    cfg := C.defaults();
+    defer C.release(&cfg);
+    #assert C.load(path, &cfg);
+    state: R.State;
+    R.start(&state, &cfg);
+    defer R.close(&state);
     // Capture the file baseline before applying the equivalent of CLI flags.
-    replace_string(&cfg.shell,"cmd"); replace_string(&cfg.command,"cmd.exe /d /q");
-    cfg.close_on_exit=false;
-    #assert P.open(cfg.font_family.c_string(),cfg.font_size,cfg.columns,cfg.rows,cfg.padding,1)!=0;
+    replace_string(&cfg.shell, "cmd");
+    replace_string(&cfg.command, "cmd.exe /d /q");
+    cfg.close_on_exit = false;
+    #assert P.open(
+        cfg.font_family.c_string(),
+        cfg.font_size,
+        cfg.columns,
+        cfg.rows,
+        cfg.padding,
+        1,
+        cfg.window_opacity
+    ) != 0;
     defer P.close();
-    window:=H.test_window(); #assert window!=0;
-    #assert P.set_keybindings(cast([*]const P.Key_Binding)&cfg.keybindings.items,cfg.keybindings.count)!=0;
-    native_tab_key(window,68,true); native_tab_key(window,65,false);
-    book:U.Book; defer U.release(&book);
-    w:M.Workspace;
-    for id:1..4 {
-        #assert U.open(&book,cast(s32)id,&cfg,"cmd.exe /d /q",cfg.columns,cfg.rows);
-        if id==2 #assert M.split(&w,2,M.Axis_Vertical);
-        else #assert M.new_tab(&w,cast(s32)id);
-        p:=&book.panes[id-1];
-        #assert P.pty_select(p.handle)!=0;
-        send(tprint("set ST_WIN_PANE_TOKEN=PANE_{}\r",id));
-        for line:0..50 T.feed(&p.terminal,tprint("Pane {} line {}\r\n",id,line));
-        T.feed(&p.terminal,"\x1b[H\x1b[38;2;238;238;238;48;2;17;17;17mX\x1b[0m");
-        T.scroll_view(&p.terminal,2);
+    #assert cfg.window_opacity == 0.9 && P.window_opacity() == cfg.window_opacity, "startup applies opacity before pane sessions start";
+    window := H.test_window();
+    #assert window != 0;
+    #assert P.set_keybindings(
+        cast([*]const P.Key_Binding) &cfg.keybindings.items,
+        cfg.keybindings.count
+    ) != 0;
+    native_tab_key(window, 68, true);
+    native_tab_key(window, 65, false);
+    book: U.Book;
+    defer U.release(&book);
+    w: M.Workspace;
+    for id: 1..4 {
+        #assert U.open(&book, cast(s32) id, &cfg, "cmd.exe /d /q", cfg.columns, cfg.rows);
+        if id == 2 #assert M.split(&w, 2, M.Axis_Vertical);
+        else       #assert M.new_tab(&w, cast(s32) id);
+        p := &book.panes[id - 1];
+        #assert P.pty_select(p.handle) != 0;
+        send(tprint("set ST_WIN_PANE_TOKEN=PANE_{}\r", id));
+        for line: 0..50 T.feed(&p.terminal, tprint("Pane {} line {}\r\n", id, line));
+        T.feed(&p.terminal, "\x1b[H\x1b[38;2;238;238;238;48;2;17;17;17mX\x1b[0m");
+        T.scroll_view(&p.terminal, 2);
     }
-    #assert M.focus_pane(&w,2) && w.count==2 && M.pane_count(&w)==3;
-    width,height,cw,ch:s32; P.metrics(&width,&height,&cw,&ch);
-    #assert U.resize(&book,&w,L.compute(width,height,cfg.padding,cast(f32)P.dpi()/96.0),cw,ch);
-    original_markers(&book,"INITIAL");
-    selected:=book.panes[2].handle;
-    #assert P.pty_select(selected)!=0;
+    #assert M.focus_pane(&w, 2) && w.count == 2 && M.pane_count(&w) == 3;
+    width, height, cw, ch: s32;
+    P.metrics(&width, &height, &cw, &ch);
+    #assert U.resize(
+        &book,
+        &w,
+        L.compute(width, height, cfg.padding, cast(f32) P.dpi() / 96.0),
+        cw,
+        ch
+    );
+    original_markers(&book, "INITIAL");
+    selected := book.panes[2].handle;
+    #assert P.pty_select(selected) != 0;
 
-    replace_string(&file.font_family,"Courier New");
-    file.font_size=20; file.columns=120; file.rows=34; file.padding=18; file.scrollback=4; file.font_ligatures=false;
-    file.foreground=16#abcdef; file.background=16#203040; file.accent=16#62c0a0; file.cursor=16#ffcc00;
-    write_config(path,&file);
-    #assert R.reload_workspace(path,&cfg,&book,&w,&state),"appearance, history and geometry reload across the complete workspace";
-    #assert P.pty_selected()==selected && !state.session_replaced && state.grid_changed;
-    #assert cfg.shell=="cmd" && cfg.command=="cmd.exe /d /q" && !cfg.close_on_exit,
-        "unrelated file changes preserve CLI launch and hold overrides";
-    #assert cfg.font_family=="Courier New" && cfg.font_size==20 && state.configured_font_size==20;
-    #assert !cfg.font_ligatures && !P.ligatures_enabled(),"ligature disabling applies across the workspace";
-    #assert K.lookup(&cfg.keybindings,65,0)==K.Action.New_Tab && K.lookup(&cfg.keybindings,66,0)==K.Action.Split_Vertical;
-    native_tab_key(window,65,true); native_tab_key(window,68,false);
-    for i:0..3 {
-        t:=&book.panes[i].terminal;
-        #assert t.history_limit==4 && t.history_count==4 && t.view_offset==2,"new history limits retain every pane's newest rows and viewport";
-        #assert t.cells[1].fg==file.foreground && t.cells[1].bg==file.background &&
-            t.history[0].fg==file.foreground,"default-colored text and history recolor in all panes";
-        #assert t.cells[0].fg==16#eeeeee && t.cells[0].bg==16#111111,"explicit colors retain their origin in every pane";
+    replace_string(&file.font_family, "Courier New");
+    file.font_size = 20;
+    file.columns = 120;
+    file.rows = 34;
+    file.padding = 18;
+    file.scrollback = 4;
+    file.font_ligatures = false;
+    file.window_opacity = 0.75;
+    file.foreground = 16#abcdef;
+    file.background = 16#203040;
+    file.accent = 16#62c0a0;
+    file.cursor = 16#ffcc00;
+    write_config(path, &file);
+    #assert R.reload_workspace(path, &cfg, &book, &w, &state), "appearance, history and geometry reload across the complete workspace";
+    #assert P.pty_selected() == selected && !state.session_replaced && state.grid_changed;
+    #assert cfg.shell == "cmd" && cfg.command == "cmd.exe /d /q" && !cfg.close_on_exit,
+    "unrelated file changes preserve CLI launch and hold overrides";
+    #assert cfg.font_family == "Courier New" && cfg.font_size == 20 && state.configured_font_size == 20;
+    #assert !cfg.font_ligatures && !P.ligatures_enabled(), "ligature disabling applies across the workspace";
+    #assert cfg.window_opacity == 0.75 && P.window_opacity() == cfg.window_opacity, "workspace reload applies native opacity across all panes";
+    #assert K.lookup(&cfg.keybindings, 65, 0) == K.Action.New_Tab && K.lookup(
+        &cfg.keybindings,
+        66,
+        0
+    ) == K.Action.Split_Vertical;
+    native_tab_key(window, 65, true);
+    native_tab_key(window, 68, false);
+    for i: 0..3 {
+        t := &book.panes[i].terminal;
+        #assert t.history_limit == 4 && t.history_count == 4 && t.view_offset == 2, "new history limits retain every pane's newest rows and viewport";
+        #assert t.cells[1].fg == file.foreground && t.cells[1].bg == file.background &&
+            t.history[0].fg == file.foreground, "default-colored text and history recolor in all panes";
+        #assert t.cells[0].fg == 16#eeeeee && t.cells[0].bg == 16#111111, "explicit colors retain their origin in every pane";
     }
-    #assert w.count==2 && M.focused(&w)==2;
-    assert_geometry(&book,&w,&cfg);
-    original_markers(&book,"AFTER_APPEARANCE");
+    #assert w.count == 2 && M.focused(&w) == 2;
+    assert_geometry(&book, &w, &cfg);
+    original_markers(&book, "AFTER_APPEARANCE");
 
-    cfg.font_size=22; #assert P.set_font_size(22)!=0;
-    P.metrics(&width,&height,&cw,&ch);
-    #assert P.resize_client(width+7,height+11)!=0;
-    P.metrics(&width,&height,&cw,&ch);
-    file.accent=16#c04050; file.font_ligatures=true; write_config(path,&file);
-    #assert P.pty_select(selected)!=0;
-    #assert R.reload_workspace(path,&cfg,&book,&w,&state) && !state.session_replaced;
-    #assert cfg.font_ligatures && P.ligatures_enabled(),"ligatures can be enabled without restarting pane sessions";
-    #assert P.pty_selected()==selected && cfg.font_size==22 && state.configured_font_size==20,
-        "unrelated workspace saves preserve global manual zoom and native selection";
-    next_width,next_height:s32; P.metrics(&next_width,&next_height,&cw,&ch);
-    #assert next_width==width && next_height==height,"unrelated saves preserve exact manually chosen window dimensions";
-    assert_geometry(&book,&w,&cfg);
+    cfg.font_size = 22;
+    #assert P.set_font_size(22) != 0;
+    P.metrics(&width, &height, &cw, &ch);
+    #assert P.resize_client(width + 7, height + 11) != 0;
+    P.metrics(&width, &height, &cw, &ch);
+    file.accent = 16#c04050;
+    file.font_ligatures = true;
+    write_config(path, &file);
+    #assert P.pty_select(selected) != 0;
+    #assert R.reload_workspace(path, &cfg, &book, &w, &state) && !state.session_replaced;
+    #assert cfg.font_ligatures && P.ligatures_enabled(), "ligatures can be enabled without restarting pane sessions";
+    #assert cfg.window_opacity == 0.75 && P.window_opacity() == cfg.window_opacity, "font, zoom and theme changes preserve workspace opacity";
+    #assert P.pty_selected() == selected && cfg.font_size == 22 && state.configured_font_size == 20,
+    "unrelated workspace saves preserve global manual zoom and native selection";
+    next_width, next_height: s32;
+    P.metrics(&next_width, &next_height, &cw, &ch);
+    #assert next_width == width && next_height == height, "unrelated saves preserve exact manually chosen window dimensions";
+    assert_geometry(&book, &w, &cfg);
 
-    replace_string(&file.command,"st_win_workspace_missing_shell.exe");
-    file.columns=90; file.rows=20; file.padding=30; file.font_size=24;
-    file.font_ligatures=false;
-    write_config(path,&file); failed_reload(path,&cfg,&book,&w,&state);
-    original_markers(&book,"FAILED_LAUNCH");
+    #assert write_file(path, "return {window_opacity='0.25',font_size=24}\n").is_ok();
+    failed_reload(path, &cfg, &book, &w, &state);
+    replace_string(&file.command, "st_win_workspace_missing_shell.exe");
+    file.columns = 90;
+    file.rows = 20;
+    file.padding = 30;
+    file.font_size = 24;
+    file.font_ligatures = false;
+    file.window_opacity = 0.25;
+    write_config(path, &file);
+    failed_reload(path, &cfg, &book, &w, &state);
+    original_markers(&book, "FAILED_LAUNCH");
     // Prepare all three replacements, then reject native fonts before any of
     // their commands can run. Every pending session must be discarded.
-    replace_string(&file.command,"cmd.exe /d /q /c echo SHOULD_NOT_RUN>build/workspace_reload_unexpected.txt");
-    long_name:[..]u8; defer long_name.free();
+    replace_string(
+        &file.command,
+        "cmd.exe /d /q /c echo SHOULD_NOT_RUN>build/workspace_reload_unexpected.txt"
+    );
+    long_name: [..]u8;
+    defer long_name.free();
     for 0..200 long_name.push(120);
-    replace_string(&file.font_family,cast(str)long_name.view());
-    write_config(path,&file);
-    #assert P.pty_select(selected)!=0;
-    failed_reload(path,&cfg,&book,&w,&state);
-    #assert P.file_exists(side_effect.c_string())==0,"failed native settings never execute any staged pane command";
-    original_markers(&book,"FAILED_NATIVE");
+    replace_string(&file.font_family, cast(str) long_name.view());
+    write_config(path, &file);
+    #assert P.pty_select(selected) != 0;
+    failed_reload(path, &cfg, &book, &w, &state);
+    #assert P.file_exists(side_effect.c_string()) == 0, "failed native settings never execute any staged pane command";
+    original_markers(&book, "FAILED_NATIVE");
 
-    replace_string(&file.font_family,"Consolas"); replace_string(&file.shell,"cmd");
-    replace_string(&file.command,"cmd.exe /d /q /k set ST_WIN_PANE_TOKEN=REPLACED");
-    file.font_size=18; file.columns=132; file.rows=36; file.padding=14; file.close_on_exit=false;
-    for i:0..3 {
-        p:=&book.panes[i];
-        p.exited=true; p.code=7; p.exit_seen=123;
-        p.selection.active=true; p.selection.dragging=true; p.scroll_dragging=true;
-        p.wheel.wheel_remainder=40; p.wheel.zoom_remainder=60;
-        if i==0 T.feed(&p.terminal,"\x1b[?2004h\x1b]2;unfinished old title");
-        else if i==1 T.feed(&p.terminal,"\xf0\x9f");
-        else T.feed(&p.terminal,"\x1b[?1049h\x1b[?1h");
+    replace_string(&file.font_family, "Consolas");
+    replace_string(&file.shell, "cmd");
+    replace_string(&file.command, "cmd.exe /d /q /k set ST_WIN_PANE_TOKEN=REPLACED");
+    file.font_size = 18;
+    file.columns = 132;
+    file.rows = 36;
+    file.padding = 14;
+    file.close_on_exit = false;
+    file.window_opacity = 0.75;
+    for i: 0..3 {
+        p := &book.panes[i];
+        p.exited = true;
+        p.code = 7;
+        p.exit_seen = 123;
+        p.selection.active = true;
+        p.selection.dragging = true;
+        p.scroll_dragging = true;
+        p.wheel.wheel_remainder = 40;
+        p.wheel.zoom_remainder = 60;
+        if      i == 0 T.feed(&p.terminal, "\x1b[?2004h\x1b]2;unfinished old title");
+        else if i == 1 T.feed(&p.terminal, "\xf0\x9f");
+        else           T.feed(&p.terminal, "\x1b[?1049h\x1b[?1h");
     }
-    write_config(path,&file);
-    #assert P.pty_select(selected)!=0;
-    #assert R.reload_workspace(path,&cfg,&book,&w,&state),"valid command commits every prepared pane replacement";
-    #assert P.pty_selected()==selected && state.session_replaced && state.grid_changed;
-    #assert state.file_config.command==file.command && cfg.command==file.command && state.configured_font_size==18;
-    #assert w.count==2 && M.focused(&w)==2 && M.pane_count(&w)==3,"shell reload retains all tabs, splits and focus";
-    for i:0..3 {
-        p:=&book.panes[i]; t:=&p.terminal;
-        #assert t.history_count==4 && t.history_limit==4 && t.view_offset==0,"replacement preserves bounded per-pane history";
-        #assert t.state==0 && t.utf_remaining==0 && !t.bracketed_paste && !t.application_cursor && !t.alternate &&
-            t.title.count==0 && t.cells[0].codepoint==32,"all replacement models start with clean decoder, modes and screen";
-        #assert !p.exited && p.code==0 && p.exit_seen==0 && !p.selection.active && !p.selection.dragging &&
-            !p.scroll_dragging && p.wheel.wheel_remainder==0 && p.wheel.zoom_remainder==0,
+    write_config(path, &file);
+    #assert P.pty_select(selected) != 0;
+    #assert R.reload_workspace(path, &cfg, &book, &w, &state), "valid command commits every prepared pane replacement";
+    #assert P.pty_selected() == selected && state.session_replaced && state.grid_changed;
+    #assert state.file_config.command == file.command && cfg.command == file.command && state.configured_font_size == 18;
+    #assert cfg.window_opacity == 0.75 && P.window_opacity() == cfg.window_opacity, "replacing all pane sessions preserves window opacity";
+    #assert w.count == 2 && M.focused(&w) == 2 && M.pane_count(&w) == 3, "shell reload retains all tabs, splits and focus";
+    for i: 0..3 {
+        p := &book.panes[i];
+        t := &p.terminal;
+        #assert t.history_count == 4 && t.history_limit == 4 && t.view_offset == 0, "replacement preserves bounded per-pane history";
+        #assert t.state == 0 && t.utf_remaining == 0 && !t.bracketed_paste && !t.application_cursor && !t.alternate &&
+            t.title.count == 0 && t.cells[0].codepoint == 32, "all replacement models start with clean decoder, modes and screen";
+        #assert !p.exited && p.code == 0 && p.exit_seen == 0 && !p.selection.active && !p.selection.dragging &&
+            !p.scroll_dragging && p.wheel.wheel_remainder == 0 && p.wheel.zoom_remainder == 0,
             "replacing held or active panes resets input and exit bookkeeping";
-        marker(p.handle,tprint("echo %ST_WIN_PANE_TOKEN%_NEW_{}\r",i+1),tprint("REPLACED_NEW_{}",i+1));
+        marker(
+            p.handle,
+            tprint("echo %ST_WIN_PANE_TOKEN%_NEW_{}\r", i + 1),
+            tprint("REPLACED_NEW_{}", i + 1)
+        );
     }
-    assert_geometry(&book,&w,&cfg);
-    #assert P.pty_select(selected)!=0;
-    #assert R.reload_workspace(path,&cfg,&book,&w,&state) && !state.session_replaced && !state.grid_changed,
-        "saving unchanged workspace settings leaves every replacement session running";
-    #assert P.pty_selected()==selected;
-    file.scrollback=0; write_config(path,&file);
-    #assert R.reload_workspace(path,&cfg,&book,&w,&state) && !state.session_replaced;
-    for i:0..3 #assert book.panes[i].terminal.history_count==0 && book.panes[i].terminal.history.count==0,
-        "disabling history releases it in visible and background panes";
-    #assert R.error_message().count==0 && P.pty_selected()==selected;
-    print("workspace reload tests passed: all-pane appearance/layout/history, CLI/zoom preservation, atomic rollback, independent shells and staged replacement.\n");
+    assert_geometry(&book, &w, &cfg);
+    #assert P.pty_select(selected) != 0;
+    #assert R.reload_workspace(path, &cfg, &book, &w, &state) && !state.session_replaced && !state.grid_changed,
+    "saving unchanged workspace settings leaves every replacement session running";
+    #assert P.pty_selected() == selected;
+    file.scrollback = 0;
+    write_config(path, &file);
+    #assert R.reload_workspace(path, &cfg, &book, &w, &state) && !state.session_replaced;
+    for i: 0..3 #assert book.panes[i].terminal.history_count == 0 && book.panes[i].terminal.history.count == 0,
+    "disabling history releases it in visible and background panes";
+    #assert R.error_message().count == 0 && P.pty_selected() == selected;
+    write_config(path, &file, "A", false);
+    #assert R.reload_workspace(path, &cfg, &book, &w, &state) && !state.session_replaced;
+    #assert cfg.window_opacity == 1.0 && P.window_opacity() == 1.0, "removing the opacity field restores opaque rendering without restarting panes";
+    print(
+        "workspace reload tests passed: all-pane appearance/layout/history, CLI/zoom preservation, atomic rollback, independent shells and staged replacement.\n"
+    );
 }

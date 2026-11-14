@@ -3,6 +3,8 @@ H :: #import "workspace_app_helper.glo";
 #import "Io";
 
 main :: () {
-    #assert H.run()!=0,"actual tabs and panes own independent shell sessions, route focus and hot reload their Lua shortcuts";
-    print("workspace application test passed: tabs, nested splits, independent shells, tab/pane focus, close lifecycle and live Lua rebinding.\n");
+    #assert H.run() != 0, "actual tabs and panes own independent shell sessions, route focus and hot reload their Lua shortcuts";
+    print(
+        "workspace application test passed: tabs, nested splits, independent shells, tab/pane focus, close lifecycle and live Lua rebinding.\n"
+    );
 }

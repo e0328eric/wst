@@ -5,82 +5,133 @@ P :: #import "../src/platform_types.glo";
 #import "Strings/Utf8";
 #import "File_System/File";
 
-check :: (ok:bool,message:str) { if !ok { print("FAIL: {}\n",message); exit(1); } }
-little32 :: (bytes:str,at:ssize)->u32 {
-    return cast(u32)bytes[at]|(cast(u32)bytes[at+1]<<8)|(cast(u32)bytes[at+2]<<16)|(cast(u32)bytes[at+3]<<24);
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
 }
-ink_count :: (bitmap:str,x:s32,y:s32,width:s32,height:s32,background:u32)->ssize {
-    stride:=cast(ssize)little32(bitmap,18)*4; offset:=cast(ssize)little32(bitmap,10); count:ssize;
-    for row:0..height for column:0..width {
-        at:=offset+(cast(ssize)y+row)*stride+(cast(ssize)x+column)*4;
-        if (little32(bitmap,at)&16#ffffff)!=background count+=1;
+little32 :: (bytes: str, at: ssize) -> u32 {
+    return cast(u32) bytes[at] | (cast(u32) bytes[at + 1] << 8) | (cast(u32) bytes[at + 2] << 16) | (
+        cast(u32) bytes[at + 3] << 24
+    );
+}
+ink_count :: (bitmap: str, x: s32, y: s32, width: s32, height: s32, background: u32) -> ssize {
+    stride := cast(ssize) little32(bitmap, 18) * 4;
+    offset := cast(ssize) little32(bitmap, 10);
+    count: ssize;
+    for row: 0..height for column: 0..width {
+        at := offset + (cast(ssize) y + row) * stride + (cast(ssize) x + column) * 4;
+        if (little32(bitmap, at) & 16#ffffff) != background count += 1;
     }
     return count;
 }
-pixel :: (bitmap:str,x:s32,y:s32)->u32 {
-    stride:=cast(ssize)little32(bitmap,18)*4; offset:=cast(ssize)little32(bitmap,10);
-    return little32(bitmap,offset+cast(ssize)y*stride+cast(ssize)x*4)&16#ffffff;
+pixel :: (bitmap: str, x: s32, y: s32) -> u32 {
+    stride := cast(ssize) little32(bitmap, 18) * 4;
+    offset := cast(ssize) little32(bitmap, 10);
+    return little32(bitmap, offset + cast(ssize) y * stride + cast(ssize) x * 4) & 16#ffffff;
 }
 main :: () {
-    window:=G.create_window(700,400,"wst Gui renderer test",.Hidden|.High_Dpi);
-    check(G.window_valid(window),"create standard Gui window");
+    window := G.create_window(700, 400, "wst Gui renderer test", .Hidden | .High_Dpi);
+    check(G.window_valid(window), "create standard Gui window");
     defer G.destroy_window(window);
     R.bind_window(window);
     defer R.close();
-    prepared:R.Prepared;
-    check(R.prepare("Consolas",16,G.content_scale(window),&prepared),R.error_message());
-    check(prepared.cw>0 && prepared.ch>0,"installed font metrics");
-    check(G.glyph_advance(prepared.regular,#char "😀")*prepared.scale<=cast(f32)(2*prepared.cw)+0.01,
-        "the emoji fallback fits a terminal's two-cell span");
+    prepared: R.Prepared;
+    check(R.prepare("Consolas", 16, G.content_scale(window), &prepared), R.error_message());
+    check(prepared.cw > 0 && prepared.ch > 0, "installed font metrics");
+    check(
+        G.glyph_advance(prepared.regular, #char "😀") * prepared.scale <= cast(f32)(2 * prepared.cw) + 0.01,
+        "the emoji fallback fits a terminal's two-cell span"
+    );
     R.commit(&prepared);
-    check(G.update_window_events(window),"pump Gui input");
-    check(R.frame_begin(16#112233),"begin Gui render");
-    cw,ch:s32; R.metrics(&cw,&ch);
-    cells:[6]P.Render_Cell=.[.{65,16#ffffff,16#112233,0},.{16#d55c,16#ffff00,16#203040,8},.{0,0,0,16},
-        .{16#1f600,16#ff00ff,16#112233,8},.{0,0,0,16},.{90,16#ffffff,16#112233,0}];
-    R.grid(12,50,6,1,cw,ch,cast([*]const P.Render_Cell)&cells,0,0,1,16#e5c07b);
-    R.draw_label(12,5,650,36,"Standard Gui / 한글 / 日本語 / emoji 😀",16#ffffff);
+    check(G.update_window_events(window), "pump Gui input");
+    check(R.frame_begin(16#112233), "begin Gui render");
+    cw, ch: s32;
+    R.metrics(&cw, &ch);
+    cells: [6]P.Render_Cell = .[
+        .{ 65, 16#ffffff, 16#112233, 0 },
+        .{ 16#d55c, 16#ffff00, 16#203040, 8 },
+        .{ 0, 0, 0, 16 },
+        .{ 16#1f600, 16#ff00ff, 16#112233, 8 },
+        .{ 0, 0, 0, 16 },
+        .{ 90, 16#ffffff, 16#112233, 0 }
+    ];
+    R.grid(12, 50, 6, 1, cw, ch, cast([*]const P.Render_Cell) &cells, 0, 0, 1, 16#e5c07b);
+    R.draw_label(12, 5, 650, 36, "Standard Gui / 한글 / 日本語 / emoji 😀", 16#ffffff);
     // These cells have the same glyph origin. The taller reference lets ink
     // extend past the normal row, revealing fallback ascender/descender clipping.
-    R.cell(200,100,2*cw,ch,16#1f600,16#ffffff,16#203040,8,0);
-    R.cell(400,100-ch,2*cw,3*ch,16#1f600,16#ffffff,16#203040,8,0);
+    R.cell(200, 100, 2 * cw, ch, 16#1f600, 16#ffffff, 16#203040, 8, 0);
+    R.cell(400, 100 - ch, 2 * cw, 3 * ch, 16#1f600, 16#ffffff, 16#203040, 8, 0);
     // Chrome primitives share the frame/replay lifetime with terminal text.
-    R.rounded_rect(20,240,160,60,14,16#304050);
-    R.line(35,260,50,275,2.0,16#79dac8);
-    R.line(35,275,50,260,2.0,16#79dac8);
-    R.draw_ui_label(65,240,100,60,"wst / 한글",16#b2ceee);
-    ui_width:=R.measure_ui("Windows terminal");
-    check(ui_width>0 && R.measure_ui("")==0,"proportional chrome text reports physical width");
-    bounded_width:=R.measure_ui("A한…");
-    R.draw_ui_label(220,240,bounded_width,60,"A한국어 terminal profile",16#b2ceee);
-    R.draw_ui_label(420,240,bounded_width,60,"A한…",16#b2ceee);
-    R.draw_ui_label(620,240,1,60,"한국어 profile",16#b2ceee);
-    check(R.snapshot("build/gui_renderer_active.bmp")!=0,R.error_message());
+    R.rounded_rect(20, 240, 160, 60, 14, 16#304050);
+    R.line(35, 260, 50, 275, 2.0, 16#79dac8);
+    R.line(35, 275, 50, 260, 2.0, 16#79dac8);
+    R.draw_ui_label(65, 240, 100, 60, "wst / 한글", 16#b2ceee);
+    ui_width := R.measure_ui("Windows terminal");
+    check(ui_width > 0 && R.measure_ui("") == 0, "proportional chrome text reports physical width");
+    bounded_width := R.measure_ui("A한…");
+    R.draw_ui_label(220, 240, bounded_width, 60, "A한국어 terminal profile", 16#b2ceee);
+    R.draw_ui_label(420, 240, bounded_width, 60, "A한…", 16#b2ceee);
+    R.draw_ui_label(620, 240, 1, 60, "한국어 profile", 16#b2ceee);
+    check(R.snapshot("build/gui_renderer_active.bmp") != 0, R.error_message());
     R.frame_end();
-    check(G.update_window_events(window),"pump snapshot replay input");
-    check(R.snapshot("build/gui_renderer_replayed.bmp")!=0,R.error_message());
-    first,second:str;
-    if read_file("build/gui_renderer_active.bmp",32*1024*1024)== {case .Ok(data);first=data;case .Err;exit(1);}
-    defer first.free();
-    if read_file("build/gui_renderer_replayed.bmp",32*1024*1024)== {case .Ok(data);second=data;case .Err;exit(1);}
-    defer second.free();
-    check(first==second,"post-present snapshot replays the exact Gui composition");
-    check(first.count>54 && first[0]==66 && first[1]==77,"legacy snapshot is a bitmap");
-    check(pixel(first,20,240)==16#112233 && pixel(first,25,265)==16#304050,
-        "rounded corners preserve the backdrop and fill their interior");
-    check(ink_count(first,33,258,20,20,16#304050)>0,"vector icon strokes produce image pixels");
-    for y:cast(s32)240..300 for x:cast(s32)0..bounded_width {
-        check(pixel(first,220+x,y)==pixel(first,420+x,y),"bounded UTF-8 chrome text renders its complete prefix and ellipsis");
+    check(G.update_window_events(window), "pump snapshot replay input");
+    check(R.snapshot("build/gui_renderer_replayed.bmp") != 0, R.error_message());
+    first, second: str;
+    if read_file("build/gui_renderer_active.bmp", 32 * 1024 * 1024) == {
+    case .Ok(data);
+        first = data;
+    case .Err;
+        exit(1);
     }
-    check(ink_count(first,620,240,1,60,16#112233)==0,"a target narrower than the ellipsis remains empty");
-    clipped_ink:=ink_count(first,200,100,2*cw,ch,16#203040);
-    reference_ink:=ink_count(first,400,100-ch,2*cw,3*ch,16#203040);
-    check(reference_ink>0 && clipped_ink==reference_ink,"emoji ascenders and descenders fit inside a terminal row");
-    check(R.prepare("D2KodingLigature Nerd Font Mono",20,G.content_scale(window),&prepared),R.error_message());
+    defer first.free();
+    if read_file("build/gui_renderer_replayed.bmp", 32 * 1024 * 1024) == {
+    case .Ok(data);
+        second = data;
+    case .Err;
+        exit(1);
+    }
+    defer second.free();
+    check(first == second, "post-present snapshot replays the exact Gui composition");
+    check(first.count > 54 && first[0] == 66 && first[1] == 77, "legacy snapshot is a bitmap");
+    check(
+        pixel(first, 20, 240) == 16#112233 && pixel(first, 25, 265) == 16#304050,
+        "rounded corners preserve the backdrop and fill their interior"
+    );
+    check(
+        ink_count(first, 33, 258, 20, 20, 16#304050) > 0,
+        "vector icon strokes produce image pixels"
+    );
+    for y: cast(s32) 240..300 for x: cast(s32) 0..bounded_width {
+        check(
+            pixel(first, 220 + x, y) == pixel(first, 420 + x, y),
+            "bounded UTF-8 chrome text renders its complete prefix and ellipsis"
+        );
+    }
+    check(
+        ink_count(first, 620, 240, 1, 60, 16#112233) == 0,
+        "a target narrower than the ellipsis remains empty"
+    );
+    clipped_ink := ink_count(first, 200, 100, 2 * cw, ch, 16#203040);
+    reference_ink := ink_count(first, 400, 100 - ch, 2 * cw, 3 * ch, 16#203040);
+    check(
+        reference_ink > 0 && clipped_ink == reference_ink,
+        "emoji ascenders and descenders fit inside a terminal row"
+    );
+    check(
+        R.prepare("D2KodingLigature Nerd Font Mono", 20, G.content_scale(window), &prepared),
+        R.error_message()
+    );
     R.discard(&prepared);
-    check(R.prepare("Consolas",32,G.content_scale(window),&prepared),R.error_message());
+    check(R.prepare("Consolas", 32, G.content_scale(window), &prepared), R.error_message());
     R.commit(&prepared);
-    check(R.measure_ui("Windows terminal")==ui_width,"terminal zoom keeps chrome text at thirteen logical pixels");
-    check(!R.prepare("",16,1,&prepared),"reject invalid family");
-    print("Gui renderer tests passed: installed fonts, Unicode fallback, composition and snapshot replay.\n");
+    check(
+        R.measure_ui("Windows terminal") == ui_width,
+        "terminal zoom keeps chrome text at thirteen logical pixels"
+    );
+    check(!R.prepare("", 16, 1, &prepared), "reject invalid family");
+    print(
+        "Gui renderer tests passed: installed fonts, Unicode fallback, composition and snapshot replay.\n"
+    );
 }

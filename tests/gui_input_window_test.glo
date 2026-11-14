@@ -6,62 +6,125 @@ N :: #import "../src/native.glo";
 H :: #import "gui_input_window_helper.glo";
 #import "Io";
 
-check :: (ok:bool,message:str) { if !ok { print("FAIL: {}\n",message); exit(1); } }
-drain :: () { event:T.Event; while I.next_event(&event)!=0 {} }
-chord :: (window:usize,key:s32,mods:s32,bound:bool) {
-    drain(); check(H.key(window,key,mods)!=0,"post an owned software chord");
-    actions,bytes:s32; event:T.Event;
-    while I.next_event(&event)!=0 {
-        if event.kind==1 {
-            check(event.a==key && event.b==mods,"Gui reports the exact original chord"); actions+=1;
-        }
-        if event.kind==2 bytes+=event.length;
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
     }
-    if bound check(actions==1 && bytes==0,"bound chord never leaks shell text");
-    else check(actions==0 && bytes>0,"released chord retains terminal text/control input");
+}
+drain :: () {
+    event: T.Event;
+    while I.next_event(&event) != 0 {}
+}
+chord :: (window: usize, key: s32, mods: s32, bound: bool) {
+    drain();
+    check(H.key(window, key, mods) != 0, "post an owned software chord");
+    actions, bytes: s32;
+    event: T.Event;
+    while I.next_event(&event) != 0 {
+        if event.kind == 1 {
+            check(event.a == key && event.b == mods, "Gui reports the exact original chord");
+            actions += 1;
+        }
+        if event.kind == 2 bytes += event.length;
+    }
+    if bound check(actions == 1 && bytes == 0, "bound chord never leaks shell text");
+    else     check(actions == 0 && bytes > 0, "released chord retains terminal text/control input");
 }
 main :: () {
-    window:=G.create_window(400,300,"Gui input integration",G.Window_Flags.Hidden|.High_Dpi);
-    check(G.window_valid(window),"std.Gui creates the hidden test window");
+    window := G.create_window(400, 300, "Gui input integration", G.Window_Flags.Hidden | .High_Dpi);
+    check(G.window_valid(window), "std.Gui creates the hidden test window");
     defer G.destroy_window(window);
-    check(N.gui_bind()!=0,"attach supplemental window services"); defer N.gui_unbind();
-    I.bind_window(window); defer I.close();
-    handle:=N.gui_window_handle(); check(handle!=0,"the test owns its std.Gui HWND"); drain();
-    bindings:[6]T.Key_Binding=.[.{65,0,1},.{75,4,2},.{66,6,3},.{67,3,4},.{107,2,5},.{88,1,6}];
-    check(I.set_keybindings(cast([*]const T.Key_Binding)&bindings,6)!=0,"install configurable actions");
-    chord(handle,65,0,true); chord(handle,75,4,true); chord(handle,66,6,true); chord(handle,67,3,true);
-    chord(handle,107,2,true); chord(handle,88,1,true);
-    chord(handle,68,0,false); chord(handle,69,2,false); chord(handle,68,4,false);
-    check(I.set_keybindings(cast([*]const T.Key_Binding)&bindings,0)!=0,"release actions");
-    chord(handle,65,0,false); chord(handle,67,3,false);
-    check(H.unicode(handle,16#1f600)!=0,"post a supplementary Unicode scalar");
-    event:T.Event; unicode_found:=false;
-    while I.next_event(&event)!=0 if event.kind==2 && event.length==4 && event.text[0]==240 unicode_found=true;
-    check(unicode_found,"Gui Unicode text survives terminal UTF-8 conversion");
+    check(N.gui_bind() != 0, "attach supplemental window services");
+    defer N.gui_unbind();
+    I.bind_window(window);
+    defer I.close();
+    handle := N.gui_window_handle();
+    check(handle != 0, "the test owns its std.Gui HWND");
+    drain();
+    bindings: [6]T.Key_Binding = .[
+        .{ 65, 0, 1 },
+        .{ 75, 4, 2 },
+        .{ 66, 6, 3 },
+        .{ 67, 3, 4 },
+        .{ 107, 2, 5 },
+        .{ 88, 1, 6 }
+    ];
+    check(
+        I.set_keybindings(cast([*]const T.Key_Binding) &bindings, 6) != 0,
+        "install configurable actions"
+    );
+    chord(handle, 65, 0, true);
+    chord(handle, 75, 4, true);
+    chord(handle, 66, 6, true);
+    chord(handle, 67, 3, true);
+    chord(handle, 107, 2, true);
+    chord(handle, 88, 1, true);
+    chord(handle, 68, 0, false);
+    chord(handle, 69, 2, false);
+    chord(handle, 68, 4, false);
+    check(I.set_keybindings(cast([*]const T.Key_Binding) &bindings, 0) != 0, "release actions");
+    chord(handle, 65, 0, false);
+    chord(handle, 67, 3, false);
+    check(H.unicode(handle, 16#1f600) != 0, "post a supplementary Unicode scalar");
+    event: T.Event;
+    unicode_found := false;
+    while I.next_event(&event) != 0 if event.kind == 2 && event.length == 4 && event.text[0] == 240 unicode_found = true;
+    check(unicode_found, "Gui Unicode text survives terminal UTF-8 conversion");
 
-    check(H.key(handle,68,0)!=0 && I.ensure_render_input(),"render preparation snapshots pending input");
-    check(G.begin_render_frame(window),"Gui rendering accepts the prepared input snapshot");
-    G.present_frame(window); I.frame_presented();
-    staged_text:=false;
-    while I.next_event(&event)!=0 if event.kind==2 staged_text=true;
-    check(staged_text,"render preparation cannot discard pending terminal input");
+    check(
+        H.key(handle, 68, 0) != 0 && I.ensure_render_input(),
+        "render preparation snapshots pending input"
+    );
+    check(G.begin_render_frame(window), "Gui rendering accepts the prepared input snapshot");
+    G.present_frame(window);
+    I.frame_presented();
+    staged_text := false;
+    while I.next_event(&event) != 0 if event.kind == 2 staged_text = true;
+    check(staged_text, "render preparation cannot discard pending terminal input");
 
-    scale:=G.content_scale(window);
-    regions:[1]T.Divider_Hit=.[.{100,50,8,200,1}];
-    check(I.set_dividers(cast([*]const T.Divider_Hit)&regions,1)!=0,"install a physical divider hit region");
-    check(H.pointer(handle,6,102,80)!=0 && H.pointer(handle,7,160,90)!=0,"press and move a divider");
-    starts,moves,ends,cancels:s32;
-    while I.next_event(&event)!=0 {
-        if event.kind==6 { starts+=1; check(event.a==102,"logical pointer positions return to physical pixels"); }
-        if event.kind==7 { moves+=1; check(event.a==160 && event.b==90,"drag coordinates retain their physical endpoint"); }
+    scale := G.content_scale(window);
+    regions: [1]T.Divider_Hit = .[.{ 100, 50, 8, 200, 1 }];
+    check(
+        I.set_dividers(cast([*]const T.Divider_Hit) &regions, 1) != 0,
+        "install a physical divider hit region"
+    );
+    check(
+        H.pointer(handle, 6, 102, 80) != 0 && H.pointer(handle, 7, 160, 90) != 0,
+        "press and move a divider"
+    );
+    starts, moves, ends, cancels: s32;
+    while I.next_event(&event) != 0 {
+        if event.kind == 6 {
+            starts += 1;
+            check(event.a == 102, "logical pointer positions return to physical pixels");
+        }
+        if event.kind == 7 {
+            moves += 1;
+            check(
+                event.a == 160 && event.b == 90,
+                "drag coordinates retain their physical endpoint"
+            );
+        }
     }
-    check(scale>=1 && starts==1 && moves==1 && I.cursor_axis()==1,"HiDPI divider capture retains its resize axis");
-    check(H.pointer(handle,11,0,0)!=0,"cancel capture through std.Gui");
-    while I.next_event(&event)!=0 { if event.kind==11 cancels+=1; if event.kind==8 ends+=1; }
-    check(cancels==1 && ends==0,"capture cancellation is distinct from a normal release");
-    check(H.pointer(handle,10,10,10)!=0 && H.pointer(handle,11,0,0)!=0,"cancel a held right button");
-    pastes:s32;
-    while I.next_event(&event)!=0 if event.kind==10 pastes+=1;
-    check(pastes==0,"cancelling a right button cannot paste clipboard data");
-    print("Gui window input tests passed: real pump, exact chords, text suppression, Unicode, staged rendering, HiDPI pointer input and capture cancellation.\n");
+    check(
+        scale >= 1 && starts == 1 && moves == 1 && I.cursor_axis() == 1,
+        "HiDPI divider capture retains its resize axis"
+    );
+    check(H.pointer(handle, 11, 0, 0) != 0, "cancel capture through std.Gui");
+    while I.next_event(&event) != 0 {
+        if event.kind == 11 cancels += 1;
+        if event.kind == 8  ends += 1;
+    }
+    check(cancels == 1 && ends == 0, "capture cancellation is distinct from a normal release");
+    check(
+        H.pointer(handle, 10, 10, 10) != 0 && H.pointer(handle, 11, 0, 0) != 0,
+        "cancel a held right button"
+    );
+    pastes: s32;
+    while I.next_event(&event) != 0 if event.kind == 10 pastes += 1;
+    check(pastes == 0, "cancelling a right button cannot paste clipboard data");
+    print(
+        "Gui window input tests passed: real pump, exact chords, text suppression, Unicode, staged rendering, HiDPI pointer input and capture cancellation.\n"
+    );
 }

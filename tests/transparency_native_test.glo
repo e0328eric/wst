@@ -1,0 +1,199 @@
+//! Verify native opacity state on this process's hidden Gui window. Rendering
+//! compatibility must also be checked against the selected presentation backend.
+G :: #import "Gui";
+N :: #import "../src/windows_gui.glo";
+P :: #import "../src/platform.glo";
+#import "Io";
+#import "Math/Core";
+#import "Strings/Utf8";
+
+user32 :: #library,system "user32";
+Rect :: struct #c_call {
+    left: s32;
+    top: s32;
+    right: s32;
+    bottom: s32;
+}
+GetWindowRect :: (window: usize, result: *Rect) -> s32 #foreign user32 "GetWindowRect";
+GetWindowLongPtrW :: (window: usize, index: s32) -> ssize #foreign user32 "GetWindowLongPtrW";
+SetWindowLongPtrW :: (window: usize, index: s32, value: ssize) -> ssize #foreign user32 "SetWindowLongPtrW";
+GetLayeredWindowAttributes :: (window: usize, key: *u32, alpha: *u8, flags: *u32) -> s32 #foreign user32 "GetLayeredWindowAttributes";
+SetLayeredWindowAttributes :: (window: usize, key: u32, alpha: u8, flags: u32) -> s32 #foreign user32 "SetLayeredWindowAttributes";
+IsWindowVisible :: (window: usize) -> s32 #foreign user32 "IsWindowVisible";
+
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
+}
+same_rect :: (a: Rect, b: Rect) -> bool {
+    return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
+}
+attributes :: (window: usize, expected: u8) {
+    key: u32;
+    alpha: u8;
+    flags: u32;
+    check(
+        GetLayeredWindowAttributes(window, &key, &alpha, &flags) != 0,
+        "query compositor opacity attributes"
+    );
+    check(
+        alpha == expected && flags == 2 && key == 0,
+        "alpha-only native composition uses the expected byte value"
+    );
+}
+
+main :: () {
+    check(N.set_window_opacity(0.8) == 0, "opacity requires a live Gui window");
+    check(P.open("Consolas", 16, 60, 15, 12, 1) != 0, "create a hidden frontend window");
+    defer P.close();
+    handle := N.gui_window_handle();
+    check(
+        N.presentation_composed(),
+        "the actual Gui swap chain uses an opacity-compatible presentation model"
+    );
+    check(handle != 0 && N.window_opacity() == 1, "new windows begin fully opaque");
+    original := GetWindowLongPtrW(handle, -20);
+    check((original & 16#80000) == 0, "ordinary Gui windows do not begin layered");
+    // An unrelated harmless extended style survives every opacity transition.
+    _ := SetWindowLongPtrW(handle, -20, original | 16#100); // WS_EX_WINDOWEDGE
+    baseline := GetWindowLongPtrW(handle, -20);
+    before, after: Rect;
+    check(GetWindowRect(handle, &before) != 0, "read initial bounds");
+    check(
+        N.set_window_opacity(1) != 0 && GetWindowLongPtrW(handle, -20) == baseline,
+        "default opacity leaves the normal presentation style untouched"
+    );
+    check(
+        N.set_window_opacity(0.8) != 0 && N.window_opacity() == 0.8,
+        "commit requested fractional opacity"
+    );
+    check(
+        GetWindowLongPtrW(handle, -20) == (baseline | 16#80000),
+        "opacity adds only WS_EX_LAYERED"
+    );
+    attributes(handle, 204);
+    check(
+        (GetWindowLongPtrW(handle, -20) & 16#20) == 0,
+        "transparency never enables mouse click-through"
+    );
+    check(N.set_window_opacity(0.8) != 0, "reapplying opacity is idempotent");
+    attributes(handle, 204);
+    check(N.set_window_opacity(0.1) != 0, "minimum opacity remains visible and interactive");
+    attributes(handle, 26);
+    check(N.set_window_opacity(0.82) != 0, "apply another fractional opacity");
+    attributes(handle, 209);
+    for value: .[cast(f32) 0, 0.099, 1.001, -1, sqrt(cast(f32) -1), exp(cast(f32) 1000)] {
+        check(
+            N.set_window_opacity(value) == 0 && N.window_opacity() == 0.82,
+            "invalid and nonfinite opacity preserve committed state"
+        );
+        attributes(handle, 209);
+        check(
+            GetWindowLongPtrW(handle, -20) == (baseline | 16#80000),
+            "invalid opacity preserves the complete native style"
+        );
+    }
+    check(N.configure_chrome(16#112233) != 0, "theme updates coexist with transparency");
+    check(
+        GetWindowRect(handle, &after) != 0 && same_rect(before, after),
+        "opacity and theme changes preserve window bounds"
+    );
+    check(P.set_font_size(22) != 0, "font zoom coexists with transparency");
+    attributes(handle, 209);
+    check(N.window_opacity() == 0.82, "zoom retains the requested opacity");
+    // Opacity is applied before resizing the native window. An oversized grid
+    // therefore exercises rollback after the new alpha has reached Windows,
+    // rather than only rejecting a candidate during configuration validation.
+    width, height, cw, ch: s32;
+    P.metrics(&width, &height, &cw, &ch);
+    saved_width := width;
+    saved_height := height;
+    saved_cw := cw;
+    saved_ch := ch;
+    check(
+        GetWindowRect(handle, &before) != 0,
+        "capture bounds before a failing full-settings update"
+    );
+    bindings: [1]P.Key_Binding;
+    check(
+        P.apply_all_settings(
+            "Consolas",
+            72,
+            cast([*]const P.Key_Binding) &bindings,
+            0,
+            512,
+            256,
+            100,
+            ?cast(f32) 0.4
+        ) == 0,
+        "oversized prepared grid rejects the full-settings update"
+    );
+    check(
+        P.error().to_string().count > 0,
+        "geometry failure retains its diagnostic after opacity rollback"
+    );
+    check(N.window_opacity() == 0.82, "geometry failure restores the previous requested opacity");
+    attributes(handle, 209);
+    P.metrics(&width, &height, &cw, &ch);
+    check(
+        width == saved_width && height == saved_height && cw == saved_cw && ch == saved_ch,
+        "geometry failure preserves native dimensions and committed font metrics"
+    );
+    check(
+        GetWindowRect(handle, &after) != 0 && same_rect(before, after),
+        "geometry failure preserves window size and position"
+    );
+    P.frame_begin(16#112233);
+    P.rect(15, 60, 20, 20, 16#ffffff);
+    P.frame_end();
+    attributes(handle, 209);
+    check(N.set_window_opacity(1) != 0 && N.window_opacity() == 1, "restore full opacity");
+    check(
+        GetWindowLongPtrW(handle, -20) == baseline,
+        "full opacity removes the owned layering bit only"
+    );
+    check(N.set_window_opacity(0.5) != 0, "transparency can be enabled again");
+    attributes(handle, 128);
+    N.gui_unbind();
+    check(
+        GetWindowLongPtrW(handle, -20) == baseline && N.window_opacity() == 1,
+        "unbind restores normal composition and resets state"
+    );
+    check(N.gui_bind() != 0, "native services can rebind");
+    check(N.set_window_opacity(0.6) != 0, "a rebound window accepts opacity");
+    attributes(handle, 153);
+    check(
+        N.gui_bind() != 0 && N.window_opacity() == 0.6,
+        "idempotent binding preserves active opacity"
+    );
+    N.gui_unbind();
+
+    // Preserve layering already owned by another service and restore its exact
+    // original key/alpha flags when our native service detaches.
+    _ := SetWindowLongPtrW(handle, -20, baseline | 16#80000);
+    check(
+        SetLayeredWindowAttributes(handle, 16#010203, 190, 3) != 0,
+        "prepare an existing layered-window owner"
+    );
+    check(N.gui_bind() != 0 && N.set_window_opacity(0.7) != 0, "use an already layered window");
+    check(
+        N.set_window_opacity(1) != 0 && (GetWindowLongPtrW(handle, -20) & 16#80000) != 0,
+        "full opacity retains a layering bit owned by another service"
+    );
+    N.gui_unbind();
+    key: u32;
+    alpha: u8;
+    flags: u32;
+    check(
+        GetLayeredWindowAttributes(handle, &key, &alpha, &flags) != 0 && key == 16#010203 && alpha == 190 && flags == 3,
+        "unbind restores pre-existing transparency attributes exactly"
+    );
+    _ := SetWindowLongPtrW(handle, -20, baseline);
+    check(N.gui_bind() != 0 && N.window_opacity() == 1, "rebound opacity starts from its default");
+    check(IsWindowVisible(handle) == 0, "native opacity tests never expose their window");
+    print(
+        "Native transparency tests passed: alpha bytes, validation, style ownership, zoom, bounds and rebind.\n"
+    );
+}

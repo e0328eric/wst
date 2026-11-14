@@ -3,6 +3,8 @@ H :: #import "divider_app_helper.glo";
 #import "Io";
 
 main :: () {
-    #assert H.run()!=0,"actual application drag resizes independent ConPTY grids and preserves sessions";
-    print("divider application tests passed: live dragging, both axes, nested panes, release position, minimums, cancellation and ratio preservation.\n");
+    #assert H.run() != 0, "actual application drag resizes independent ConPTY grids and preserves sessions";
+    print(
+        "divider application tests passed: live dragging, both axes, nested panes, release position, minimums, cancellation and ratio preservation.\n"
+    );
 }

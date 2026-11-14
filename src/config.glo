@@ -4,6 +4,7 @@
 #import "File_System/File";
 #import "Lua/Build";
 #import "Format";
+#import "Math/Core";
 Keymap :: #import "keybindings.glo";
 Colors :: #import "colors.glo";
 // Config exposes this record publicly; export its types without the other
@@ -36,6 +37,7 @@ call_lua :: (
 value_type :: (state: *void, index: s32) -> s32 #foreign lua "lua_type";
 to_string :: (state: *void, index: s32, count: ?*usize) -> ?[*]const u8 #foreign lua "lua_tolstring";
 to_integer :: (state: *void, index: s32, is_number: ?*s32) -> s64 #foreign lua "lua_tointegerx";
+to_number :: (state: *void, index: s32, is_number: ?*s32) -> f64 #foreign lua "lua_tonumberx";
 is_integer :: (state: *void, index: s32) -> s32 #foreign lua "lua_isinteger";
 to_boolean :: (state: *void, index: s32) -> s32 #foreign lua "lua_toboolean";
 push_nil :: (state: *void) #foreign lua "lua_pushnil";
@@ -67,6 +69,7 @@ Config :: struct {
     font_family: str;
     font_size: s32;
     font_ligatures: bool;
+    window_opacity: f32;
     columns: s32;
     rows: s32;
     scrollback: s32;
@@ -101,6 +104,7 @@ defaults :: () -> Config {
         .font_family = "Cascadia Mono".clone(),
         .font_size = 16,
         .font_ligatures = true,
+        .window_opacity = 1.0,
         .columns = 100,
         .rows = 30,
         .scrollback = 5000,
@@ -265,6 +269,15 @@ read_integer :: (state: *void, key: str, destination: *s32, minimum: s64, maximu
     return true;
 }
 
+read_opacity :: (state: *void, key: str, destination: *f32) -> bool {
+    if value_type(state, -1) != LUA_NUMBER return bad_field(key, "a finite number from 0.1 to 1.0");
+    value := to_number(state, -1, null);
+    if !is_finite(value) || value < 0.1 || value > 1.0
+        return bad_field(key, "a finite number from 0.1 to 1.0");
+    destination.* = cast(f32) value;
+    return true;
+}
+
 read_color :: (state: *void, key: str, destination: *u32) -> bool {
     if value_type(state, -1) == LUA_NUMBER && is_integer(state, -1) != 0 {
         value := to_integer(state, -1, null);
@@ -292,51 +305,61 @@ read_color :: (state: *void, key: str, destination: *u32) -> bool {
     return bad_field(key, "an RGB integer or '#RRGGBB'");
 }
 
-ansi_color_index :: (name:str)->s32 {
-    names:[8]str=.["black","red","green","yellow","blue","magenta","cyan","white"];
-    for i:0..8 if names[i]==name return cast(s32)i;
+ansi_color_index :: (name: str) -> s32 {
+    names: [8]str = .["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
+    for i: 0..8 if names[i] == name return cast(s32) i;
     return -1;
 }
 
-read_colors :: (state:*void,cfg:*Config)->bool {
-    if value_type(state,-1)!=LUA_TABLE return bad_field("colors","a table of color groups");
-    colors_index:=get_top(state);
+read_colors :: (state: *void, cfg: *Config) -> bool {
+    if value_type(state, -1) != LUA_TABLE return bad_field("colors", "a table of color groups");
+    colors_index := get_top(state);
     push_nil(state);
-    while next_value(state,colors_index)!=0 {
-        if value_type(state,-2)!=LUA_STRING return bad_field("colors","named color groups");
-        group:=lua_text(state,-2);
-        if group!="primary" && group!="cursor" && group!="selection" && group!="normal" && group!="bright"
-            return bad_field(tprint("colors.{}",group),"primary, cursor, selection, normal, or bright");
-        if value_type(state,-1)!=LUA_TABLE return bad_field(tprint("colors.{}",group),"a table of named RGB colors");
-        table_index:=get_top(state);
+    while next_value(state, colors_index) != 0 {
+        if value_type(state, -2) != LUA_STRING return bad_field("colors", "named color groups");
+        group := lua_text(state, -2);
+        if group != "primary" && group != "cursor" && group != "selection" && group != "normal" &&
+           group != "bright"
+            return bad_field(
+                tprint("colors.{}", group),
+                "primary, cursor, selection, normal, or bright"
+            );
+        if value_type(state, -1) != LUA_TABLE
+            return bad_field(tprint("colors.{}", group), "a table of named RGB colors");
+        table_index := get_top(state);
         push_nil(state);
-        while next_value(state,table_index)!=0 {
-            if value_type(state,-2)!=LUA_STRING return bad_field(tprint("colors.{}",group),"named colors");
-            name:=lua_text(state,-2);
-            field:=tprint("colors.{}.{}",group,name);
-            valid:=false;
-            if group=="normal" || group=="bright" {
-                index:=ansi_color_index(name);
-                if index<0 return bad_field(field,"black, red, green, yellow, blue, magenta, cyan, or white");
-                if group=="bright" index+=8;
-                valid=read_color(state,field,&cfg.palette[index]);
-            } else if group=="primary" {
-                if name=="foreground" valid=read_color(state,field,&cfg.foreground);
-                else if name=="background" valid=read_color(state,field,&cfg.background);
-                else return bad_field(field,"foreground or background");
-            } else if group=="cursor" {
-                if name=="text" valid=read_color(state,field,&cfg.cursor_text);
-                else if name=="cursor" valid=read_color(state,field,&cfg.cursor);
-                else return bad_field(field,"text or cursor");
+        while next_value(state, table_index) != 0 {
+            if value_type(state, -2) != LUA_STRING
+                return bad_field(tprint("colors.{}", group), "named colors");
+            name := lua_text(state, -2);
+            field := tprint("colors.{}.{}", group, name);
+            valid := false;
+            if group == "normal" || group == "bright" {
+                index := ansi_color_index(name);
+                if index < 0
+                    return bad_field(
+                        field,
+                        "black, red, green, yellow, blue, magenta, cyan, or white"
+                    );
+                if group == "bright" index += 8;
+                valid = read_color(state, field, &cfg.palette[index]);
+            } else if group == "primary" {
+                if      name == "foreground" valid = read_color(state, field, &cfg.foreground);
+                else if name == "background" valid = read_color(state, field, &cfg.background);
+                else                         return bad_field(field, "foreground or background");
+            } else if group == "cursor" {
+                if      name == "text"   valid = read_color(state, field, &cfg.cursor_text);
+                else if name == "cursor" valid = read_color(state, field, &cfg.cursor);
+                else                     return bad_field(field, "text or cursor");
             } else {
-                if name=="text" valid=read_color(state,field,&cfg.selection_fg);
-                else if name=="background" valid=read_color(state,field,&cfg.selection_bg);
-                else return bad_field(field,"text or background");
+                if      name == "text"       valid = read_color(state, field, &cfg.selection_fg);
+                else if name == "background" valid = read_color(state, field, &cfg.selection_bg);
+                else                         return bad_field(field, "text or background");
             }
             if !valid return false;
-            set_top(state,-2);
+            set_top(state, -2);
         }
-        set_top(state,-2);
+        set_top(state, -2);
     }
     return true;
 }
@@ -354,12 +377,7 @@ read_chord :: (
         return bad_field(field, "a nonempty key chord without NUL bytes (at most 128 bytes)");
     if !Keymap.add_profile(bindings, chord, action, profile_id)
         return config_failure(
-            tprint(
-                "wst: config field '{}', chord '{}': {}",
-                field,
-                chord,
-                Keymap.error_message()
-            )
+            tprint("wst: config field '{}', chord '{}': {}", field, chord, Keymap.error_message())
         );
     return true;
 }
@@ -413,12 +431,7 @@ read_binding_object :: (state: *void, field: str, cfg: *Config, action: Keymap.A
     if !has_key return bad_field(tprint("{}.key", field), "a required key chord string");
     if !Keymap.add_profile(&cfg.keybindings, chord, action, profile_id)
         return config_failure(
-            tprint(
-                "wst: config field '{}', chord '{}': {}",
-                field,
-                chord,
-                Keymap.error_message()
-            )
+            tprint("wst: config field '{}', chord '{}': {}", field, chord, Keymap.error_message())
         );
     return true;
 }
@@ -500,9 +513,7 @@ read_keybindings :: (state: *void, cfg: *Config) -> bool {
     // Validate after every override: swapping shortcuts between two actions is
     // legal regardless of Lua's unspecified table traversal order.
     if !Keymap.validate(&cfg.keybindings)
-        return config_failure(
-            tprint("wst: config field 'keybindings': {}", Keymap.error_message())
-        );
+        return config_failure(tprint("wst: config field 'keybindings': {}", Keymap.error_message()));
     return true;
 }
 
@@ -589,10 +600,11 @@ read_table :: (state: *void, cfg: *Config) -> bool {
     // Nested scheme first so legacy flat foreground/background/cursor overrides
     // have deterministic precedence regardless of lua_next traversal order.
     push_nil(state);
-    while next_value(state,1)!=0 {
-        if value_type(state,-2)!=LUA_STRING return bad_field("(non-string key)","a named configuration field");
-        if lua_text(state,-2)=="colors" && !read_colors(state,cfg) return false;
-        set_top(state,-2);
+    while next_value(state, 1) != 0 {
+        if value_type(state, -2) != LUA_STRING
+            return bad_field("(non-string key)", "a named configuration field");
+        if lua_text(state, -2) == "colors" && !read_colors(state, cfg) return false;
+        set_top(state, -2);
     }
     // Read scalars first, profiles second, and bindings last: Lua table order
     // must never affect profile/default/keybinding reference resolution.
@@ -610,12 +622,12 @@ read_table :: (state: *void, cfg: *Config) -> bool {
                 return bad_field(key, "a profile id of at most 64 UTF-8 bytes");
         } else if key == "font_family" valid = read_text(state, key, &cfg.font_family, false);
         else if key == "font_size" valid = read_integer(state, key, &cfg.font_size, 8, 72);
+        else if key == "window_opacity" valid = read_opacity(state, key, &cfg.window_opacity);
         else if key == "font_ligatures" {
             if value_type(state, -1) != LUA_BOOLEAN return bad_field(key, "a boolean");
             cfg.font_ligatures = to_boolean(state, -1) != 0;
             valid = true;
-        }
-        else if key == "columns" valid = read_integer(state, key, &cfg.columns, 20, 400);
+        } else if key == "columns" valid = read_integer(state, key, &cfg.columns, 20, 400);
         else if key == "rows" valid = read_integer(state, key, &cfg.rows, 5, 200);
         else if key == "scrollback" valid = read_integer(state, key, &cfg.scrollback, 0, 10000);
         else if key == "padding" valid = read_integer(state, key, &cfg.padding, 0, 100);

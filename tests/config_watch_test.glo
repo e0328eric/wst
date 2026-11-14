@@ -7,77 +7,106 @@ FS :: #import "File_System/Directory";
 kernel32 :: #library,system "kernel32";
 Sleep :: (milliseconds: u32) #foreign kernel32;
 
-check :: (condition: bool,message: str) {
-    if !condition { print("FAIL: {}\n",message); exit(1); }
+check :: (condition: bool, message: str) {
+    if !condition {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
 }
-write_test :: (path: str,text: str) {
-    if write_file(path,text)== {
-    case .Ok(count); check(count==text.count,"write complete test config");
-    case .Err(error); print("write test config failed: {}\n",error.kind); exit(1);
+write_test :: (path: str, text: str) {
+    if write_file(path, text) == {
+    case .Ok(count);
+        check(count == text.count, "write complete test config");
+    case .Err(error);
+        print("write test config failed: {}\n", error.kind);
+        exit(1);
     }
 }
 
 main :: () {
     // Deterministic observations exercise the transitions independently of OS
     // timestamp granularity or scheduling.
-    watch: W.Watch=.{.active=true,.status=1,.modified=10,.size=20,.identity=30};
-    check(!W.observe(&watch,1,10,20,30,0),"unchanged baseline does not reload");
-    check(!W.observe(&watch,1,11,20,30,250),"same-size edit begins debounce");
-    check(!W.observe(&watch,1,11,20,30,499),"save must settle for 250 ms");
-    check(W.observe(&watch,1,11,20,30,500),"stable changed file reloads once");
-    check(!W.observe(&watch,1,11,20,30,750),"unchanged edit is not repeated");
-    check(!W.observe(&watch,1,11,20,31,1000),"atomic replacement changes identity");
-    check(!W.observe(&watch,1,12,4,31,1100),"partial save restarts debounce");
-    check(!W.observe(&watch,1,13,20,31,1250),"completed save restarts debounce again");
-    check(!W.observe(&watch,-1,0,0,0,1450),"temporary sharing failure never reloads");
-    check(!W.observe(&watch,1,13,20,31,1500),"access failure postpones stable detection");
-    check(W.observe(&watch,1,13,20,31,1700),"unlocked stable file eventually reloads");
-    check(!W.observe(&watch,0,0,0,0,1750),"deletion keeps last applied config");
-    check(!W.observe(&watch,1,13,20,31,2000),"recreation is detected even with reused metadata");
-    check(W.observe(&watch,1,13,20,31,2250),"recreated file settles");
-    check(!W.observe(&watch,1,14,20,31,2500),"new edit pending");
-    check(!W.observe(&watch,0,0,0,0,2600),"deletion cancels a pending partial save");
-    check(!W.observe(&watch,0,0,0,0,3000),"missing config never fires repeatedly");
+    watch: W.Watch = .{ .active = true, .status = 1, .modified = 10, .size = 20, .identity = 30 };
+    check(!W.observe(&watch, 1, 10, 20, 30, 0), "unchanged baseline does not reload");
+    check(!W.observe(&watch, 1, 11, 20, 30, 250), "same-size edit begins debounce");
+    check(!W.observe(&watch, 1, 11, 20, 30, 499), "save must settle for 250 ms");
+    check(W.observe(&watch, 1, 11, 20, 30, 500), "stable changed file reloads once");
+    check(!W.observe(&watch, 1, 11, 20, 30, 750), "unchanged edit is not repeated");
+    check(!W.observe(&watch, 1, 11, 20, 31, 1000), "atomic replacement changes identity");
+    check(!W.observe(&watch, 1, 12, 4, 31, 1100), "partial save restarts debounce");
+    check(!W.observe(&watch, 1, 13, 20, 31, 1250), "completed save restarts debounce again");
+    check(!W.observe(&watch, -1, 0, 0, 0, 1450), "temporary sharing failure never reloads");
+    check(!W.observe(&watch, 1, 13, 20, 31, 1500), "access failure postpones stable detection");
+    check(W.observe(&watch, 1, 13, 20, 31, 1700), "unlocked stable file eventually reloads");
+    check(!W.observe(&watch, 0, 0, 0, 0, 1750), "deletion keeps last applied config");
+    check(
+        !W.observe(&watch, 1, 13, 20, 31, 2000),
+        "recreation is detected even with reused metadata"
+    );
+    check(W.observe(&watch, 1, 13, 20, 31, 2250), "recreated file settles");
+    check(!W.observe(&watch, 1, 14, 20, 31, 2500), "new edit pending");
+    check(!W.observe(&watch, 0, 0, 0, 0, 2600), "deletion cancels a pending partial save");
+    check(!W.observe(&watch, 0, 0, 0, 0, 3000), "missing config never fires repeatedly");
     W.close(&watch);
-    check(!W.observe(&watch,1,1,1,1,4000),"closed watcher is inert");
+    check(!W.observe(&watch, 1, 1, 1, 1, 4000), "closed watcher is inert");
 
-    path: str="build/config-watch-test.lua";
-    staged: str="build/config-watch-stage.lua";
-    _:=FS.remove(path); _:=FS.remove(staged);
-    defer { _:=FS.remove(path); _:=FS.remove(staged); }
-    W.start(&watch,path,0);
+    path: str = "build/config-watch-test.lua";
+    staged: str = "build/config-watch-stage.lua";
+    _ := FS.remove(path);
+    _ := FS.remove(staged);
+    defer {
+        _ := FS.remove(path);
+        _ := FS.remove(staged);
+    }
+    W.start(&watch, path, 0);
     defer W.close(&watch);
-    check(!W.poll(&watch,250),"initially absent file is watched without an error");
-    write_test(path,"return {keybindings={copy='Ctrl+Alt+C'}}");
-    check(!W.poll(&watch,500),"new file waits for debounce");
-    check(!W.poll(&watch,749),"polls within 250 ms do no work");
-    check(W.poll(&watch,750),"new real config is detected");
-    check(!W.poll(&watch,1000),"real config reload event is not repeated");
+    check(!W.poll(&watch, 250), "initially absent file is watched without an error");
+    write_test(path, "return {keybindings={copy='Ctrl+Alt+C'}}");
+    check(!W.poll(&watch, 500), "new file waits for debounce");
+    check(!W.poll(&watch, 749), "polls within 250 ms do no work");
+    check(W.poll(&watch, 750), "new real config is detected");
+    check(!W.poll(&watch, 1000), "real config reload event is not repeated");
 
     baseline: P.File_Stamp;
-    check(P.file_stamp(path.c_string(),&baseline)==1,"read baseline file stamp");
+    check(P.file_stamp(path.c_string(), &baseline) == 1, "read baseline file stamp");
     Sleep(20);
-    write_test(path,"return {keybindings={copy='Ctrl+Alt+V'}}");
+    write_test(path, "return {keybindings={copy='Ctrl+Alt+V'}}");
     modified: P.File_Stamp;
-    check(P.file_stamp(path.c_string(),&modified)==1 && baseline.size==modified.size,"same-length real edit");
-    check(!W.poll(&watch,1250),"same-length save begins debounce");
-    check(W.poll(&watch,1500),"same-length real save is detected");
+    check(
+        P.file_stamp(path.c_string(), &modified) == 1 && baseline.size == modified.size,
+        "same-length real edit"
+    );
+    check(!W.poll(&watch, 1250), "same-length save begins debounce");
+    check(W.poll(&watch, 1500), "same-length real save is detected");
 
-    write_test(staged,"return {keybindings={copy='Ctrl+Alt+X'}}");
-    if atomic_replace(staged,path)== {
+    write_test(staged, "return {keybindings={copy='Ctrl+Alt+X'}}");
+    if atomic_replace(staged, path) == {
     case .Ok;
-    case .Err(error); print("atomic test replacement failed: {}\n",error.kind); exit(1);
+    case .Err(error);
+        print("atomic test replacement failed: {}\n", error.kind);
+        exit(1);
     }
     replacement: P.File_Stamp;
-    check(P.file_stamp(path.c_string(),&replacement)==1 && replacement.identity!=modified.identity,"replacement has a new file identity");
-    check(!W.poll(&watch,1750),"atomic replace begins debounce");
-    check(W.poll(&watch,2000),"atomic replacement is detected");
-    _:=FS.remove(path);
-    check(!W.poll(&watch,2250),"removing the real config does not request a reload");
-    write_test(path,"return {}");
-    check(!W.poll(&watch,2500) && W.poll(&watch,2750),"recreated real config reloads after debounce");
+    check(
+        P.file_stamp(path.c_string(), &replacement) == 1 && replacement.identity != modified.identity,
+        "replacement has a new file identity"
+    );
+    check(!W.poll(&watch, 1750), "atomic replace begins debounce");
+    check(W.poll(&watch, 2000), "atomic replacement is detected");
+    _ := FS.remove(path);
+    check(!W.poll(&watch, 2250), "removing the real config does not request a reload");
+    write_test(path, "return {}");
+    check(
+        !W.poll(&watch, 2500) && W.poll(&watch, 2750),
+        "recreated real config reloads after debounce"
+    );
     W.close(&watch);
-    W.start(&watch,path,3000);
-    check(!W.poll(&watch,3250) && !W.poll(&watch,3500),"starting with an existing config only establishes baseline");
-    print("config watcher tests passed: debounce, partial saves, identity replacement, deletion/recreation, same-size edits, bounded polling.\n");
+    W.start(&watch, path, 3000);
+    check(
+        !W.poll(&watch, 3250) && !W.poll(&watch, 3500),
+        "starting with an existing config only establishes baseline"
+    );
+    print(
+        "config watcher tests passed: debounce, partial saves, identity replacement, deletion/recreation, same-size edits, bounded polling.\n"
+    );
 }

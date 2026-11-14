@@ -7,41 +7,80 @@ N :: #import "../src/windows_gui.glo";
 kernel :: #library,system "kernel32";
 user :: #library,system "user32";
 gdi :: #library,system "gdi32";
-GetModuleHandleW :: (name:usize)->usize #foreign kernel;
-FindResourceW :: (module:usize,name:usize,kind:usize)->usize #foreign kernel;
-SizeofResource :: (module:usize,resource:usize)->u32 #foreign kernel;
-LoadResource :: (module:usize,resource:usize)->usize #foreign kernel;
-LockResource :: (resource:usize)->usize #foreign kernel;
-SendMessageW :: (window:usize,message:u32,detail:usize,parameter:ssize)->ssize #foreign user;
-Info :: struct #c_call { icon:s32; hot_x:u32; hot_y:u32; mask:usize; color:usize; }
-Bitmap :: struct #c_call { kind:s32; width:s32; height:s32; bytes:s32; planes:u16; bits:u16; data:usize; }
-GetIconInfo :: (icon:usize,info:*Info)->s32 #foreign user;
-GetObjectW :: (object:usize,size:s32,result:*Bitmap)->s32 #foreign gdi;
-DeleteObject :: (object:usize)->s32 #foreign gdi;
-check :: (ok:bool,message:str) { if !ok { print("FAIL: {}\n",message); exit(1); } }
-main :: () {
-    module:=GetModuleHandleW(0);
-    group:=FindResourceW(module,1,14);
-    check(group!=0,"the PE contains an application icon group");
-    check(SizeofResource(module,group)==146,"the group contains all ten image sizes");
-    for id:cast(usize)1..11 check(FindResourceW(module,id,3)!=0,"every image is embedded as RT_ICON");
-    window:=G.create_window(400,300,"wst embedded icon test",.Hidden|.High_Dpi);
-    check(G.window_valid(window),"Gui creates a hidden window");
-    defer G.destroy_window(window);
-    handle:=N.gui_window_handle();
-    for kind:cast(usize)0..2 {
-        icon:=cast(usize)SendMessageW(handle,16#7f,kind,0);
-        check(icon!=0,"Gui installs both small and large resource icons");
-        info:Info;
-        check(GetIconInfo(icon,&info)!=0 && info.color!=0,"the window icon owns valid image pixels");
-        bitmap:Bitmap;
-        check(GetObjectW(info.color,cast(s32)size_of(Bitmap),&bitmap)!=0,"read icon bitmap");
-        check(bitmap.width>=16 && bitmap.height==bitmap.width,"icon stays square at current DPI");
-        print("Gui icon kind {}: {} x {} at DPI {}\n",kind,bitmap.width,bitmap.height,N.window_dpi());
-        if info.mask!=0 _:=DeleteObject(info.mask);
-        _:=DeleteObject(info.color);
+GetModuleHandleW :: (name: usize) -> usize #foreign kernel;
+FindResourceW :: (module: usize, name: usize, kind: usize) -> usize #foreign kernel;
+SizeofResource :: (module: usize, resource: usize) -> u32 #foreign kernel;
+LoadResource :: (module: usize, resource: usize) -> usize #foreign kernel;
+LockResource :: (resource: usize) -> usize #foreign kernel;
+SendMessageW :: (window: usize, message: u32, detail: usize, parameter: ssize) -> ssize #foreign user;
+Info :: struct #c_call {
+    icon: s32;
+    hot_x: u32;
+    hot_y: u32;
+    mask: usize;
+    color: usize;
+}
+Bitmap :: struct #c_call {
+    kind: s32;
+    width: s32;
+    height: s32;
+    bytes: s32;
+    planes: u16;
+    bits: u16;
+    data: usize;
+}
+GetIconInfo :: (icon: usize, info: *Info) -> s32 #foreign user;
+GetObjectW :: (object: usize, size: s32, result: *Bitmap) -> s32 #foreign gdi;
+DeleteObject :: (object: usize) -> s32 #foreign gdi;
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
     }
-    check(!G.set_window_icon(window,"build/nonexistent-wst-icon.ico"),"failed custom load is reported");
-    check(SendMessageW(handle,16#7f,1,0)!=0,"failed custom load retains the embedded icon");
-    print("Embedded icon probe passed: PE images, Gui startup icons and failed-load preservation.\n");
+}
+main :: () {
+    module := GetModuleHandleW(0);
+    group := FindResourceW(module, 1, 14);
+    check(group != 0, "the PE contains an application icon group");
+    check(SizeofResource(module, group) == 146, "the group contains all ten image sizes");
+    for id: cast(usize) 1..11 check(
+        FindResourceW(module, id, 3) != 0,
+        "every image is embedded as RT_ICON"
+    );
+    window := G.create_window(400, 300, "wst embedded icon test", .Hidden | .High_Dpi);
+    check(G.window_valid(window), "Gui creates a hidden window");
+    defer G.destroy_window(window);
+    handle := N.gui_window_handle();
+    for kind: cast(usize) 0..2 {
+        icon := cast(usize) SendMessageW(handle, 16#7f, kind, 0);
+        check(icon != 0, "Gui installs both small and large resource icons");
+        info: Info;
+        check(
+            GetIconInfo(icon, &info) != 0 && info.color != 0,
+            "the window icon owns valid image pixels"
+        );
+        bitmap: Bitmap;
+        check(GetObjectW(info.color, cast(s32) size_of(Bitmap), &bitmap) != 0, "read icon bitmap");
+        check(
+            bitmap.width >= 16 && bitmap.height == bitmap.width,
+            "icon stays square at current DPI"
+        );
+        print(
+            "Gui icon kind {}: {} x {} at DPI {}\n",
+            kind,
+            bitmap.width,
+            bitmap.height,
+            N.window_dpi()
+        );
+        if info.mask != 0 _ := DeleteObject(info.mask);
+        _ := DeleteObject(info.color);
+    }
+    check(
+        !G.set_window_icon(window, "build/nonexistent-wst-icon.ico"),
+        "failed custom load is reported"
+    );
+    check(SendMessageW(handle, 16#7f, 1, 0) != 0, "failed custom load retains the embedded icon");
+    print(
+        "Embedded icon probe passed: PE images, Gui startup icons and failed-load preservation.\n"
+    );
 }

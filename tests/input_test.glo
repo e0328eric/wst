@@ -2,7 +2,10 @@
 #import "Io";
 
 check :: (ok: bool, message: str) {
-    if !ok { print("FAIL: {}\n", message); exit(1); }
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
 }
 
 main :: () {
@@ -38,7 +41,10 @@ main :: () {
     check(key_sequence(65, 0, false) == "", "text keys handled by character input");
     check(paste("a\r\nb\nc\rd", false) == "a\rb\rc\rd", "clipboard line ending normalization");
     check(paste("한😀", true) == "\x1b[200~한😀\x1b[201~", "Unicode bracketed paste");
-    check(paste("before\x1b[201~after", true) == "\x1b[200~before[201~after\x1b[201~", "bracketed paste escape injection");
+    check(
+        paste("before\x1b[201~after", true) == "\x1b[200~before[201~after\x1b[201~",
+        "bracketed paste escape injection"
+    );
     check(paste("", false) == "", "empty plain paste");
     check(paste("", true) == "\x1b[200~\x1b[201~", "empty bracketed paste");
     print("input tests passed\n");

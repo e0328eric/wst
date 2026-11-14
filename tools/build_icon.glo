@@ -2,17 +2,28 @@
 Icon :: #import "icon_source.glo";
 #import "Io";
 main :: () {
-    args:=get_cmdline_args(); source:str="assets/wst.svg"; output:str="assets"; i:ssize=1;
-    while i<args.count {
-        option:=args[i];
-        if option=="--help" || option=="-h" {
-            print("usage: wst-icon-builder [--source PATH] [--output-dir DIR]\n"); return;
+    args := get_cmdline_args();
+    source: str = "assets/wst.svg";
+    output: str = "assets";
+    i: ssize = 1;
+    while i < args.count {
+        option := args[i];
+        if option == "--help" || option == "-h" {
+            print("usage: wst-icon-builder [--source PATH] [--output-dir DIR]\n");
+            return;
         }
-        if option!="--source" && option!="--output-dir" { print("Unknown icon option: {}\n",option); exit(1); }
-        i+=1;
-        if i>=args.count || args[i].count==0 { print("Missing value for {}\n",option); exit(1); }
-        if option=="--source" source=args[i]; else output=args[i];
-        i+=1;
+        if option != "--source" && option != "--output-dir" {
+            print("Unknown icon option: {}\n", option);
+            exit(1);
+        }
+        i += 1;
+        if i >= args.count || args[i].count == 0 {
+            print("Missing value for {}\n", option);
+            exit(1);
+        }
+        if option == "--source" source = args[i];
+        else                    output = args[i];
+        i += 1;
     }
-    if !Icon.generate(source,output) exit(1);
+    if !Icon.generate(source, output) exit(1);
 }

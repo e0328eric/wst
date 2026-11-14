@@ -7,77 +7,137 @@ Paths :: #import "File_System/Path";
 #import "Io";
 #import "Format";
 
-check :: (ok:bool,message:str) { if !ok { print("FAIL: {}\n",message); exit(1); } }
-snapshot_file :: (path:str)->str {
-    if read_file(path)== {
-    case .Ok(data); return data;
-    case .Err(error); print("Cannot read {}: {}\n",path,error.kind); exit(1);
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
+}
+snapshot_file :: (path: str) -> str {
+    if read_file(path) == {
+    case .Ok(data);
+        return data;
+    case .Err(error);
+        print("Cannot read {}: {}\n", path, error.kind);
+        exit(1);
     }
 }
 main :: () {
-    for label:.["dev","0.1.0","v1.2.3-beta_2","A..z"] check(R.valid_version(label),"safe version labels are accepted");
-    for label:.["","../escape","a/b","a\\b","-start","a\n","a\r","a\0","á","white space"]
-        check(!R.valid_version(label),"version labels cannot escape or add control bytes");
-    long:[65]u8; for i:0..65 long[i]=#char "a";
-    check(!R.valid_version(cast(str)long[..]),"version length is bounded");
+    for label: .["dev", "0.1.0", "v1.2.3-beta_2", "A..z"] check(
+        R.valid_version(label),
+        "safe version labels are accepted"
+    );
+    for label: .["", "../escape", "a/b", "a\\b", "-start", "a\n", "a\r", "a\0", "á", "white space"]
+        check(!R.valid_version(label), "version labels cannot escape or add control bytes");
+    long: [65]u8;
+    for i: 0..65 long[i] = #char "a";
+    check(!R.valid_version(cast(str) long[..]), "version length is bounded");
 
-    root:=Paths.path_dirname(Paths.path_dirname(#source_location.filename));
-    workspace:str;
-    for i:0..100 {
-        candidate:=Paths.path_join(root,tprint("build/release-test-{}",i));
-        if FS.create_directory(candidate).is_ok() { workspace=candidate; break; }
+    root := Paths.path_dirname(Paths.path_dirname(#source_location.filename));
+    workspace: str;
+    for i: 0..100 {
+        candidate := Paths.path_join(root, tprint("build/release-test-{}", i));
+        if FS.create_directory(candidate).is_ok() {
+            workspace = candidate;
+            break;
+        }
         candidate.free();
     }
-    check(workspace.count>0,"create exclusively owned release fixture under build");
+    check(workspace.count > 0, "create exclusively owned release fixture under build");
     defer workspace.free();
-    build:=Paths.path_join(workspace,"build"); defer build.free();
-    releases:=Paths.path_join(build,"releases"); defer releases.free();
-    check(FS.create_directory(build).is_ok(),"create fixture build directory");
-    names:[5]str=.["wst.exe","LICENSE","THIRD_PARTY_NOTICES","README.md","config.example.lua"];
-    relative:[5]str=.["build/wst.exe","build/LICENSE","build/THIRD_PARTY_NOTICES","README.md","config.example.lua"];
-    payload:[5]str=.["\0MZ\xff\x80\0fake executable\xfe","wst MIT notice\n","all copyright holders: © 글로소\n","readme\n","return {}\n"];
-    for i:0..relative.count {
-        path:=Paths.path_join(workspace,relative[i]); defer path.free();
-        check(write_file(path,payload[i]).is_ok(),"create exact fixture release inputs");
+    build := Paths.path_join(workspace, "build");
+    defer build.free();
+    releases := Paths.path_join(build, "releases");
+    defer releases.free();
+    check(FS.create_directory(build).is_ok(), "create fixture build directory");
+    names: [5]str = .[
+        "wst.exe",
+        "LICENSE",
+        "THIRD_PARTY_NOTICES",
+        "README.md",
+        "config.example.lua"
+    ];
+    relative: [5]str = .[
+        "build/wst.exe",
+        "build/LICENSE",
+        "build/THIRD_PARTY_NOTICES",
+        "README.md",
+        "config.example.lua"
+    ];
+    payload: [5]str = .[
+        "\0MZ\xff\x80\0fake executable\xfe",
+        "wst MIT notice\n",
+        "all copyright holders: © 글로소\n",
+        "readme\n",
+        "return {}\n"
+    ];
+    for i: 0..relative.count {
+        path := Paths.path_join(workspace, relative[i]);
+        defer path.free();
+        check(write_file(path, payload[i]).is_ok(), "create exact fixture release inputs");
     }
-    archive_path:=Paths.path_join(releases,"wst-test-windows-x64.zip"); defer archive_path.free();
-    check(R.package(workspace,"test"),"package all five files without a shell");
-    original:=snapshot_file(archive_path); defer original.free();
-    if Z.Zip_Archive.zip_read_file(archive_path)== {
-    case .Err(error); print("Invalid release ZIP: {}\n",error.message); exit(1);
+    archive_path := Paths.path_join(releases, "wst-test-windows-x64.zip");
+    defer archive_path.free();
+    check(R.package(workspace, "test"), "package all five files without a shell");
+    original := snapshot_file(archive_path);
+    defer original.free();
+    if Z.Zip_Archive.zip_read_file(archive_path) == {
+    case .Err(error);
+        print("Invalid release ZIP: {}\n", error.message);
+        exit(1);
     case .Ok(archive);
         defer archive.destroy();
-        check(archive.entries.count==5,"archive contains only the five public release files");
-        for i:0..5 {
-            check(archive.entries[i].name==names[i] && archive.entries[i].compression_method==0,"root entry names and stored ZIP method are exact");
-            if archive.read_entry(i)== {
-            case .Err(error); print("Bad release entry: {}\n",error.message); exit(1);
+        check(archive.entries.count == 5, "archive contains only the five public release files");
+        for i: 0..5 {
+            check(
+                archive.entries[i].name == names[i] && archive.entries[i].compression_method == 0,
+                "root entry names and stored ZIP method are exact"
+            );
+            if archive.read_entry(i) == {
+            case .Err(error);
+                print("Bad release entry: {}\n", error.message);
+                exit(1);
             case .Ok(bytes);
-                check(cast(str)bytes.view()==payload[i],"entry CRC and arbitrary binary/UTF-8 bytes match inputs");
+                check(
+                    cast(str) bytes.view() == payload[i],
+                    "entry CRC and arbitrary binary/UTF-8 bytes match inputs"
+                );
                 bytes.free();
             }
         }
     }
-    check(R.package(workspace,"test"),"an existing archive can be replaced successfully");
-    repeated:=snapshot_file(archive_path); defer repeated.free();
-    check(original==repeated,"identical inputs make a reproducible archive");
-    missing:=Paths.path_join(workspace,"README.md"); defer missing.free();
-    check(FS.remove(missing).is_ok(),"remove only an owned fixture input");
-    check(!R.package(workspace,"test"),"missing release input is rejected");
-    after:=snapshot_file(archive_path); defer after.free();
-    check(original==after,"failed packaging preserves the previous complete archive");
-    check(!R.package(workspace,"test\n"),"invalid labels fail without filesystem mutation");
-    check(write_file(missing,payload[3]).is_ok(),"restore fixture input");
-    check(FS.remove(archive_path).is_ok() && FS.create_directory(archive_path).is_ok(),"create an owned non-file destination");
-    check(!R.package(workspace,"test"),"atomic replacement failure is reported");
-    check(FS.remove(archive_path).is_ok(),"failed replacement preserves the destination directory");
+    check(R.package(workspace, "test"), "an existing archive can be replaced successfully");
+    repeated := snapshot_file(archive_path);
+    defer repeated.free();
+    check(original == repeated, "identical inputs make a reproducible archive");
+    missing := Paths.path_join(workspace, "README.md");
+    defer missing.free();
+    check(FS.remove(missing).is_ok(), "remove only an owned fixture input");
+    check(!R.package(workspace, "test"), "missing release input is rejected");
+    after := snapshot_file(archive_path);
+    defer after.free();
+    check(original == after, "failed packaging preserves the previous complete archive");
+    check(!R.package(workspace, "test\n"), "invalid labels fail without filesystem mutation");
+    check(write_file(missing, payload[3]).is_ok(), "restore fixture input");
+    check(
+        FS.remove(archive_path).is_ok() && FS.create_directory(archive_path).is_ok(),
+        "create an owned non-file destination"
+    );
+    check(!R.package(workspace, "test"), "atomic replacement failure is reported");
+    check(FS.remove(archive_path).is_ok(), "failed replacement preserves the destination directory");
     // Exact-file cleanup, followed by nonrecursive directory removal, also
     // proves that no staging files or directories leaked on success/failure.
-    for name:relative {
-        path:=Paths.path_join(workspace,name); defer path.free();
-        check(FS.remove(path).is_ok(),"remove owned fixture input");
+    for name: relative {
+        path := Paths.path_join(workspace, name);
+        defer path.free();
+        check(FS.remove(path).is_ok(), "remove owned fixture input");
     }
-    check(FS.remove(releases).is_ok(),"no archive staging files remain");
-    check(FS.remove(build).is_ok() && FS.remove(workspace).is_ok(),"no staging tree or fixture entries remain");
-    print("Release tests passed: safe labels, exact ZIP/CRC contents, reproducibility and atomic failure preservation.\n");
+    check(FS.remove(releases).is_ok(), "no archive staging files remain");
+    check(
+        FS.remove(build).is_ok() && FS.remove(workspace).is_ok(),
+        "no staging tree or fixture entries remain"
+    );
+    print(
+        "Release tests passed: safe labels, exact ZIP/CRC contents, reproducibility and atomic failure preservation.\n"
+    );
 }

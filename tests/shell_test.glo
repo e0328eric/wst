@@ -6,18 +6,21 @@ T :: #import "../src/terminal.glo";
 #import "Process/Command";
 
 check :: (condition: bool, message: str) {
-    if !condition { print("FAIL: {}\n", message); exit(1); }
+    if !condition {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
 }
 
 contains :: (terminal: *T.Terminal, text: str) -> bool {
-    if text.count > cast(ssize)terminal.cols return false;
+    if text.count > cast(ssize) terminal.cols return false;
     y: s32 = 0;
     while y < terminal.rows {
         x: s32 = 0;
-        while x <= terminal.cols - cast(s32)text.count {
+        while x <= terminal.cols - cast(s32) text.count {
             index: ssize = 0;
             while index < text.count &&
-                T.visible_cell(terminal, x + cast(s32)index, y).codepoint == cast(u32)text[index]
+                T.visible_cell(terminal, x + cast(s32) index, y).codepoint == cast(u32) text[index]
                 index += 1;
             if index == text.count return true;
             x += 1;
@@ -35,7 +38,7 @@ run_shell :: (name: str, command: cstr, marker: str, input: str = "") {
     T.init(&terminal, 100, 30, 100, 16#eeeeee, 16#111111);
     defer T.release(&terminal);
     if input.count > 0
-        check(P.pty_send(input.data, cast(s32)input.count) != 0, "enqueue interactive shell input");
+        check(P.pty_send(input.data, cast(s32) input.count) != 0, "enqueue interactive shell input");
 
     data: [65536]u8;
     started := P.ticks();
@@ -46,18 +49,23 @@ run_shell :: (name: str, command: cstr, marker: str, input: str = "") {
     while P.ticks() - started < 20000 {
         event: P.Event;
         while P.next_event(&event) != 0 {}
-        count := P.pty_read(cast([*]u8)&data, 65536);
+        count := P.pty_read(cast([*]u8) &data, 65536);
         if count > 0 {
-            T.feed(&terminal, string_from_raw_parts(cast([*]const u8)&data, count));
+            T.feed(&terminal, string_from_raw_parts(cast([*]const u8) &data, count));
             last_output = P.ticks();
         }
         // ConPTY and interactive shell startup may query the cursor position.
         if terminal.replies.count > 0 {
-            check(P.pty_send(terminal.replies.data, cast(s32)terminal.replies.count) != 0,
-                  "deliver terminal query responses");
+            check(
+                P.pty_send(terminal.replies.data, cast(s32) terminal.replies.count) != 0,
+                "deliver terminal query responses"
+            );
             terminal.replies.clear();
         }
-        if !exited && P.pty_status(&exit_code) == 1 { exited = true; exit_seen = P.ticks(); }
+        if !exited && P.pty_status(&exit_code) == 1 {
+            exited = true;
+            exit_seen = P.ticks();
+        }
         if exited && P.ticks() - exit_seen > 250 && P.ticks() - last_output > 200 break;
         P.wait(10);
     }
@@ -65,10 +73,10 @@ run_shell :: (name: str, command: cstr, marker: str, input: str = "") {
         for y: 0..terminal.rows {
             line: [..]u8;
             for x: 0..terminal.cols {
-                cp := T.visible_cell(&terminal, cast(s32)x, cast(s32)y).codepoint;
-                if cp >= 32 && cp < 127 line.push(cast(u8)cp);
+                cp := T.visible_cell(&terminal, cast(s32) x, cast(s32) y).codepoint;
+                if cp >= 32 && cp < 127 line.push(cast(u8) cp);
             }
-            print("{}\n", cast(str)line.view());
+            print("{}\n", cast(str) line.view());
             line.free();
         }
     }
@@ -76,46 +84,68 @@ run_shell :: (name: str, command: cstr, marker: str, input: str = "") {
     check(exited && exit_code == 0, tprint("{} exits successfully within timeout", name));
     for y: 0..terminal.rows {
         for x: 0..terminal.cols {
-            cp := T.visible_cell(&terminal, cast(s32)x, cast(s32)y).codepoint;
+            cp := T.visible_cell(&terminal, cast(s32) x, cast(s32) y).codepoint;
             check(cp == 0 || cp >= 32, "VT controls never become display cells");
         }
     }
-    check(!contains(&terminal, "[?25") && !contains(&terminal, "[?1h") &&
-          !contains(&terminal, "[0m") && !contains(&terminal, "[31m"),
-          "VT sequences are consumed rather than rendered");
+    check(
+        !contains(&terminal, "[?25") && !contains(&terminal, "[?1h") && !contains(&terminal, "[0m") && !contains(
+            &terminal,
+            "[31m"
+        ),
+        "VT sequences are consumed rather than rendered"
+    );
 }
 
 main :: () {
     check(P.open("Consolas", 16, 100, 30, 12, 1) != 0, "hidden Win32 test window");
     defer P.close();
-    run_shell("PowerShell", "powershell.exe -NoLogo -NoProfile -Command \"Write-Output GLOSSO_POWERSHELL_OK\"",
-              "GLOSSO_POWERSHELL_OK");
+    run_shell(
+        "PowerShell",
+        "powershell.exe -NoLogo -NoProfile -Command \"Write-Output GLOSSO_POWERSHELL_OK\"",
+        "GLOSSO_POWERSHELL_OK"
+    );
     run_shell("cmd", "cmd.exe /d /q /c echo GLOSSO_CMD_OK", "GLOSSO_CMD_OK");
     // Splitting the output marker prevents echoed input from satisfying this check.
-    run_shell("interactive PowerShell", "powershell.exe -NoLogo -NoProfile",
-              "GLOSSO_PS_INPUT_OK", "Write-Output ('GLOSSO_' + 'PS_INPUT_OK')\r\nexit\r\n");
-    run_shell("PowerShell ANSI output",
-              "powershell.exe -NoLogo -NoProfile -Command \"[Console]::Write([char]27 + '[31mGLOSSO_COLOR_OK' + [char]27 + '[0m')\"",
-              "GLOSSO_COLOR_OK");
+    run_shell(
+        "interactive PowerShell",
+        "powershell.exe -NoLogo -NoProfile",
+        "GLOSSO_PS_INPUT_OK",
+        "Write-Output ('GLOSSO_' + 'PS_INPUT_OK')\r\nexit\r\n"
+    );
+    run_shell(
+        "PowerShell ANSI output",
+        "powershell.exe -NoLogo -NoProfile -Command \"[Console]::Write([char]27 + '[31mGLOSSO_COLOR_OK' + [char]27 + '[0m')\"",
+        "GLOSSO_COLOR_OK"
+    );
     // Windows uses the same PATH lookup for discovery and CreateProcess below.
     discovered := Command.command_make("powershell.exe");
     discovered.add_argument("-NoLogo");
     discovered.add_argument("-NoProfile");
     discovered.add_argument("-Command");
-    discovered.add_argument("if (Get-Command nu -ErrorAction SilentlyContinue) { exit 0 } else { exit 10 }");
+    discovered.add_argument(
+        "if (Get-Command nu -ErrorAction SilentlyContinue) { exit 0 } else { exit 10 }"
+    );
     result := discovered.run();
     discovered.destroy();
     if result == {
-        case .Ok(finished);
-            if finished.status.exited && finished.status.code == 0 {
-                run_shell("Nushell", "nu.exe --no-config-file -c \"print GLOSSO_NUSHELL_OK\"", "GLOSSO_NUSHELL_OK");
-            } else {
-                check(finished.status.exited && finished.status.code == 10, "Nushell shell discovery completed");
-                print("Skipping Nushell: nu is not installed on PATH.\n");
-            }
-        case .Err(failure);
-            if failure.child.valid _ := failure.child.close();
-            check(false, "PowerShell shell discovery launched");
+    case .Ok(finished);
+        if finished.status.exited && finished.status.code == 0 {
+            run_shell(
+                "Nushell",
+                "nu.exe --no-config-file -c \"print GLOSSO_NUSHELL_OK\"",
+                "GLOSSO_NUSHELL_OK"
+            );
+        } else {
+            check(
+                finished.status.exited && finished.status.code == 10,
+                "Nushell shell discovery completed"
+            );
+            print("Skipping Nushell: nu is not installed on PATH.\n");
+        }
+    case .Err(failure);
+        if failure.child.valid _ := failure.child.close();
+        check(false, "PowerShell shell discovery launched");
     }
     print("Shell tests passed: shell output, parsed VT, interactive input, and exit/shutdown.\n");
 }

@@ -121,16 +121,31 @@ set_default_colors :: (t: *Terminal, fg: u32, bg: u32) {
 
 /// Recolor indexed ANSI output while retaining literal RGB colors and text.
 set_palette :: (t: *Terminal, palette: *const [16]u32) {
-    changed:=false;
-    for i:0..16 if t.palette[i]!=palette.*[i] changed=true;
+    changed := false;
+    for i: 0..16 if t.palette[i] != palette.*[i] changed = true;
     if !changed return;
-    t.palette=palette.*;
-    term_recolor_attributes(t,t.attributes,&t.fg,&t.bg);
-    term_recolor_attributes(t,t.saved_attributes,&t.saved_fg,&t.saved_bg);
-    term_recolor_attributes(t,t.primary_attributes,&t.primary_fg,&t.primary_bg);
-    for i:0..t.cells.count term_recolor_attributes(t,t.cells[i].flags,&t.cells[i].fg,&t.cells[i].bg);
-    for i:0..t.alt_cells.count term_recolor_attributes(t,t.alt_cells[i].flags,&t.alt_cells[i].fg,&t.alt_cells[i].bg);
-    for i:0..t.history.count term_recolor_attributes(t,t.history[i].flags,&t.history[i].fg,&t.history[i].bg);
+    t.palette = palette.*;
+    term_recolor_attributes(t, t.attributes, &t.fg, &t.bg);
+    term_recolor_attributes(t, t.saved_attributes, &t.saved_fg, &t.saved_bg);
+    term_recolor_attributes(t, t.primary_attributes, &t.primary_fg, &t.primary_bg);
+    for i: 0..t.cells.count term_recolor_attributes(
+        t,
+        t.cells[i].flags,
+        &t.cells[i].fg,
+        &t.cells[i].bg
+    );
+    for i: 0..t.alt_cells.count term_recolor_attributes(
+        t,
+        t.alt_cells[i].flags,
+        &t.alt_cells[i].fg,
+        &t.alt_cells[i].bg
+    );
+    for i: 0..t.history.count term_recolor_attributes(
+        t,
+        t.history[i].flags,
+        &t.history[i].fg,
+        &t.history[i].bg
+    );
 }
 
 /// Change the retained scrollback limit without resetting the active terminal.
@@ -564,20 +579,22 @@ term_repair_row :: (t: *Terminal, y: s32) {
         x += 1;
     }
 }
-term_recolor_attributes :: (t:*const Terminal,flags:u32,fg:*u32,bg:*u32) {
-    if (flags&CELL_INDEXED_FG)!=0 fg.*=Colors.indexed(&t.palette,cast(s32)((flags&CELL_FG_INDEX_MASK)>>9));
-    if (flags&CELL_INDEXED_BG)!=0 bg.*=Colors.indexed(&t.palette,cast(s32)((flags&CELL_BG_INDEX_MASK)>>17));
+term_recolor_attributes :: (t: *const Terminal, flags: u32, fg: *u32, bg: *u32) {
+    if (flags & CELL_INDEXED_FG) != 0
+        fg.* = Colors.indexed(&t.palette, cast(s32)((flags & CELL_FG_INDEX_MASK) >> 9));
+    if (flags & CELL_INDEXED_BG) != 0
+        bg.* = Colors.indexed(&t.palette, cast(s32)((flags & CELL_BG_INDEX_MASK) >> 17));
 }
-term_indexed :: (t:*Terminal,foreground:bool,index:s32) {
-    n:=term_clamp(index,0,255);
+term_indexed :: (t: *Terminal, foreground: bool, index: s32) {
+    n := term_clamp(index, 0, 255);
     if foreground {
-        t.fg=Colors.indexed(&t.palette,n);
-        t.attributes &= ~(CELL_DEFAULT_FG|CELL_INDEXED_FG|CELL_FG_INDEX_MASK);
-        t.attributes |= CELL_INDEXED_FG|(cast(u32)n<<9);
+        t.fg = Colors.indexed(&t.palette, n);
+        t.attributes &= ~(CELL_DEFAULT_FG | CELL_INDEXED_FG | CELL_FG_INDEX_MASK);
+        t.attributes |= CELL_INDEXED_FG | (cast(u32) n << 9);
     } else {
-        t.bg=Colors.indexed(&t.palette,n);
-        t.attributes &= ~(CELL_DEFAULT_BG|CELL_INDEXED_BG|CELL_BG_INDEX_MASK);
-        t.attributes |= CELL_INDEXED_BG|(cast(u32)n<<17);
+        t.bg = Colors.indexed(&t.palette, n);
+        t.attributes &= ~(CELL_DEFAULT_BG | CELL_INDEXED_BG | CELL_BG_INDEX_MASK);
+        t.attributes |= CELL_INDEXED_BG | (cast(u32) n << 17);
     }
 }
 term_sgr :: (t: *Terminal) {
@@ -596,26 +613,26 @@ term_sgr :: (t: *Terminal) {
         else if a == 27 t.attributes &= ~cast(u32) 4;
         else if a == 39 {
             t.fg = t.default_fg;
-            t.attributes &= ~(CELL_INDEXED_FG|CELL_FG_INDEX_MASK);
+            t.attributes &= ~(CELL_INDEXED_FG | CELL_FG_INDEX_MASK);
             t.attributes |= CELL_DEFAULT_FG;
         } else if a == 49 {
             t.bg = t.default_bg;
-            t.attributes &= ~(CELL_INDEXED_BG|CELL_BG_INDEX_MASK);
+            t.attributes &= ~(CELL_INDEXED_BG | CELL_BG_INDEX_MASK);
             t.attributes |= CELL_DEFAULT_BG;
         } else if a >= 30 && a <= 37 {
-            term_indexed(t,true,a-30);
+            term_indexed(t, true, a - 30);
         } else if a >= 40 && a <= 47 {
-            term_indexed(t,false,a-40);
+            term_indexed(t, false, a - 40);
         } else if a >= 90 && a <= 97 {
-            term_indexed(t,true,a-90+8);
+            term_indexed(t, true, a - 90 + 8);
         } else if a >= 100 && a <= 107 {
-            term_indexed(t,false,a-100+8);
+            term_indexed(t, false, a - 100 + 8);
         } else if (a == 38 || a == 48) && i + 1 < t.argc {
             color: u32 = 0;
             valid := false;
-            palette_index:s32= -1;
+            palette_index: s32 = -1;
             if t.args[i + 1] == 5 && i + 2 < t.argc {
-                palette_index=term_clamp(t.args[i+2],0,255);
+                palette_index = term_clamp(t.args[i + 2], 0, 255);
                 i += 2;
                 valid = true;
             } else if t.args[i + 1] == 2 && i + 4 < t.argc {
@@ -630,13 +647,13 @@ term_sgr :: (t: *Terminal) {
                 valid = true;
             }
             if valid {
-                if palette_index>=0 term_indexed(t,a==38,palette_index);
+                if palette_index >= 0 term_indexed(t, a == 38, palette_index);
                 else if a == 38 {
                     t.fg = color;
-                    t.attributes &= ~(CELL_DEFAULT_FG|CELL_INDEXED_FG|CELL_FG_INDEX_MASK);
+                    t.attributes &= ~(CELL_DEFAULT_FG | CELL_INDEXED_FG | CELL_FG_INDEX_MASK);
                 } else {
                     t.bg = color;
-                    t.attributes &= ~(CELL_DEFAULT_BG|CELL_INDEXED_BG|CELL_BG_INDEX_MASK);
+                    t.attributes &= ~(CELL_DEFAULT_BG | CELL_INDEXED_BG | CELL_BG_INDEX_MASK);
                 }
             }
         }

@@ -13,30 +13,57 @@ main :: () {
     expect(normal.header_x == 0 && normal.header_y == 0, "header origin");
     expect(normal.header_width == 1000 && normal.header_height == 36, "header geometry");
     expect(normal.viewport_x == 12 && normal.viewport_y == 48, "viewport padding");
-    expect(normal.viewport_width == 964 && normal.viewport_height == 640, "viewport grows beside reserved gutter");
+    expect(
+        normal.viewport_width == 964 && normal.viewport_height == 640,
+        "viewport grows beside reserved gutter"
+    );
     expect(normal.scrollbar_x == 976 && normal.scrollbar_y == 48, "scrollbar follows viewport");
     expect(normal.scrollbar_width == 12 && normal.scrollbar_height == 640, "scrollbar geometry");
-    expect(normal.viewport_x+normal.viewport_width == normal.scrollbar_x, "viewport and scrollbar share edge");
+    expect(
+        normal.viewport_x + normal.viewport_width == normal.scrollbar_x,
+        "viewport and scrollbar share edge"
+    );
     expect(normal.viewport_y + normal.viewport_height == 688, "viewport fills to bottom padding");
     resized := compute(480, 320, 8);
-    expect(resized.viewport_width == 452 && resized.viewport_height == 268, "resize recalculates viewport");
-    expect(resized.scrollbar_x == 460 && resized.scrollbar_width == 12, "resize preserves gutter width");
-    expect(resized.scrollbar_y == resized.viewport_y && resized.scrollbar_height == resized.viewport_height, "scrollbar remains aligned with viewport");
+    expect(
+        resized.viewport_width == 452 && resized.viewport_height == 268,
+        "resize recalculates viewport"
+    );
+    expect(
+        resized.scrollbar_x == 460 && resized.scrollbar_width == 12,
+        "resize preserves gutter width"
+    );
+    expect(
+        resized.scrollbar_y == resized.viewport_y && resized.scrollbar_height == resized.viewport_height,
+        "scrollbar remains aligned with viewport"
+    );
     expect(resized.viewport_y + resized.viewport_height == 312, "resize preserves bottom padding");
     hidpi := compute(2000, 1400, 12, 2.0);
     expect(hidpi.header_height == 72, "DPI scales header with font");
     expect(hidpi.viewport_x == 24 && hidpi.viewport_y == 96, "DPI scales padding");
-    expect(hidpi.viewport_width == 1928 && hidpi.viewport_height == 1280, "DPI preserves logical layout");
+    expect(
+        hidpi.viewport_width == 1928 && hidpi.viewport_height == 1280,
+        "DPI preserves logical layout"
+    );
     expect(hidpi.scrollbar_x == 1952 && hidpi.scrollbar_y == 96, "DPI scales scrollbar position");
-    expect(hidpi.scrollbar_width == 24 && hidpi.scrollbar_height == 1280, "DPI scales scrollbar dimensions");
+    expect(
+        hidpi.scrollbar_width == 24 && hidpi.scrollbar_height == 1280,
+        "DPI scales scrollbar dimensions"
+    );
     unpadded := compute(480, 320, -10);
     expect(unpadded.viewport_x == 0 && unpadded.viewport_width == 468, "negative padding clamped");
     tiny := compute(10, 10, 1000);
     expect(tiny.viewport_width >= 0 && tiny.viewport_height >= 0, "tiny viewport nonnegative");
     expect(tiny.header_height <= 10, "tiny header bounded");
-    expect(tiny.scrollbar_width >= 0 && tiny.scrollbar_width <= 10 && tiny.scrollbar_height == 0, "tiny gutter remains bounded");
+    expect(
+        tiny.scrollbar_width >= 0 && tiny.scrollbar_width <= 10 && tiny.scrollbar_height == 0,
+        "tiny gutter remains bounded"
+    );
     minimized := compute(0, 0, 12);
     expect(minimized.header_width == 1 && minimized.header_height == 1, "minimized size safe");
-    expect(minimized.viewport_width == 0 && minimized.scrollbar_width == 1, "minimized gutter safely consumes available width");
+    expect(
+        minimized.viewport_width == 0 && minimized.scrollbar_width == 1,
+        "minimized gutter safely consumes available width"
+    );
     print("Clay layout tests passed\n");
 }

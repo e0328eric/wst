@@ -7,6 +7,7 @@ T :: #import "platform_types.glo";
 Config_Paths :: #import "config_paths.glo";
 #import "app_icon.glo";
 #import "Strings/Utf8";
+#import "Math/Core";
 #export "platform_types.glo";
 #export "native.glo" {
     file_stamp, file_exists, error_dialog, help_dialog, error, ticks, wait,
@@ -19,197 +20,362 @@ window: G.Window;
 config_path_storage: str;
 
 #public {
-open :: (family:cstr,size:s32,cols:s32,rows:s32,padding:s32,hidden:s32)->s32 {
+
+open :: (family: cstr, size: s32, cols: s32, rows: s32, padding: s32, hidden: s32, opacity: f32 = 1) -> s32 {
     if G.window_valid(window) return N.set_error("A wst window is already open");
-    if !valid_geometry(cols,rows,padding) || cols==0 || rows==0 return N.set_error("Invalid initial terminal grid");
+    if !valid_geometry(cols, rows, padding) || cols == 0 || rows == 0
+        return N.set_error("Invalid initial terminal grid");
+    if !valid_opacity(opacity)
+        return N.set_error("Window opacity must be a finite number from 0.1 to 1.0");
     // Prepare the custom frame and font before exposing a visible window.
-    flags:=G.Window_Flags.High_Dpi|G.Window_Flags.Hidden;
+    flags := G.Window_Flags.High_Dpi | G.Window_Flags.Hidden;
     // Gui installs the embedded application icon and refreshes it for monitor DPI.
-    window=G.create_window(900,650,"wst | Glosso terminal",flags);
+    window = G.create_window(900, 650, "wst | Glosso terminal", flags);
     if !G.window_valid(window) return N.set_error(G.last_error().c_string());
-    if N.gui_bind()==0 { G.destroy_window(window); empty:G.Window; window=empty; return 0; }
-    if N.configure_chrome(16#080808)==0 { close(); return 0; }
-    G.set_frame_rate(window,0);
-    G.set_vsync(window,false);
-    I.bind_window(window); R.bind_window(window);
-    prepared:R.Prepared;
-    if !R.prepare(family.to_string(),size,G.content_scale(window),&prepared) {
-        _:=N.set_error(R.error_message().c_string()); close(); return 0;
+    if N.gui_bind() == 0 {
+        G.destroy_window(window);
+        empty: G.Window;
+        window = empty;
+        return 0;
     }
-    if !resize_grid_metrics(cols,rows,padding,prepared.cw,prepared.ch) {
-        R.discard(&prepared); close(); return 0;
+    if N.configure_chrome(16#080808) == 0 {
+        close();
+        return 0;
+    }
+    if N.set_window_opacity(opacity) == 0 {
+        close();
+        return 0;
+    }
+    G.set_frame_rate(window, 0);
+    G.set_vsync(window, false);
+    I.bind_window(window);
+    R.bind_window(window);
+    prepared: R.Prepared;
+    if !R.prepare(family.to_string(), size, G.content_scale(window), &prepared) {
+        _ := N.set_error(R.error_message().c_string());
+        close();
+        return 0;
+    }
+    if !resize_grid_metrics(cols, rows, padding, prepared.cw, prepared.ch) {
+        R.discard(&prepared);
+        close();
+        return 0;
     }
     R.commit(&prepared);
     I.notify_resize();
-    if hidden==0 && N.window_show()==0 { close(); return 0; }
+    if hidden == 0 && N.window_show() == 0 {
+        close();
+        return 0;
+    }
     return 1;
 }
 
 close :: () {
     N.close_sessions();
-    R.close(); I.close();
+    R.close();
+    I.close();
     N.gui_unbind();
     if G.window_valid(window) G.destroy_window(window);
-    empty:G.Window; window=empty;
+    empty: G.Window;
+    window = empty;
 }
 
-next_event :: (event:*T.Event)->s32 { return I.next_event(event); }
-set_keybindings :: (bindings:[*]const T.Key_Binding,count:s32)->s32 {
-    if I.set_keybindings(bindings,count)==0 return N.set_error(I.error_message().c_string());
+next_event :: (event: *T.Event) -> s32 {
+    return I.next_event(event);
+}
+set_keybindings :: (bindings: [*]const T.Key_Binding, count: s32) -> s32 {
+    if I.set_keybindings(bindings, count) == 0 return N.set_error(I.error_message().c_string());
     return 1;
 }
-set_dividers :: (regions:[*]const T.Divider_Hit,count:s32)->s32 {
-    if I.set_dividers(regions,count)==0 return N.set_error(I.error_message().c_string());
+set_dividers :: (regions: [*]const T.Divider_Hit, count: s32) -> s32 {
+    if I.set_dividers(regions, count) == 0 return N.set_error(I.error_message().c_string());
     return 1;
 }
-cancel_pointer :: () { I.cancel_pointer(); }
-pointer_position :: (x:*s32,y:*s32)->bool { return I.pointer_position(x,y); }
-pointer_ui :: (enabled:bool) { I.pointer_ui(enabled); }
-focus :: ()->s32 { return N.window_focus(); }
-dpi :: ()->s32 { return N.window_dpi(); }
-metrics :: (width:*s32,height:*s32,cw:*s32,ch:*s32) {
+cancel_pointer :: () {
+    I.cancel_pointer();
+}
+pointer_position :: (x: *s32, y: *s32) -> bool {
+    return I.pointer_position(x, y);
+}
+pointer_ui :: (enabled: bool) {
+    I.pointer_ui(enabled);
+}
+focus :: () -> s32 {
+    return N.window_focus();
+}
+dpi :: () -> s32 {
+    return N.window_dpi();
+}
+metrics :: (width: *s32, height: *s32, cw: *s32, ch: *s32) {
     update_scale();
-    dimensions:=G.render_dimensions(window);
-    width.*=cast(s32)dimensions.x; height.*=cast(s32)dimensions.y;
-    R.metrics(cw,ch);
+    dimensions := G.render_dimensions(window);
+    width.* = cast(s32) dimensions.x;
+    height.* = cast(s32) dimensions.y;
+    R.metrics(cw, ch);
 }
-title :: (text:cstr) { _:=G.set_window_title(window,text.to_string()); }
-configure_chrome :: (background:u32)->s32 { return N.configure_chrome(background); }
-window_action :: (action:s32)->s32 { return N.window_action(action); }
-window_maximized :: ()->s32 { return N.window_maximized(); }
-window_drag :: (x:s32,y:s32)->s32 { return N.window_drag(x,y); }
-window_menu :: (x:s32,y:s32)->s32 { return N.window_menu(x,y); }
-resize_client :: (width:s32,height:s32)->s32 { return N.resize_client(width,height); }
-resize_grid_window :: (cols:s32,rows:s32,padding:s32)->s32 {
-    cw,ch:s32; R.metrics(&cw,&ch);
-    if resize_grid_metrics(cols,rows,padding,cw,ch) return 1;
+title :: (text: cstr) {
+    _ := G.set_window_title(window, text.to_string());
+}
+configure_chrome :: (background: u32) -> s32 {
+    return N.configure_chrome(background);
+}
+set_window_opacity :: (value: f32) -> s32 {
+    return N.set_window_opacity(value);
+}
+window_opacity :: () -> f32 {
+    return N.window_opacity();
+}
+window_action :: (action: s32) -> s32 {
+    return N.window_action(action);
+}
+window_maximized :: () -> s32 {
+    return N.window_maximized();
+}
+window_drag :: (x: s32, y: s32) -> s32 {
+    return N.window_drag(x, y);
+}
+window_menu :: (x: s32, y: s32) -> s32 {
+    return N.window_menu(x, y);
+}
+resize_client :: (width: s32, height: s32) -> s32 {
+    return N.resize_client(width, height);
+}
+resize_grid_window :: (cols: s32, rows: s32, padding: s32) -> s32 {
+    cw, ch: s32;
+    R.metrics(&cw, &ch);
+    if resize_grid_metrics(cols, rows, padding, cw, ch) return 1;
     return 0;
 }
 
-set_font :: (family:cstr,size:s32)->s32 {
-    prepared:R.Prepared;
-    if !R.prepare(family.to_string(),size,G.content_scale(window),&prepared)
+set_font :: (family: cstr, size: s32) -> s32 {
+    prepared: R.Prepared;
+    if !R.prepare(family.to_string(), size, G.content_scale(window), &prepared)
         return N.set_error(R.error_message().c_string());
-    R.commit(&prepared); I.notify_resize(); return 1;
+    R.commit(&prepared);
+    I.notify_resize();
+    return 1;
 }
-set_font_size :: (size:s32)->s32 { return set_font(R.font_family().c_string(),size); }
-apply_live_settings :: (family:cstr,size:s32,bindings:[*]const T.Key_Binding,count:s32)->s32 {
-    return apply_all_settings(family,size,bindings,count,0,0,0);
+set_font_size :: (size: s32) -> s32 {
+    return set_font(R.font_family().c_string(), size);
 }
-apply_all_settings :: (family:cstr,size:s32,bindings:[*]const T.Key_Binding,count:s32,
-    cols:s32,rows:s32,padding:s32)->s32 {
-    if !valid_geometry(cols,rows,padding) return N.set_error("Invalid terminal window geometry");
-    if I.validate_keybindings(bindings,count)==0 return N.set_error(I.error_message().c_string());
-    prepared:R.Prepared;
-    if !R.prepare(family.to_string(),size,G.content_scale(window),&prepared)
+apply_live_settings :: (family: cstr, size: s32, bindings: [*]const T.Key_Binding, count: s32) -> s32 {
+    return apply_all_settings(family, size, bindings, count, 0, 0, 0);
+}
+apply_all_settings :: (
+    family: cstr,
+    size: s32,
+    bindings: [*]const T.Key_Binding,
+    count: s32,
+    cols: s32,
+    rows: s32,
+    padding: s32,
+    opacity: ?f32 = null
+) -> s32 {
+    if !valid_geometry(cols, rows, padding) return N.set_error("Invalid terminal window geometry");
+    if #pattern ?value = opacity {
+        if !valid_opacity(value)
+            return N.set_error("Window opacity must be a finite number from 0.1 to 1.0");
+    }
+    if I.validate_keybindings(bindings, count) == 0
+        return N.set_error(I.error_message().c_string());
+    prepared: R.Prepared;
+    if !R.prepare(family.to_string(), size, G.content_scale(window), &prepared)
         return N.set_error(R.error_message().c_string());
-    if !resize_grid_metrics(cols,rows,padding,prepared.cw,prepared.ch) {
-        R.discard(&prepared); return 0;
+    previous_opacity := N.window_opacity();
+    if #pattern ?value = opacity {
+        if N.set_window_opacity(value) == 0 {
+            R.discard(&prepared);
+            return 0;
+        }
+    }
+    if !resize_grid_metrics(cols, rows, padding, prepared.cw, prepared.ch) {
+        message := N.error().to_string().clone();
+        defer message.free();
+        R.discard(&prepared);
+        if opacity != null _ := N.set_window_opacity(previous_opacity);
+        return N.set_error(message.c_string());
     }
     R.commit(&prepared);
-    _:=I.set_keybindings(bindings,count);
-    R.invalidate_frame(); I.notify_resize();
+    _ := I.set_keybindings(bindings, count);
+    R.invalidate_frame();
+    I.notify_resize();
     return 1;
 }
-set_colors :: (selection_fg:u32,selection_bg:u32,cursor_text:u32) {
-    R.set_colors(selection_fg,selection_bg,cursor_text);
-}
-set_ligatures :: (enabled:bool) { R.set_ligatures(enabled); }
-ligatures_enabled :: ()->bool { return R.ligatures_enabled(); }
 
-frame_begin :: (background:u32) {
+valid_opacity :: (value: f32) -> bool {
+    return is_finite(value) && value >= 0.1 && value <= 1;
+}
+set_colors :: (selection_fg: u32, selection_bg: u32, cursor_text: u32) {
+    R.set_colors(selection_fg, selection_bg, cursor_text);
+}
+set_ligatures :: (enabled: bool) {
+    R.set_ligatures(enabled);
+}
+ligatures_enabled :: () -> bool {
+    return R.ligatures_enabled();
+}
+
+frame_begin :: (background: u32) {
     if !R.frame_active() && !I.ensure_render_input() return;
-    _:=N.configure_chrome(background);
-    R.set_focus(N.window_focus()!=0);
-    if !R.frame_begin(background) _:=N.set_error(R.error_message().c_string());
+    _ := N.configure_chrome(background);
+    R.set_focus(N.window_focus() != 0);
+    if !R.frame_begin(background) _ := N.set_error(R.error_message().c_string());
 }
 frame_end :: () {
-    if R.frame_active() { R.frame_end(); I.frame_presented(); }
+    if R.frame_active() {
+        R.frame_end();
+        I.frame_presented();
+    }
 }
-rect :: (x:s32,y:s32,width:s32,height:s32,color:u32) { R.rect(x,y,width,height,color); }
-rounded_rect :: (x:s32,y:s32,width:s32,height:s32,radius:s32,color:u32) {
-    R.rounded_rect(x,y,width,height,radius,color);
+rect :: (x: s32, y: s32, width: s32, height: s32, color: u32) {
+    R.rect(x, y, width, height, color);
 }
-line :: (x1:s32,y1:s32,x2:s32,y2:s32,thickness:f32,color:u32) {
-    R.line(x1,y1,x2,y2,thickness,color);
+rounded_rect :: (x: s32, y: s32, width: s32, height: s32, radius: s32, color: u32) {
+    R.rounded_rect(x, y, width, height, radius, color);
 }
-draw_ui_label :: (x:s32,y:s32,width:s32,height:s32,text:cstr,color:u32) {
-    R.draw_ui_label(x,y,width,height,text.to_string(),color);
+line :: (x1: s32, y1: s32, x2: s32, y2: s32, thickness: f32, color: u32) {
+    R.line(x1, y1, x2, y2, thickness, color);
 }
-measure_ui :: (text:cstr)->s32 { return R.measure_ui(text.to_string()); }
-draw_label :: (x:s32,y:s32,width:s32,height:s32,text:cstr,color:u32) {
-    R.draw_label(x,y,width,height,text.to_string(),color);
+draw_ui_label :: (x: s32, y: s32, width: s32, height: s32, text: cstr, color: u32) {
+    R.draw_ui_label(x, y, width, height, text.to_string(), color);
 }
-cell :: (x:s32,y:s32,width:s32,height:s32,cp:u32,fg:u32,bg:u32,flags:u32,selected:s32) {
-    R.cell(x,y,width,height,cp,fg,bg,flags,selected);
+measure_ui :: (text: cstr) -> s32 {
+    return R.measure_ui(text.to_string());
 }
-cursor :: (x:s32,y:s32,width:s32,height:s32,color:u32) { R.cursor(x,y,width,height,color); }
-grid :: (x:s32,y:s32,cols:s32,rows:s32,cw:s32,ch:s32,cells:[*]const T.Render_Cell,
-    cursor_x:s32,cursor_y:s32,visible:s32,color:u32) {
-    R.grid(x,y,cols,rows,cw,ch,cells,cursor_x,cursor_y,visible,color);
+draw_label :: (x: s32, y: s32, width: s32, height: s32, text: cstr, color: u32) {
+    R.draw_label(x, y, width, height, text.to_string(), color);
 }
-grid_clipped :: (x:s32,y:s32,cols:s32,rows:s32,cw:s32,ch:s32,cells:[*]const T.Render_Cell,
-    cursor_x:s32,cursor_y:s32,visible:s32,color:u32,width:s32,height:s32) {
-    R.grid_clipped(x,y,cols,rows,cw,ch,cells,cursor_x,cursor_y,visible,color,width,height);
+cell :: (
+    x: s32,
+    y: s32,
+    width: s32,
+    height: s32,
+    cp: u32,
+    fg: u32,
+    bg: u32,
+    flags: u32,
+    selected: s32
+) {
+    R.cell(x, y, width, height, cp, fg, bg, flags, selected);
 }
-grid_context :: (id:s32)->s32 { return R.grid_context(id); }
-invalidate_frame :: () { R.invalidate_frame(); }
-snapshot :: (path:cstr)->s32 {
-    active:=R.frame_active();
+cursor :: (x: s32, y: s32, width: s32, height: s32, color: u32) {
+    R.cursor(x, y, width, height, color);
+}
+grid :: (
+    x: s32,
+    y: s32,
+    cols: s32,
+    rows: s32,
+    cw: s32,
+    ch: s32,
+    cells: [*]const T.Render_Cell,
+    cursor_x: s32,
+    cursor_y: s32,
+    visible: s32,
+    color: u32
+) {
+    R.grid(x, y, cols, rows, cw, ch, cells, cursor_x, cursor_y, visible, color);
+}
+grid_clipped :: (
+    x: s32,
+    y: s32,
+    cols: s32,
+    rows: s32,
+    cw: s32,
+    ch: s32,
+    cells: [*]const T.Render_Cell,
+    cursor_x: s32,
+    cursor_y: s32,
+    visible: s32,
+    color: u32,
+    width: s32,
+    height: s32
+) {
+    R.grid_clipped(
+        x,
+        y,
+        cols,
+        rows,
+        cw,
+        ch,
+        cells,
+        cursor_x,
+        cursor_y,
+        visible,
+        color,
+        width,
+        height
+    );
+}
+grid_context :: (id: s32) -> s32 {
+    return R.grid_context(id);
+}
+invalidate_frame :: () {
+    R.invalidate_frame();
+}
+snapshot :: (path: cstr) -> s32 {
+    active := R.frame_active();
     if !active && !I.ensure_render_input() return N.set_error(G.last_error().c_string());
-    result:=R.snapshot(path.to_string());
+    result := R.snapshot(path.to_string());
     if !active && !R.frame_active() I.frame_presented();
-    if result==0 return N.set_error(R.error_message().c_string());
+    if result == 0                  return N.set_error(R.error_message().c_string());
     return 1;
 }
-clipboard_get :: (bytes:[*]u8,capacity:s32)->s32 {
-    if capacity<=0 return 0;
-    text:=G.get_clipboard(window); defer text.free();
-    if text.count>cast(ssize)capacity return N.set_error("Clipboard text exceeds the terminal input capacity");
-    for i:0..text.count bytes[i]=text[i];
-    return cast(s32)text.count;
+clipboard_get :: (bytes: [*]u8, capacity: s32) -> s32 {
+    if capacity <= 0 return 0;
+    text := G.get_clipboard(window);
+    defer text.free();
+    if text.count > cast(ssize) capacity
+        return N.set_error("Clipboard text exceeds the terminal input capacity");
+    for i: 0..text.count bytes[i] = text[i];
+    return cast(s32) text.count;
 }
-clipboard_set :: (bytes:[*]const u8,count:s32)->s32 {
-    if count<0 return N.set_error("Invalid clipboard text length");
-    if !G.set_clipboard(window,raw_string(bytes,count)) return N.set_error(G.last_error().c_string());
+clipboard_set :: (bytes: [*]const u8, count: s32) -> s32 {
+    if count < 0 return N.set_error("Invalid clipboard text length");
+    if !G.set_clipboard(window, raw_string(bytes, count))
+        return N.set_error(G.last_error().c_string());
     return 1;
 }
-pty_destroy :: (id:s32)->s32 {
-    if N.pty_destroy(id)==0 return 0;
-    R.forget_context(id); return 1;
+pty_destroy :: (id: s32) -> s32 {
+    if N.pty_destroy(id) == 0 return 0;
+    R.forget_context(id);
+    return 1;
 }
 
 /// std roaming user configuration directory, owned by this module until exit.
-config_path :: ()->cstr {
-    if config_path_storage.count==0 config_path_storage=Config_Paths.user_path();
+config_path :: () -> cstr {
+    if config_path_storage.count == 0 config_path_storage = Config_Paths.user_path();
     return config_path_storage.c_string();
 }
+
 }
 
-valid_geometry :: (cols:s32,rows:s32,padding:s32)->bool {
-    return cols>=0 && cols<=512 && rows>=0 && rows<=256 && padding>=0 && padding<=100;
+valid_geometry :: (cols: s32, rows: s32, padding: s32) -> bool {
+    return cols >= 0 && cols <= 512 && rows >= 0 && rows <= 256 && padding >= 0 && padding <= 100;
 }
-resize_grid_metrics :: (cols:s32,rows:s32,padding:s32,cw:s32,ch:s32)->bool {
-    if !G.window_valid(window) || !valid_geometry(cols,rows,padding) || cw<=0 || ch<=0 {
-        _:=N.set_error("Invalid terminal grid resize"); return false;
+resize_grid_metrics :: (cols: s32, rows: s32, padding: s32, cw: s32, ch: s32) -> bool {
+    if !G.window_valid(window) || !valid_geometry(cols, rows, padding) || cw <= 0 || ch <= 0 {
+        _ := N.set_error("Invalid terminal grid resize");
+        return false;
     }
-    if cols==0 && rows==0 return true;
-    width:=N.grid_client_pixels(cols,cw,padding,12,dpi());
-    height:=N.grid_client_pixels(rows,ch,padding,36,dpi());
-    min_width,min_height:s32;
-    if N.window_minimum(&min_width,&min_height)==0 return false;
-    if cols>0 && width<min_width width=min_width;
-    if rows>0 && height<min_height height=min_height;
-    return N.resize_client(width,height)!=0;
+    if cols == 0 && rows == 0 return true;
+    width := N.grid_client_pixels(cols, cw, padding, 12, dpi());
+    height := N.grid_client_pixels(rows, ch, padding, 36, dpi());
+    min_width, min_height: s32;
+    if N.window_minimum(&min_width, &min_height) == 0 return false;
+    if cols > 0 && width < min_width                  width = min_width;
+    if rows > 0 && height < min_height                height = min_height;
+    return N.resize_client(width, height) != 0;
 }
 update_scale :: () {
     if !G.window_valid(window) return;
     // Font metrics are physical pixels; std.Gui drawing remains in logical pixels.
-    scale:=G.content_scale(window);
-    if scale==R.font_scale() return;
-    prepared:R.Prepared;
-    if R.prepare(R.font_family(),R.font_size(),scale,&prepared) {
-        R.commit(&prepared); I.notify_resize();
-    } else _:=N.set_error(R.error_message().c_string());
+    scale := G.content_scale(window);
+    if scale == R.font_scale() return;
+    prepared: R.Prepared;
+    if R.prepare(R.font_family(), R.font_size(), scale, &prepared) {
+        R.commit(&prepared);
+        I.notify_resize();
+    } else _ := N.set_error(R.error_message().c_string());
 }
-raw_string :: (data:[*]const u8,count:ssize)->str #magic "string_from_raw_parts";
+raw_string :: (data: [*]const u8, count: ssize) -> str #magic "string_from_raw_parts";

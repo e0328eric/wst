@@ -14,10 +14,11 @@ Lua 5.5 and the vendored Clay source are linked statically, so no separate Lua
 or Clay DLL is needed. The initial build compiles those dependency sources into
 the local `build/cache` directory.
 
-The application code is Glosso, including ConPTY workers, Windows API bindings,
+Application logic is Glosso, including ConPTY workers, Windows API bindings,
 installed-font discovery, and Clay layout construction. Windows services are
-called directly through Glosso's foreign-function interface. Clay's implementation,
-Lua, and the standard `Gui` renderer retain their own native dependencies.
+called directly through Glosso's foreign-function interface. A small native
+presentation adapter keeps the standard `Gui` renderer compatible with Windows
+window opacity. Clay, Lua, and `Gui` retain their own native dependencies.
 
 Build and launch with the installed Glosso compiler:
 
@@ -144,6 +145,7 @@ return {
   font_family = "Cascadia Mono",
   font_size = base_size + 2,
   font_ligatures = true,
+  window_opacity = 1.0,
   columns = 100,
   rows = 30,
   scrollback = 5000,
@@ -323,6 +325,10 @@ D2KodingLigature Nerd Font Mono; fonts without them retain their ordinary glyphs
 Ligatures combine compatible runs of single-cell ASCII text while preserving
 the terminal grid, original text, and cell-based cursor and selection behavior.
 Set `font_ligatures = false` to draw each character separately.
+`window_opacity` controls transparency and hot reloads on save. Its range is
+`0.1` to `1.0`; the default `1.0` is fully opaque, and `0.9` gives 90% opacity.
+It applies to the entire window, including text, cursor, and header. Mouse and
+keyboard input keep working normally at every supported opacity.
 Default text and background colors update in existing text and scrollback.
 ANSI colors and indexed colors 0–15 also follow the configured palette in
 existing text and scrollback. Explicit RGB colors and xterm indexed colors
@@ -331,6 +337,7 @@ existing text and scrollback. Explicit RGB colors and xterm indexed colors
 | Setting | Reload behavior |
 | --- | --- |
 | `keybindings`, fonts, `font_ligatures`, colors | Update the current window and every pane, including default and ANSI palette colors in existing text |
+| `window_opacity` | Update the whole window immediately, including text and header; `1.0` restores full opacity |
 | `columns`, `rows` | Resize the corresponding window axis to the requested grid size, subject to the window minimum |
 | `padding` | Update spacing within the current window size and recalculate the grid |
 | `scrollback` | Apply the new limit to every pane immediately, retaining the newest lines; zero clears history |

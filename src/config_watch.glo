@@ -20,16 +20,16 @@ Watch :: struct {
 /// a missing file is still watched so creating it later can load configuration.
 start :: (watch: *Watch, path: str, now: u64) {
     close(watch);
-    if path.count==0 return;
-    watch.path=path.clone();
-    watch.active=true;
-    watch.last_poll=now;
+    if path.count == 0 return;
+    watch.path = path.clone();
+    watch.active = true;
+    watch.last_poll = now;
     stamp: P.File_Stamp;
-    watch.status=P.file_stamp(path.c_string(),&stamp);
-    if watch.status==1 {
-        watch.modified=stamp.modified;
-        watch.size=stamp.size;
-        watch.identity=stamp.identity;
+    watch.status = P.file_stamp(path.c_string(), &stamp);
+    if watch.status == 1 {
+        watch.modified = stamp.modified;
+        watch.size = stamp.size;
+        watch.identity = stamp.identity;
     }
 }
 
@@ -38,40 +38,42 @@ start :: (watch: *Watch, path: str, now: u64) {
 /// Removal and temporary sharing/access failures never request an empty config.
 poll :: (watch: *Watch, now: u64) -> bool {
     if !watch.active return false;
-    if now<watch.last_poll { watch.last_poll=now; return false; }
-    if now-watch.last_poll<250 return false;
-    watch.last_poll=now;
+    if now < watch.last_poll {
+        watch.last_poll = now;
+        return false;
+    }
+    if now - watch.last_poll < 250 return false;
+    watch.last_poll = now;
     stamp: P.File_Stamp;
-    status:=P.file_stamp(watch.path.c_string(),&stamp);
-    return observe(watch,status,stamp.modified,stamp.size,stamp.identity,now);
+    status := P.file_stamp(watch.path.c_string(), &stamp);
+    return observe(watch, status, stamp.modified, stamp.size, stamp.identity, now);
 }
 
 /// Advance one observation without filesystem IO. Keeping the state transition
 /// separate makes debounce, replacement and transient-error behavior testable.
-observe :: (watch: *Watch, status: s32, modified: u64, size: u64,
-            identity: u64, now: u64) -> bool {
+observe :: (watch: *Watch, status: s32, modified: u64, size: u64, identity: u64, now: u64) -> bool {
     if !watch.active return false;
-    if status<0 {
+    if status < 0 {
         // A file locked mid-save is not evidence that its contents are stable.
-        if watch.pending watch.changed_at=now;
+        if watch.pending watch.changed_at = now;
         return false;
     }
-    if status==0 {
-        watch.status=0;
-        watch.pending=false;
+    if status == 0 {
+        watch.status = 0;
+        watch.pending = false;
         return false;
     }
-    if watch.status!=1 || watch.modified!=modified || watch.size!=size || watch.identity!=identity {
-        watch.status=1;
-        watch.modified=modified;
-        watch.size=size;
-        watch.identity=identity;
-        watch.pending=true;
-        watch.changed_at=now;
+    if watch.status != 1 || watch.modified != modified || watch.size != size || watch.identity != identity {
+        watch.status = 1;
+        watch.modified = modified;
+        watch.size = size;
+        watch.identity = identity;
+        watch.pending = true;
+        watch.changed_at = now;
         return false;
     }
-    if watch.pending && now>=watch.changed_at && now-watch.changed_at>=250 {
-        watch.pending=false;
+    if watch.pending && now >= watch.changed_at && now - watch.changed_at >= 250 {
+        watch.pending = false;
         return true;
     }
     return false;
@@ -80,7 +82,7 @@ observe :: (watch: *Watch, status: s32, modified: u64, size: u64,
 close :: (watch: *Watch) {
     watch.path.free();
     empty: Watch;
-    watch.*=empty;
+    watch.* = empty;
 }
 
 }

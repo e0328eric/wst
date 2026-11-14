@@ -3,10 +3,10 @@ P :: #import "../src/platform.glo";
 #import "Strings/Utf8";
 
 main :: () {
-    #assert P.open("Consolas",16,80,24,12,1) != 0, "hidden Win32 window";
+    #assert P.open("Consolas", 16, 80, 24, 12, 1) != 0, "hidden Win32 window";
     defer P.close();
-    #assert P.pty_start("cmd.exe /d /q /c echo GLOSSO_CONPTY_OK",80,24) != 0, "start actual ConPTY child";
-    #assert P.pty_resize(100,30) != 0, "resize actual ConPTY";
+    #assert P.pty_start("cmd.exe /d /q /c echo GLOSSO_CONPTY_OK", 80, 24) != 0, "start actual ConPTY child";
+    #assert P.pty_resize(100, 30) != 0, "resize actual ConPTY";
     data: [65536]u8;
     found := false;
     output: [..]u8;
@@ -14,13 +14,13 @@ main :: () {
     start := P.ticks();
     exit_code: s32;
     exited := false;
-    while P.ticks()-start < 10000 {
-        n := P.pty_read(cast([*]u8)&data,65536);
+    while P.ticks() - start < 10000 {
+        n := P.pty_read(cast([*]u8) &data, 65536);
         for i: 0..n output.push(data[i]);
-        text := string_from_raw_parts(cast([*]const u8)output.data,output.count);
+        text := string_from_raw_parts(cast([*]const u8) output.data, output.count);
         // Byte search avoids relying on ConPTY's choice of surrounding VT sequences.
         for i: 0..text.count {
-            if i+16 <= text.count && text[i..i+16] == "GLOSSO_CONPTY_OK" found=true;
+            if i + 16 <= text.count && text[i..i + 16] == "GLOSSO_CONPTY_OK" found = true;
         }
         exited = P.pty_status(&exit_code) == 1;
         if found && exited break;
@@ -29,25 +29,29 @@ main :: () {
     #assert found, "ConPTY output reached the reader queue";
     #assert exited && exit_code == 0, "ConPTY child exited successfully";
     P.frame_begin(16#11151c);
-    P.cell(12,48,10,20,65,16#ffffff,16#11151c,1,0);
-    P.cell(22,48,20,20,16#d55c,16#ffffff,16#11151c,8,0);
+    P.cell(12, 48, 10, 20, 65, 16#ffffff, 16#11151c, 1, 0);
+    P.cell(22, 48, 20, 20, 16#d55c, 16#ffffff, 16#11151c, 8, 0);
     P.frame_end();
     P.pty_close();
-    #assert P.pty_start("cmd.exe /d /q",80,24) != 0, "restart interactive ConPTY";
+    #assert P.pty_start("cmd.exe /d /q", 80, 24) != 0, "restart interactive ConPTY";
     command := "echo GLOSSO_INPUT_OK\r\nexit\r\n";
-    #assert P.pty_send(command.data,cast(s32)command.count) != 0;
-    found=false; output.clear(); start=P.ticks();
-    while P.ticks()-start < 10000 {
-        n := P.pty_read(cast([*]u8)&data,65536);
+    #assert P.pty_send(command.data, cast(s32) command.count) != 0;
+    found = false;
+    output.clear();
+    start = P.ticks();
+    while P.ticks() - start < 10000 {
+        n := P.pty_read(cast([*]u8) &data, 65536);
         for i: 0..n output.push(data[i]);
-        text := string_from_raw_parts(cast([*]const u8)output.data,output.count);
-        for i: 0..text.count if i+15<=text.count && text[i..i+15]=="GLOSSO_INPUT_OK" found=true;
-        if found && P.pty_status(&exit_code)==1 break;
+        text := string_from_raw_parts(cast([*]const u8) output.data, output.count);
+        for i: 0..text.count if i + 15 <= text.count && text[i..i + 15] == "GLOSSO_INPUT_OK" found = true;
+        if found && P.pty_status(&exit_code) == 1 break;
         P.wait(10);
     }
     #assert found, "input worker delivered interactive shell commands";
-    #assert P.pty_start("st_win_intentionally_missing_shell.exe",80,24)==0, "invalid shell fails visibly";
-    print("Platform tests passed: Gui rendering, Windows FFI, ConPTY output/input/resize/restart/failure/shutdown.\n");
+    #assert P.pty_start("st_win_intentionally_missing_shell.exe", 80, 24) == 0, "invalid shell fails visibly";
+    print(
+        "Platform tests passed: Gui rendering, Windows FFI, ConPTY output/input/resize/restart/failure/shutdown.\n"
+    );
 }
 
-string_from_raw_parts :: (data: [*]const u8,count: ssize) -> str #magic "string_from_raw_parts";
+string_from_raw_parts :: (data: [*]const u8, count: ssize) -> str #magic "string_from_raw_parts";

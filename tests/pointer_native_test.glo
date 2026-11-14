@@ -5,71 +5,95 @@ W :: #import "keybinding_native_helper.glo";
 H :: #import "pointer_native_helper.glo";
 #import "Io";
 
-drain :: () { event:P.Event; while P.next_event(&event)!=0 {} }
-count_kind :: (kind:s32)->s32 {
-    count:s32; event:P.Event;
-    while P.next_event(&event)!=0 if event.kind==kind count+=1;
+drain :: () {
+    event: P.Event;
+    while P.next_event(&event) != 0 {}
+}
+count_kind :: (kind: s32) -> s32 {
+    count: s32;
+    event: P.Event;
+    while P.next_event(&event) != 0 if event.kind == kind count += 1;
     return count;
 }
-hover :: (window:usize,x:s32,y:s32,axis:s32) {
-    #assert H.message(window,7,x,y,0)>=0;
+hover :: (window: usize, x: s32, y: s32, axis: s32) {
+    #assert H.message(window, 7, x, y, 0) >= 0;
     drain();
     // Hidden windows are deliberately forbidden from changing the cursor over
     // another application. Check the same adapter axis used by the OS bridge.
-    #assert I.cursor_axis()==axis,"divider cursor follows exclusive hit bounds";
+    #assert I.cursor_axis() == axis, "divider cursor follows exclusive hit bounds";
 }
 main :: () {
-    H.save_cursor(); defer H.restore_cursor();
-    #assert P.open("Consolas",16,80,24,12,1)!=0;
+    H.save_cursor();
+    defer H.restore_cursor();
+    #assert P.open("Consolas", 16, 80, 24, 12, 1) != 0;
     defer P.close();
-    window:=W.test_window(); #assert window!=0; drain();
-    regions:[2]P.Divider_Hit=.[.{100,50,8,200,1},.{200,150,180,8,2}];
-    #assert P.set_dividers(cast([*]const P.Divider_Hit)&regions,2)!=0;
-    hover(window,101,80,1); hover(window,201,151,2);
-    hover(window,99,50,0); hover(window,108,50,0);
-    invalid:=regions; invalid[0].axis=3;
-    #assert P.set_dividers(cast([*]const P.Divider_Hit)&invalid,2)==0;
-    invalid=regions; invalid[0].height=0;
-    #assert P.set_dividers(cast([*]const P.Divider_Hit)&invalid,2)==0;
-    #assert P.set_dividers(cast([*]const P.Divider_Hit)&regions,-1)==0;
-    #assert P.set_dividers(cast([*]const P.Divider_Hit)&regions,32)==0;
-    hover(window,101,80,1);
+    window := W.test_window();
+    #assert window != 0;
+    drain();
+    regions: [2]P.Divider_Hit = .[.{ 100, 50, 8, 200, 1 }, .{ 200, 150, 180, 8, 2 }];
+    #assert P.set_dividers(cast([*]const P.Divider_Hit) &regions, 2) != 0;
+    hover(window, 101, 80, 1);
+    hover(window, 201, 151, 2);
+    hover(window, 99, 50, 0);
+    hover(window, 108, 50, 0);
+    invalid := regions;
+    invalid[0].axis = 3;
+    #assert P.set_dividers(cast([*]const P.Divider_Hit) &invalid, 2) == 0;
+    invalid = regions;
+    invalid[0].height = 0;
+    #assert P.set_dividers(cast([*]const P.Divider_Hit) &invalid, 2) == 0;
+    #assert P.set_dividers(cast([*]const P.Divider_Hit) &regions, -1) == 0;
+    #assert P.set_dividers(cast([*]const P.Divider_Hit) &regions, 32) == 0;
+    hover(window, 101, 80, 1);
 
-    _:=H.message(window,6,102,80,1);
-    #assert H.captured(window)!=0 && count_kind(6)==1,"Gui captures the pressed divider";
-    _:=H.message(window,7,-50,-60,1); drain();
-    #assert I.cursor_axis()==1 && H.current_cursor()==1,"captured resize cursor survives outside-client movement";
-    _:=H.message(window,7,202,152,1); drain();
-    #assert I.cursor_axis()==1 && H.current_cursor()==1,"crossing a second divider retains the captured axis";
-    _:=H.message(window,8,202,152,0);
-    #assert H.captured(window)==0 && count_kind(8)==1 && I.cursor_axis()==2,"normal release ends capture at its final endpoint";
+    _ := H.message(window, 6, 102, 80, 1);
+    #assert H.captured(window) != 0 && count_kind(6) == 1, "Gui captures the pressed divider";
+    _ := H.message(window, 7, -50, -60, 1);
+    drain();
+    #assert I.cursor_axis() == 1 && H.current_cursor() == 1, "captured resize cursor survives outside-client movement";
+    _ := H.message(window, 7, 202, 152, 1);
+    drain();
+    #assert I.cursor_axis() == 1 && H.current_cursor() == 1, "crossing a second divider retains the captured axis";
+    _ := H.message(window, 8, 202, 152, 0);
+    #assert H.captured(window) == 0 && count_kind(8) == 1 && I.cursor_axis() == 2, "normal release ends capture at its final endpoint";
 
-    _:=H.message(window,6,102,80,1);
-    _:=H.message(window,7,-50,-60,1); _:=H.message(window,7,202,152,1);
-    _:=H.message(window,8,202,152,0);
-    starts,moves,ends,cancels:s32; event:P.Event;
-    while P.next_event(&event)!=0 {
-        if event.kind==6 starts+=1;
-        if event.kind==7 { moves+=1; #assert event.a==202 && event.b==152; }
-        if event.kind==8 ends+=1;
-        if event.kind==11 cancels+=1;
+    _ := H.message(window, 6, 102, 80, 1);
+    _ := H.message(window, 7, -50, -60, 1);
+    _ := H.message(window, 7, 202, 152, 1);
+    _ := H.message(window, 8, 202, 152, 0);
+    starts, moves, ends, cancels: s32;
+    event: P.Event;
+    while P.next_event(&event) != 0 {
+        if event.kind == 6 starts += 1;
+        if event.kind == 7 {
+            moves += 1;
+            #assert event.a == 202 && event.b == 152;
+        }
+        if event.kind == 8  ends += 1;
+        if event.kind == 11 cancels += 1;
     }
-    #assert starts==1 && moves==1 && ends==1 && cancels==0,"queued moves coalesce without a spurious cancellation after release";
+    #assert starts == 1 && moves == 1 && ends == 1 && cancels == 0, "queued moves coalesce without a spurious cancellation after release";
 
-    for kind:.[11,12,13] {
-        _:=H.message(window,6,101,80,1); drain();
-        _:=H.message(window,cast(s32)kind,0,0,0);
-        #assert H.captured(window)==0 && count_kind(11)==1,"cancel mode, focus loss and capture loss cancel once";
+    for kind: .[11, 12, 13] {
+        _ := H.message(window, 6, 101, 80, 1);
+        drain();
+        _ := H.message(window, cast(s32) kind, 0, 0, 0);
+        #assert H.captured(window) == 0 && count_kind(11) == 1, "cancel mode, focus loss and capture loss cancel once";
         P.cancel_pointer();
-        #assert count_kind(11)==0,"cancellation is idempotent";
+        #assert count_kind(11) == 0, "cancellation is idempotent";
     }
-    _:=H.message(window,6,202,152,1); drain();
+    _ := H.message(window, 6, 202, 152, 1);
+    drain();
     P.cancel_pointer();
-    #assert H.captured(window)==0 && count_kind(11)==1,"application layout changes can cancel Gui capture";
-    #assert P.set_dividers(cast([*]const P.Divider_Hit)&regions,0)!=0;
-    hover(window,101,80,0);
+    #assert H.captured(window) == 0 && count_kind(11) == 1, "application layout changes can cancel Gui capture";
+    #assert P.set_dividers(cast([*]const P.Divider_Hit) &regions, 0) != 0;
+    hover(window, 101, 80, 0);
     P.close();
-    #assert P.open("Consolas",16,80,24,12,1)!=0;
-    window=W.test_window(); drain(); hover(window,202,152,0);
-    print("pointer tests passed: std.Gui divider cursors, capture axis, move coalescing, cancellation and reopen cleanup.\n");
+    #assert P.open("Consolas", 16, 80, 24, 12, 1) != 0;
+    window = W.test_window();
+    drain();
+    hover(window, 202, 152, 0);
+    print(
+        "pointer tests passed: std.Gui divider cursors, capture axis, move coalescing, cancellation and reopen cleanup.\n"
+    );
 }

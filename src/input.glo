@@ -13,7 +13,7 @@ key_sequence :: (key: s32, mods: s32, application: bool) -> str {
     if (mods & 4) != 0 modifier += 2;
 
     final: str = "";
-    if key == 38 final = "A";
+    if      key == 38 final = "A";
     else if key == 40 final = "B";
     else if key == 39 final = "C";
     else if key == 37 final = "D";
@@ -21,24 +21,24 @@ key_sequence :: (key: s32, mods: s32, application: bool) -> str {
     else if key == 35 final = "F";
     if final.count > 0 {
         if modifier != 1 return tprint("\x1b[1;{}{}", modifier, final);
-        if application return tprint("\x1bO{}", final);
+        if application   return tprint("\x1bO{}", final);
         return tprint("\x1b[{}", final);
     }
 
     if key >= 112 && key <= 115 {
-        if key == 112 final = "P";
+        if      key == 112 final = "P";
         else if key == 113 final = "Q";
         else if key == 114 final = "R";
-        else final = "S";
+        else               final = "S";
         if modifier != 1 return tprint("\x1b[1;{}{}", modifier, final);
         return tprint("\x1bO{}", final);
     }
 
     number: s32 = 0;
-    if key == 45 number = 2;
-    else if key == 46 number = 3;
-    else if key == 33 number = 5;
-    else if key == 34 number = 6;
+    if      key == 45  number = 2;
+    else if key == 46  number = 3;
+    else if key == 33  number = 5;
+    else if key == 34  number = 6;
     else if key == 116 number = 15;
     else if key == 117 number = 17;
     else if key == 118 number = 18;
@@ -69,7 +69,10 @@ paste :: (text: str, bracketed: bool) -> str {
     while index < text.count {
         byte := text[index];
         // Clipboard data cannot terminate the bracketed paste early.
-        if bracketed && byte == 27 { index += 1; continue; }
+        if bracketed && byte == 27 {
+            index += 1;
+            continue;
+        }
         if byte == 13 {
             builder.write_byte(13);
             if index + 1 < text.count && text[index + 1] == 10 index += 1;

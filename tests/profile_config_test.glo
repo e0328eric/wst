@@ -7,16 +7,28 @@ FS :: #import "File_System/Directory";
 #import "Io";
 #import "Context";
 
-check :: (ok:bool,message:str) { if !ok { print("FAIL: {}\n",message); exit(1); } }
-write_source :: (path:str,source:str) { check(write_file(path,source).is_ok(),"write test Lua"); }
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
+}
+write_source :: (path: str, source: str) {
+    check(write_file(path, source).is_ok(), "write test Lua");
+}
 
 main :: () {
-    path:str="build/profile_config_test.lua";
-    defer { _:=FS.remove(path); }
-    cfg:=C.defaults(); defer C.release(&cfg);
-    check(cfg.default_profile.count==0 && cfg.profile_count==0 && C.profile_index(&cfg,"cmd")== -1,
-        "legacy configuration needs no implicit profiles");
-    source:=#string
+    path: str = "build/profile_config_test.lua";
+    defer {
+        _ := FS.remove(path);
+    }
+    cfg := C.defaults();
+    defer C.release(&cfg);
+    check(
+        cfg.default_profile.count == 0 && cfg.profile_count == 0 && C.profile_index(&cfg, "cmd") == -1,
+        "legacy configuration needs no implicit profiles"
+    );
+    source := #string
         \\return {
         \\  keybindings = {
         \\    new_tab = { 'F1', {key='F2',profile='dev'}, {key='F3',profile='cmd'} },
@@ -34,42 +46,84 @@ main :: () {
         \\  },
         \\}
     ;
-    write_source(path,source); check(C.load(path,&cfg),"profile definitions resolve before bindings independent of table order");
-    dev:=C.profile_index(&cfg,"dev"); cmd:=C.profile_index(&cfg,"cmd"); simple:=C.profile_index(&cfg,"simple");
-    check(cfg.profile_count==3 && cfg.default_profile=="dev" && dev>=0 && cmd>=0 && simple>=0,"all named profiles load");
-    check(cfg.profiles[dev].name=="Nushell Developer" && cfg.profiles[dev].shell=="nushell" &&
-        cfg.profiles[dev].starting_directory=="C:\\Work Folder","custom display name, shell and directory survive Lua decoding");
-    check(cfg.profiles[dev].command=="powershell.exe -NoExit -Command \"& { Import-Module 'C:\\Program Files\\VS\\DevShell.dll'; & nu.exe }\"",
-        "long Lua strings preserve Windows paths and nested developer-shell quoting");
-    check(cfg.profiles[simple].name=="simple" && cfg.profiles[simple].shell=="powershell" &&
-        cfg.profiles[simple].command.count==0 && cfg.profiles[simple].starting_directory.count==0,"profile launch defaults are explicit");
-    check(K.profile_for(&cfg.keybindings,112,0)==0 && K.profile_for(&cfg.keybindings,113,0)==dev+1 &&
-        K.profile_for(&cfg.keybindings,114,0)==cmd+1 && K.profile_for(&cfg.keybindings,115,0)==dev+1 &&
-        K.profile_for(&cfg.keybindings,116,0)==cmd+1 && K.profile_for(&cfg.keybindings,117,0)==0,"mixed bindings keep distinct profile targets");
+    write_source(path, source);
+    check(
+        C.load(path, &cfg),
+        "profile definitions resolve before bindings independent of table order"
+    );
+    dev := C.profile_index(&cfg, "dev");
+    cmd := C.profile_index(&cfg, "cmd");
+    simple := C.profile_index(&cfg, "simple");
+    check(
+        cfg.profile_count == 3 && cfg.default_profile == "dev" && dev >= 0 && cmd >= 0 && simple >= 0,
+        "all named profiles load"
+    );
+    check(
+        cfg.profiles[dev].name == "Nushell Developer" && cfg.profiles[dev].shell == "nushell" && cfg.profiles[dev].starting_directory == "C:\\Work Folder",
+        "custom display name, shell and directory survive Lua decoding"
+    );
+    check(
+        cfg.profiles[dev].command == "powershell.exe -NoExit -Command \"& { Import-Module 'C:\\Program Files\\VS\\DevShell.dll'; & nu.exe }\"",
+        "long Lua strings preserve Windows paths and nested developer-shell quoting"
+    );
+    check(
+        cfg.profiles[simple].name == "simple" && cfg.profiles[simple].shell == "powershell" && cfg.profiles[simple].command.count == 0 && cfg.profiles[simple].starting_directory.count == 0,
+        "profile launch defaults are explicit"
+    );
+    check(
+        K.profile_for(&cfg.keybindings, 112, 0) == 0 && K.profile_for(&cfg.keybindings, 113, 0) == dev + 1 && K.profile_for(
+            &cfg.keybindings,
+            114,
+            0
+        ) == cmd + 1 && K.profile_for(&cfg.keybindings, 115, 0) == dev + 1 && K.profile_for(
+            &cfg.keybindings,
+            116,
+            0
+        ) == cmd + 1 && K.profile_for(&cfg.keybindings, 117, 0) == 0,
+        "mixed bindings keep distinct profile targets"
+    );
 
-    copy:=C.clone(&cfg);
-    check(copy.default_profile.data!=cfg.default_profile.data && copy.profiles[dev].command.data!=cfg.profiles[dev].command.data,
-        "deep clones own independent profile/default strings");
-    moved:=C.take(&copy); defer C.release(&moved);
-    C.release(&copy); C.release(&copy);
-    check(copy.profile_count==0 && copy.default_profile.count==0 && moved.profiles[dev].name=="Nushell Developer",
-        "ownership moves leave safely releasable empty sources");
+    copy := C.clone(&cfg);
+    check(
+        copy.default_profile.data != cfg.default_profile.data && copy.profiles[dev].command.data != cfg.profiles[dev].command.data,
+        "deep clones own independent profile/default strings"
+    );
+    moved := C.take(&copy);
+    defer C.release(&moved);
+    C.release(&copy);
+    C.release(&copy);
+    check(
+        copy.profile_count == 0 && copy.default_profile.count == 0 && moved.profiles[dev].name == "Nushell Developer",
+        "ownership moves leave safely releasable empty sources"
+    );
     reset_temporary_storage();
-    check(cfg.profiles[dev].name=="Nushell Developer" && cfg.profiles[dev].command==moved.profiles[dev].command,
-        "profile storage survives Lua close and temporary arena reset");
+    check(
+        cfg.profiles[dev].name == "Nushell Developer" && cfg.profiles[dev].command == moved.profiles[dev].command,
+        "profile storage survives Lua close and temporary arena reset"
+    );
 
     // Replacing a profile map preserves retained bindings by name, not by the
     // order in which lua_next happens to enumerate the replacement table.
     for 0..8 {
-        write_source(path,"return {profiles={cmd={shell='cmd'},dev={shell='nushell',command='nu.exe'}}}");
-        check(C.load(path,&cfg),"replace a profile map while keeping referenced ids");
-        dev=C.profile_index(&cfg,"dev"); cmd=C.profile_index(&cfg,"cmd");
-        check(cfg.profile_count==2 && K.profile_for(&cfg.keybindings,113,0)==dev+1 &&
-            K.profile_for(&cfg.keybindings,114,0)==cmd+1 && K.profile_for(&cfg.keybindings,115,0)==dev+1,
-            "retained binding targets remap after profile map replacement");
+        write_source(
+            path,
+            "return {profiles={cmd={shell='cmd'},dev={shell='nushell',command='nu.exe'}}}"
+        );
+        check(C.load(path, &cfg), "replace a profile map while keeping referenced ids");
+        dev = C.profile_index(&cfg, "dev");
+        cmd = C.profile_index(&cfg, "cmd");
+        check(
+            cfg.profile_count == 2 && K.profile_for(&cfg.keybindings, 113, 0) == dev + 1 && K.profile_for(
+                &cfg.keybindings,
+                114,
+                0
+            ) == cmd + 1 && K.profile_for(&cfg.keybindings, 115, 0) == dev + 1,
+            "retained binding targets remap after profile map replacement"
+        );
     }
-    before:=C.clone(&cfg); defer C.release(&before);
-    for bad:.[
+    before := C.clone(&cfg);
+    defer C.release(&before);
+    for bad: .[
         "return {profiles=false}",
         "return {profiles={1}}",
         "return {profiles={dev='cmd'}}",
@@ -96,32 +150,77 @@ main :: () {
         "return {profiles={},default_profile=''}",
         "local p={} for i=1,33 do p['p'..i]={} end return {profiles=p}",
     ] {
-        write_source(path,bad); check(!C.load(path,&cfg),"invalid profile or target rolls back the complete candidate");
-        check(C.error_message().count>0 && cfg.default_profile==before.default_profile && cfg.profile_count==before.profile_count,
-            "invalid profile reports an error and retains all owned launch data");
-        check(cfg.profiles[C.profile_index(&cfg,"dev")].command=="nu.exe","failed load preserves the last valid profile launch");
-        check(cfg.keybindings.count==before.keybindings.count,"failed profile edit preserves binding count");
-        for i:0..cfg.keybindings.count check(cfg.keybindings.profile_ids[i]==before.keybindings.profile_ids[i],"failed profile edit preserves target metadata");
+        write_source(path, bad);
+        check(!C.load(path, &cfg), "invalid profile or target rolls back the complete candidate");
+        check(
+            C.error_message().count > 0 && cfg.default_profile == before.default_profile && cfg.profile_count == before.profile_count,
+            "invalid profile reports an error and retains all owned launch data"
+        );
+        check(
+            cfg.profiles[C.profile_index(&cfg, "dev")].command == "nu.exe",
+            "failed load preserves the last valid profile launch"
+        );
+        check(
+            cfg.keybindings.count == before.keybindings.count,
+            "failed profile edit preserves binding count"
+        );
+        for i: 0..cfg.keybindings.count check(
+            cfg.keybindings.profile_ids[i] == before.keybindings.profile_ids[i],
+            "failed profile edit preserves target metadata"
+        );
     }
-    write_source(path,"return {keybindings={new_tab={key='F9',profile='dev'}}}");
-    check(C.load(path,&cfg) && cfg.profile_count==2 && K.profile_for(&cfg.keybindings,120,0)==C.profile_index(&cfg,"dev")+1,
-        "a binding-only edit uses the retained profile map");
-    write_source(path,"return {default_profile='',profiles={},keybindings={new_tab=false,split_vertical=false,split_horizontal=false}}");
-    check(C.load(path,&cfg) && cfg.profile_count==0 && cfg.default_profile.count==0 && K.lookup(&cfg.keybindings,120,0)==.None,
-        "profiles and their references can be removed in the same edit");
-    check(moved.profiles[C.profile_index(&moved,"dev")].command.count>0,
-        "releasing/replacing the original configuration cannot damage an owned clone");
-    developer:=C.defaults(); defer C.release(&developer);
-    check(C.load("config.example.lua",&developer),"the unified configuration example is valid Lua configuration");
-    dev_example:=C.profile_index(&developer,"nushell_dev");
-    check(developer.default_profile=="nushell_dev" && developer.profile_count==3 && dev_example>=0 &&
-        developer.profiles[dev_example].name=="Nushell Developer" && developer.profiles[dev_example].shell=="nushell" &&
-        developer.profiles[dev_example].command.count>0 && developer.profiles[dev_example].starting_directory=="%USERPROFILE%",
-        "the developer example selects the custom command and home directory");
-    check(K.profile_for(&developer.keybindings,49,3)==dev_example+1 &&
-        K.profile_for(&developer.keybindings,69,6)==dev_example+1 && K.profile_for(&developer.keybindings,79,6)==dev_example+1 &&
-        K.profile_for(&developer.keybindings,50,3)==C.profile_index(&developer,"powershell")+1 &&
-        K.profile_for(&developer.keybindings,51,3)==C.profile_index(&developer,"cmd")+1,
-        "the unified example's associated tab and pane bindings target the intended profiles");
-    print("profile configuration tests passed: named profiles, target objects, ordering, ownership, remapping and rollback.\n");
+    write_source(path, "return {keybindings={new_tab={key='F9',profile='dev'}}}");
+    check(
+        C.load(path, &cfg) && cfg.profile_count == 2 && K.profile_for(&cfg.keybindings, 120, 0) == C.profile_index(
+            &cfg,
+            "dev"
+        ) + 1,
+        "a binding-only edit uses the retained profile map"
+    );
+    write_source(
+        path,
+        "return {default_profile='',profiles={},keybindings={new_tab=false,split_vertical=false,split_horizontal=false}}"
+    );
+    check(
+        C.load(path, &cfg) && cfg.profile_count == 0 && cfg.default_profile.count == 0 && K.lookup(
+            &cfg.keybindings,
+            120,
+            0
+        ) == .None,
+        "profiles and their references can be removed in the same edit"
+    );
+    check(
+        moved.profiles[C.profile_index(&moved, "dev")].command.count > 0,
+        "releasing/replacing the original configuration cannot damage an owned clone"
+    );
+    developer := C.defaults();
+    defer C.release(&developer);
+    check(
+        C.load("config.example.lua", &developer),
+        "the unified configuration example is valid Lua configuration"
+    );
+    dev_example := C.profile_index(&developer, "nushell_dev");
+    check(
+        developer.default_profile == "nushell_dev" && developer.profile_count == 3 && dev_example >= 0 && developer.profiles[dev_example].name == "Nushell Developer" && developer.profiles[dev_example].shell == "nushell" && developer.profiles[dev_example].command.count > 0 && developer.profiles[dev_example].starting_directory == "%USERPROFILE%",
+        "the developer example selects the custom command and home directory"
+    );
+    check(
+        K.profile_for(&developer.keybindings, 49, 3) == dev_example + 1 && K.profile_for(
+            &developer.keybindings,
+            69,
+            6
+        ) == dev_example + 1 && K.profile_for(&developer.keybindings, 79, 6) == dev_example + 1 && K.profile_for(
+            &developer.keybindings,
+            50,
+            3
+        ) == C.profile_index(&developer, "powershell") + 1 && K.profile_for(
+            &developer.keybindings,
+            51,
+            3
+        ) == C.profile_index(&developer, "cmd") + 1,
+        "the unified example's associated tab and pane bindings target the intended profiles"
+    );
+    print(
+        "profile configuration tests passed: named profiles, target objects, ordering, ownership, remapping and rollback.\n"
+    );
 }

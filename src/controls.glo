@@ -15,8 +15,8 @@ Wheel_Result :: struct {
 
 // The reset action is 2; positive/negative wheel step counts are deltas.
 font_size :: (current: s32, base: s32, action: s32) -> s32 {
-    target := cast(s64)current + cast(s64)action;
-    if action == 2 target = cast(s64)base;
+    target := cast(s64) current + cast(s64) action;
+    if action == 2 target = cast(s64) base;
     return bounded(target, 8, 72);
 }
 
@@ -24,20 +24,19 @@ font_size :: (current: s32, base: s32, action: s32) -> s32 {
 // per notch; high-resolution wheels can send smaller deltas. Scaling before
 // division preserves one-line movement from e.g. 40 units at three lines/notch.
 // lines_per_notch=-1 requests one viewport page, and zero disables scrolling.
-wheel :: (state: *Scroll_State, delta: s32, mods: s32,
-          lines_per_notch: s32, page_rows: s32) -> Wheel_Result {
+wheel :: (state: *Scroll_State, delta: s32, mods: s32, lines_per_notch: s32, page_rows: s32) -> Wheel_Result {
     result: Wheel_Result;
     if (mods & 2) != 0 && (mods & 4) == 0 {
-        total := cast(s64)state.zoom_remainder + cast(s64)delta;
+        total := cast(s64) state.zoom_remainder + cast(s64) delta;
         result.zoom_steps = bounded(total / 120, -64, 64);
         state.zoom_remainder = cast(s32)(total % 120);
         return result;
     }
-    lines := bounded(cast(s64)lines_per_notch, 0, 10000);
-    if lines_per_notch == -1 lines = bounded(cast(s64)page_rows, 1, 256);
-    if lines == 0 return result;
+    lines := bounded(cast(s64) lines_per_notch, 0, 10000);
+    if lines_per_notch == -1 lines = bounded(cast(s64) page_rows, 1, 256);
+    if lines == 0            return result;
     // s64 intermediates keep even unusual s32 deltas/settings from overflowing.
-    total := cast(s64)state.wheel_remainder + cast(s64)delta * cast(s64)lines;
+    total := cast(s64) state.wheel_remainder + cast(s64) delta * cast(s64) lines;
     result.scroll_lines = bounded(total / 120, -10000, 10000);
     state.wheel_remainder = cast(s32)(total % 120);
     return result;
@@ -46,7 +45,7 @@ wheel :: (state: *Scroll_State, delta: s32, mods: s32,
 }
 
 bounded :: (value: s64, low: s32, high: s32) -> s32 {
-    if value < cast(s64)low return low;
-    if value > cast(s64)high return high;
-    return cast(s32)value;
+    if value < cast(s64) low  return low;
+    if value > cast(s64) high return high;
+    return cast(s32) value;
 }

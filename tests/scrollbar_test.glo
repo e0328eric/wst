@@ -2,48 +2,75 @@ S :: #import "../src/scrollbar.glo";
 #import "Io";
 
 check :: (ok: bool, message: str) {
-    if !ok { print("FAIL: {}\n",message); exit(1); }
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
 }
 
 main :: () {
-    live:=S.compute(980,50,12,600,30,270,0);
-    check(live.x==980 && live.y==50 && live.width==12 && live.height==600,"track geometry");
-    check(live.thumb_height==60 && live.thumb_y==590,"live offset has thumb at bottom");
-    oldest:=S.compute(980,50,12,600,30,270,270);
-    check(oldest.thumb_y==50 && oldest.thumb_height==60,"oldest offset has thumb at top");
-    middle:=S.compute(980,50,12,600,30,270,135);
-    check(middle.thumb_y==320,"midpoint maps to midpoint of thumb travel");
-    check(S.offset_at(middle,270,320+17,17)==135,"drag preserves pointer grab offset");
-    check(S.offset_at(middle,270,50+17,17)==270,"drag top reaches oldest history");
-    check(S.offset_at(middle,270,590+17,17)==0,"drag bottom reaches live output");
-    check(S.offset_at(middle,270,-10000,17)==270,"drag above track clamps to oldest");
-    check(S.offset_at(middle,270,10000,17)==0,"drag below track clamps to live");
-    check(S.page_direction(middle,319)==1,"track above thumb pages up");
-    check(S.page_direction(middle,320)==0 && S.page_direction(middle,379)==0,"thumb is not a page target");
-    check(S.page_direction(middle,380)== -1,"track below thumb pages down");
-    check(S.page_direction(middle,49)==0 && S.page_direction(middle,650)==0,"outside track ignored");
+    live := S.compute(980, 50, 12, 600, 30, 270, 0);
+    check(live.x == 980 && live.y == 50 && live.width == 12 && live.height == 600, "track geometry");
+    check(live.thumb_height == 60 && live.thumb_y == 590, "live offset has thumb at bottom");
+    oldest := S.compute(980, 50, 12, 600, 30, 270, 270);
+    check(oldest.thumb_y == 50 && oldest.thumb_height == 60, "oldest offset has thumb at top");
+    middle := S.compute(980, 50, 12, 600, 30, 270, 135);
+    check(middle.thumb_y == 320, "midpoint maps to midpoint of thumb travel");
+    check(S.offset_at(middle, 270, 320 + 17, 17) == 135, "drag preserves pointer grab offset");
+    check(S.offset_at(middle, 270, 50 + 17, 17) == 270, "drag top reaches oldest history");
+    check(S.offset_at(middle, 270, 590 + 17, 17) == 0, "drag bottom reaches live output");
+    check(S.offset_at(middle, 270, -10000, 17) == 270, "drag above track clamps to oldest");
+    check(S.offset_at(middle, 270, 10000, 17) == 0, "drag below track clamps to live");
+    check(S.page_direction(middle, 319) == 1, "track above thumb pages up");
+    check(
+        S.page_direction(middle, 320) == 0 && S.page_direction(middle, 379) == 0,
+        "thumb is not a page target"
+    );
+    check(S.page_direction(middle, 380) == -1, "track below thumb pages down");
+    check(
+        S.page_direction(middle, 49) == 0 && S.page_direction(middle, 650) == 0,
+        "outside track ignored"
+    );
 
     for offset: 0..271 {
-        bar:=S.compute(0,100,12,600,30,270,cast(s32)offset);
-        check(S.offset_at(bar,270,bar.thumb_y+10,10)==cast(s32)offset,"all representable offsets round trip");
+        bar := S.compute(0, 100, 12, 600, 30, 270, cast(s32) offset);
+        check(
+            S.offset_at(bar, 270, bar.thumb_y + 10, 10) == cast(s32) offset,
+            "all representable offsets round trip"
+        );
     }
-    minimum:=S.compute(0,0,12,600,30,10000,5000);
-    check(minimum.thumb_height==24,"long history retains usable minimum thumb");
-    check(S.compute(0,0,12,600,30,270,-10).thumb_y==live.thumb_y-live.y,"negative view offset clamps to live");
-    check(S.compute(0,0,12,600,30,270,300).thumb_y==0,"too large view offset clamps to oldest");
+    minimum := S.compute(0, 0, 12, 600, 30, 10000, 5000);
+    check(minimum.thumb_height == 24, "long history retains usable minimum thumb");
+    check(
+        S.compute(0, 0, 12, 600, 30, 270, -10).thumb_y == live.thumb_y - live.y,
+        "negative view offset clamps to live"
+    );
+    check(
+        S.compute(0, 0, 12, 600, 30, 270, 300).thumb_y == 0,
+        "too large view offset clamps to oldest"
+    );
 
-    empty:=S.compute(0,10,12,100,30,0,0);
-    check(empty.thumb_height==100 && empty.thumb_y==10,"no history fills track");
-    check(S.offset_at(empty,0,50,3)==0 && S.page_direction(empty,90)==0,"empty history has no scroll actions");
-    tiny:=S.compute(0,10,12,5,30,500,20);
-    check(tiny.thumb_height==5 && tiny.thumb_y==10,"minimum thumb clamps to tiny track");
-    check(S.offset_at(tiny,500,10,0)==0,"tiny track avoids division by zero");
-    zero:=S.compute(0,0,12,0,30,10,1);
-    check(zero.height==0 && zero.thumb_height==0 && S.offset_at(zero,10,50,0)==0,"zero height is safe");
-    negative:=S.compute(0,0,-12,-50,0,-10,-1);
-    check(negative.width==0 && negative.height==0,"negative dimensions clamp to zero");
-    check(S.page_direction(negative,0)==0,"invalid dimensions cannot page");
-    extreme:=S.compute(0,0,12,2147483647,2147483647,2147483647,1073741824);
-    check(extreme.thumb_y>=0 && extreme.thumb_height>0,"large dimensions use wide intermediates");
+    empty := S.compute(0, 10, 12, 100, 30, 0, 0);
+    check(empty.thumb_height == 100 && empty.thumb_y == 10, "no history fills track");
+    check(
+        S.offset_at(empty, 0, 50, 3) == 0 && S.page_direction(empty, 90) == 0,
+        "empty history has no scroll actions"
+    );
+    tiny := S.compute(0, 10, 12, 5, 30, 500, 20);
+    check(tiny.thumb_height == 5 && tiny.thumb_y == 10, "minimum thumb clamps to tiny track");
+    check(S.offset_at(tiny, 500, 10, 0) == 0, "tiny track avoids division by zero");
+    zero := S.compute(0, 0, 12, 0, 30, 10, 1);
+    check(
+        zero.height == 0 && zero.thumb_height == 0 && S.offset_at(zero, 10, 50, 0) == 0,
+        "zero height is safe"
+    );
+    negative := S.compute(0, 0, -12, -50, 0, -10, -1);
+    check(negative.width == 0 && negative.height == 0, "negative dimensions clamp to zero");
+    check(S.page_direction(negative, 0) == 0, "invalid dimensions cannot page");
+    extreme := S.compute(0, 0, 12, 2147483647, 2147483647, 2147483647, 1073741824);
+    check(
+        extreme.thumb_y >= 0 && extreme.thumb_height > 0,
+        "large dimensions use wide intermediates"
+    );
     print("scrollbar tests passed: geometry, dragging, paging, bounds, tiny tracks.\n");
 }

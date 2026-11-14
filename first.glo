@@ -30,162 +30,231 @@ usage :: () {
     );
 }
 
-directory :: (path:str) {
-    if create_directory(path,.make_parent=true)== {
+directory :: (path: str) {
+    if create_directory(path, .make_parent = true) == {
     case .Ok;
-    case .Err(error); print("wst build: could not create {}: {}\n",path,error.kind); exit(1);
+    case .Err(error);
+        print("wst build: could not create {}: {}\n", path, error.kind);
+        exit(1);
     }
 }
 
-required :: (path:str) {
+required :: (path: str) {
     if !is_regular_file(path).unwrap_or(false) {
-        print("wst build: required file is missing: {}\n",path); exit(1);
+        print("wst build: required file is missing: {}\n", path);
+        exit(1);
     }
 }
 
-compile :: (root:str,source:str,name:str,gui:bool) {
-    profile:=Build_Profile.create(name);
-    options:=profile.options();
-    options.output=.Executable;
-    options.output_directory=path_join(root,"build");
-    options.output_name=name;
-    options.optimization_level=.O3;
-    options.add_compiler_arg(tprint("--cache-dir={}",path_join(root,"build/cache")));
+compile :: (root: str, source: str, name: str, gui: bool) {
+    profile := Build_Profile.create(name);
+    options := profile.options();
+    options.output = .Executable;
+    options.output_directory = path_join(root, "build");
+    options.output_name = name;
+    options.optimization_level = .O3;
+    options.add_compiler_arg(tprint("--cache-dir={}", path_join(root, "build/cache")));
     if gui options.add_linker_arg("/subsystem:windows");
     profile.set_options(options);
-    if compile_file(path_join(root,source),profile)== {
-    case .Ok(log); print("{}",log); log.free();
-    case .Err(error); print("wst build: {}\n{}\n",source,error.message); exit(error.status);
+    if compile_file(path_join(root, source), profile) == {
+    case .Ok(log);
+        print("{}", log);
+        log.free();
+    case .Err(error);
+        print("wst build: {}\n{}\n", source, error.message);
+        exit(error.status);
     }
 }
 
-build :: (root:str,console:bool=false) {
+build :: (root: str, console: bool = false) {
     // Validate notices before compiling or creating output. Every distributable
     // build keeps the project license and complete upstream notices beside it.
-    for file:.["LICENSE","THIRD_PARTY_NOTICES"] required(path_join(root,file));
-    directory(path_join(root,"build"));
-    compile(root,"src/main.glo","wst",!console);
-    for file:.["LICENSE","THIRD_PARTY_NOTICES"] {
-        source:=path_join(root,file); destination:=path_join(root,tprint("build/{}",file));
-        if copy_file(source,destination,.Overwrite)== {
+    for file: .["LICENSE", "THIRD_PARTY_NOTICES"] required(path_join(root, file));
+    directory(path_join(root, "build"));
+    compile(root, "src/main.glo", "wst", !console);
+    for file: .["LICENSE", "THIRD_PARTY_NOTICES"] {
+        source := path_join(root, file);
+        destination := path_join(root, tprint("build/{}", file));
+        if copy_file(source, destination, .Overwrite) == {
         case .Ok;
-        case .Err(error); print("wst build: could not copy {}: {}\n",file,error.kind); exit(1);
+        case .Err(error);
+            print("wst build: could not copy {}: {}\n", file, error.kind);
+            exit(1);
         }
     }
-    print("Built {}\n",path_join(root,"build/wst.exe"));
+    print("Built {}\n", path_join(root, "build/wst.exe"));
 }
 
-execute :: (root:str,executable:str,args:[]const str) {
-    command:=Command.command_make(executable);
+execute :: (root: str, executable: str, args: []const str) {
+    command := Command.command_make(executable);
     defer command.destroy();
     command.set_working_directory(root);
-    command.no_window=true;
-    for arg:args command.add_argument(arg);
-    if command.run()== {
+    command.no_window = true;
+    for arg: args command.add_argument(arg);
+    if command.run() == {
     case .Ok(finished);
-        if !finished.status.exited || finished.status.code!=0 {
-            print("wst build: {} failed (exit code {})\n",executable,finished.status.code);
-            if finished.status.code!=0 exit(finished.status.code);
+        if !finished.status.exited || finished.status.code != 0 {
+            print("wst build: {} failed (exit code {})\n", executable, finished.status.code);
+            if finished.status.code != 0 exit(finished.status.code);
             exit(1);
         }
     case .Err(error);
-        if error.child.valid _:=error.child.close();
-        print("wst build: could not run {}\n",executable); exit(1);
+        if error.child.valid _ := error.child.close();
+        print("wst build: could not run {}\n", executable);
+        exit(1);
     }
 }
 
-text_before :: (a:str,b:str)->bool {
-    n:=a.count; if b.count<n n=b.count;
-    for i:0..n if a[i]!=b[i] return a[i]<b[i];
-    return a.count<b.count;
+text_before :: (a: str, b: str) -> bool {
+    n := a.count;
+    if b.count < n n = b.count;
+    for i: 0..n if a[i] != b[i] return a[i] < b[i];
+    return a.count < b.count;
 }
 
-tests :: (root:str) {
+tests :: (root: str) {
     build(root);
-    names:[..]str; defer names.free();
-    if read_directory(path_join(root,"tests"))== {
+    names: [..]str;
+    defer names.free();
+    if read_directory(path_join(root, "tests")) == {
     case .Ok(list);
         defer list.free();
-        for entry:list.entries {
-            name:=entry.name;
-            if name.count>9 && name[name.count-9..]=="_test.glo" &&
-                is_regular_file(path_join(root,tprint("tests/{}",name))).unwrap_or(false)
+        for entry: list.entries {
+            name := entry.name;
+            if name.count > 9 && name[name.count - 9..] == "_test.glo" &&
+               is_regular_file(path_join(root, tprint("tests/{}", name))).unwrap_or(false)
                 names.push(name.clone());
         }
-    case .Err(error); print("wst test: could not read tests/: {}\n",error.kind); exit(1);
+    case .Err(error);
+        print("wst test: could not read tests/: {}\n", error.kind);
+        exit(1);
     }
-    defer { for name:names name.free(); }
-    if names.count==0 { print("wst test: no tests/*_test.glo sources found\n"); exit(1); }
-    for i:1..names.count {
-        value:=names[i]; j:=i;
-        while j>0 && text_before(value,names[j-1]) { names[j]=names[j-1]; j-=1; }
-        names[j]=value;
+    defer {
+        for name: names name.free();
     }
-    for name:names {
-        print("Compiling {}\n",name);
-        stem:=name[..(name.count-4)];
-        compile(root,tprint("tests/{}",name),stem,false);
-        execute(root,path_join(root,tprint("build/{}.exe",stem)),.[]);
+    if names.count == 0 {
+        print("wst test: no tests/*_test.glo sources found\n");
+        exit(1);
     }
-    execute(root,path_join(root,"build/wst.exe"),.["--smoke-test"]);
-    print("All {} test programs and the application smoke test passed.\n",names.count);
+    for i: 1..names.count {
+        value := names[i];
+        j := i;
+        while j > 0 && text_before(value, names[j - 1]) {
+            names[j] = names[j - 1];
+            j -= 1;
+        }
+        names[j] = value;
+    }
+    for name: names {
+        print("Compiling {}\n", name);
+        stem := name[..(name.count - 4)];
+        compile(root, tprint("tests/{}", name), stem, false);
+        execute(root, path_join(root, tprint("build/{}.exe", stem)), .[]);
+    }
+    execute(root, path_join(root, "build/wst.exe"), .["--smoke-test"]);
+    print("All {} test programs and the application smoke test passed.\n", names.count);
 }
 
-icons :: (root:str,output:str) {
-    required(path_join(root,"assets/wst.svg"));
-    directory(path_join(root,"build"));
-    compile(root,"tools/build_icon.glo","wst-icon-builder",false);
-    arguments: [4]str=.["--source",path_join(root,"assets/wst.svg"),"--output-dir",path_join(root,output)];
-    execute(root,path_join(root,"build/wst-icon-builder.exe"),arguments[..]);
+icons :: (root: str, output: str) {
+    required(path_join(root, "assets/wst.svg"));
+    directory(path_join(root, "build"));
+    compile(root, "tools/build_icon.glo", "wst-icon-builder", false);
+    arguments: [4]str = .[
+        "--source",
+        path_join(root, "assets/wst.svg"),
+        "--output-dir",
+        path_join(root, output)
+    ];
+    execute(root, path_join(root, "build/wst-icon-builder.exe"), arguments[..]);
 }
 
 task :: () {
     set_current_output(false);
-    args:=get_cmdline_args();
-    action:str="build"; begin:ssize;
-    if args.count>0 { action=args[0]; begin=1; }
-    if #partial action== {
-    case "help","--help","-h"; usage(); return;
+    args := get_cmdline_args();
+    action: str = "build";
+    begin: ssize;
+    if args.count > 0 {
+        action = args[0];
+        begin = 1;
     }
-    console:bool; version:str="dev"; icon_output:str="assets";
-    if action=="build" {
-        if args.count==2 && args[1]=="--console" console=true;
-        else if args.count>begin { usage(); exit(1); }
-    } else if action=="release" {
-        if args.count==3 && args[1]=="--version" version=args[2];
-        else if args.count>1 { usage(); exit(1); }
-        if !Release.valid_version(version) { print("wst release: invalid version label\n"); exit(1); }
-    } else if action=="icon" {
-        if args.count==3 && args[1]=="--output-dir" && args[2].count>0 icon_output=args[2];
-        else if args.count>1 { usage(); exit(1); }
-    } else if action=="test" {
-        if args.count>1 { usage(); exit(1); }
-    } else if action!="run" { print("wst build: unknown task '{}'\n",action); usage(); exit(1); }
-    #if EXEC.os!=.Windows || EXEC.cpu!=.X86_64 || OUT.os!=.Windows || OUT.cpu!=.X86_64 || OUT.abi!=.Msvc {
-        print("wst build tasks require native Windows x64 MSVC Glosso\n"); exit(1);
+    if #partial action == {
+    case "help", "--help", "-h";
+        usage();
+        return;
     }
-    root:str; previous:str;
-    if System.absolute(path_dirname(#source_location.filename))== {
-    case .Ok(path); root=path;
-    case .Err(error); print("wst build: cannot resolve project directory: {}\n",error.kind); exit(1);
+    console: bool;
+    version: str = "dev";
+    icon_output: str = "assets";
+    if action == "build" {
+        if args.count == 2 && args[1] == "--console" console = true;
+        else if args.count > begin {
+            usage();
+            exit(1);
+        }
+    } else if action == "release" {
+        if args.count == 3 && args[1] == "--version" version = args[2];
+        else if args.count > 1 {
+            usage();
+            exit(1);
+        }
+        if !Release.valid_version(version) {
+            print("wst release: invalid version label\n");
+            exit(1);
+        }
+    } else if action == "icon" {
+        if args.count == 3 && args[1] == "--output-dir" && args[2].count > 0 icon_output = args[2];
+        else if args.count > 1 {
+            usage();
+            exit(1);
+        }
+    } else if action == "test" {
+        if args.count > 1 {
+            usage();
+            exit(1);
+        }
+    } else if action != "run" {
+        print("wst build: unknown task '{}'\n", action);
+        usage();
+        exit(1);
+    }
+    #if EXEC.os != .Windows || EXEC.cpu != .X86_64 || OUT.os != .Windows || OUT.cpu != .X86_64 || OUT.abi != .Msvc {
+        print("wst build tasks require native Windows x64 MSVC Glosso\n");
+        exit(1);
+    }
+    root: str;
+    previous: str;
+    if System.absolute(path_dirname(#source_location.filename)) == {
+    case .Ok(path);
+        root = path;
+    case .Err(error);
+        print("wst build: cannot resolve project directory: {}\n", error.kind);
+        exit(1);
     }
     defer root.free();
-    if System.current_path()== {
-    case .Ok(path); previous=path;
-    case .Err(error); print("wst build: cannot read working directory: {}\n",error.kind); exit(1);
+    if System.current_path() == {
+    case .Ok(path);
+        previous = path;
+    case .Err(error);
+        print("wst build: cannot read working directory: {}\n", error.kind);
+        exit(1);
     }
     defer previous.free();
-    if System.set_current_directory(root).is_err() { print("wst build: cannot enter {}\n",root); exit(1); }
-    defer { _:=System.set_current_directory(previous); }
-    if action=="build" build(root,console);
-    else if action=="test" tests(root);
-    else if action=="icon" icons(root,icon_output);
-    else if action=="release" {
+    if System.set_current_directory(root).is_err() {
+        print("wst build: cannot enter {}\n", root);
+        exit(1);
+    }
+    defer {
+        _ := System.set_current_directory(previous);
+    }
+    if action == "build" build(root, console);
+    else if action == "test" tests(root);
+    else if action == "icon" icons(root, icon_output);
+    else if action == "release" {
         build(root);
-        if !Release.package(root,version) exit(1);
-    } else if action=="run" {
+        if !Release.package(root, version) exit(1);
+    } else if action == "run" {
         build(root);
-        execute(root,path_join(root,"build/wst.exe"),args[begin..]);
+        execute(root, path_join(root, "build/wst.exe"), args[begin..]);
     }
 }
 

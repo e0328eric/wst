@@ -2,8 +2,10 @@
 //! through Windows FFI. Gui owns all window creation, input and rendering.
 P :: #import "windows_pty.glo";
 GN :: #import "Gui/Native";
+Presentation :: #import "gui_presentation.glo";
 #import "Strings/Utf8";
 #import "Strings/Utf16";
+#import "Math/Core";
 
 user32 :: #library,system "user32";
 kernel32 :: #library,system "kernel32";
@@ -11,343 +13,584 @@ scene :: #library,system "glosso_scene_runtime";
 dwmapi :: #library,system "dwmapi";
 
 Handle :: usize;
-Rect :: struct #c_call { left:s32; top:s32; right:s32; bottom:s32; }
-Point :: struct #c_call { x:s32; y:s32; }
-Call_Message :: struct #c_call { parameter:ssize; detail:usize; message:u32; window:Handle; }
-Hook :: #fn_ptr(code:s32,detail:usize,parameter:ssize)->ssize #c_call;
+Rect :: struct #c_call {
+    left: s32;
+    top: s32;
+    right: s32;
+    bottom: s32;
+}
+Point :: struct #c_call {
+    x: s32;
+    y: s32;
+}
+Call_Message :: struct #c_call {
+    parameter: ssize;
+    detail: usize;
+    message: u32;
+    window: Handle;
+}
+Hook :: #fn_ptr(code: s32, detail: usize, parameter: ssize) -> ssize #c_call;
 
 // Gui currently exposes an opaque token. Keep the dependency on its pinned
 // Windows backend accessor here until std.Gui offers a public native handle.
-platform_window :: ()->Handle #foreign scene "platform_window";
-SetLastError :: (code:u32) #foreign kernel32 "SetLastError";
-GetCurrentThreadId :: ()->u32 #foreign kernel32 "GetCurrentThreadId";
-GetConsoleWindow :: ()->Handle #foreign kernel32 "GetConsoleWindow";
-MulDiv :: (number:s32,numerator:s32,denominator:s32)->s32 #foreign kernel32 "MulDiv";
-SetWindowsHookExW :: (kind:s32,callback:Hook,module:Handle,thread:u32)->Handle #foreign user32 "SetWindowsHookExW";
-UnhookWindowsHookEx :: (hook:Handle)->s32 #foreign user32 "UnhookWindowsHookEx";
-CallNextHookEx :: (hook:Handle,code:s32,detail:usize,parameter:ssize)->ssize #foreign user32 "CallNextHookEx";
-MessageBoxW :: (window:Handle,text:[*]const u16,title:[*]const u16,flags:u32)->s32 #foreign user32 "MessageBoxW";
-GetFocus :: ()->Handle #foreign user32 "GetFocus";
-GetDpiForWindow :: (window:Handle)->u32 #foreign user32 "GetDpiForWindow";
-GetSystemMetricsForDpi :: (index:s32,dpi:u32)->s32 #foreign user32 "GetSystemMetricsForDpi";
-GetWindowLongPtrW :: (window:Handle,index:s32)->ssize #foreign user32 "GetWindowLongPtrW";
-SetWindowLongPtrW :: (window:Handle,index:s32,value:ssize)->ssize #foreign user32 "SetWindowLongPtrW";
-GetLastError :: ()->u32 #foreign kernel32 "GetLastError";
-PostMessageW :: (window:Handle,message:u32,detail:usize,parameter:ssize)->s32 #foreign user32 "PostMessageW";
-SendMessageW :: (window:Handle,message:u32,detail:usize,parameter:ssize)->ssize #foreign user32 "SendMessageW";
-ShowWindow :: (window:Handle,command:s32)->s32 #foreign user32 "ShowWindow";
-IsZoomed :: (window:Handle)->s32 #foreign user32 "IsZoomed";
-ClientToScreen :: (window:Handle,point:*Point)->s32 #foreign user32 "ClientToScreen";
-GetSystemMenu :: (window:Handle,revert:s32)->Handle #foreign user32 "GetSystemMenu";
-TrackPopupMenuEx :: (menu:Handle,flags:u32,x:s32,y:s32,window:Handle,parameters:usize)->u32 #foreign user32 "TrackPopupMenuEx";
-EnableMenuItem :: (menu:Handle,item:u32,flags:u32)->s32 #foreign user32 "EnableMenuItem";
-GetDoubleClickTime :: ()->u32 #foreign user32 "GetDoubleClickTime";
-DwmSetWindowAttribute :: (window:Handle,attribute:u32,value:*const void,bytes:u32)->s32 #foreign dwmapi "DwmSetWindowAttribute";
-GetMenu :: (window:Handle)->Handle #foreign user32 "GetMenu";
-AdjustWindowRectExForDpi :: (rect:*Rect,style:u32,menu:s32,extended:u32,dpi:u32)->s32 #foreign user32 "AdjustWindowRectExForDpi";
-GetClientRect :: (window:Handle,rect:*Rect)->s32 #foreign user32 "GetClientRect";
-SetWindowPos :: (window:Handle,after:Handle,x:s32,y:s32,width:s32,height:s32,flags:u32)->s32 #foreign user32 "SetWindowPos";
-SystemParametersInfoW :: (action:u32,parameter:u32,result:*void,flags:u32)->s32 #foreign user32 "SystemParametersInfoW";
-GetCapture :: ()->Handle #foreign user32 "GetCapture";
-GetCursorPos :: (point:*Point)->s32 #foreign user32 "GetCursorPos";
-WindowFromPoint :: (point:Point)->Handle #foreign user32 "WindowFromPoint";
-SetCursor :: (cursor:Handle)->Handle #foreign user32 "SetCursor";
-LoadCursorW :: (instance:Handle,name:[*]const u16)->Handle #foreign user32 "LoadCursorW";
-ReleaseCapture :: ()->s32 #foreign user32 "ReleaseCapture";
-GetKeyboardState :: (state:[*]u8)->s32 #foreign user32 "GetKeyboardState";
-GetKeyboardLayout :: (thread:u32)->Handle #foreign user32 "GetKeyboardLayout";
-MapVirtualKeyExW :: (key:u32,mapping:u32,layout:Handle)->u32 #foreign user32 "MapVirtualKeyExW";
-ToUnicodeEx :: (key:u32,scan:u32,state:[*]const u8,output:[*]u16,capacity:s32,flags:u32,layout:Handle)->s32 #foreign user32 "ToUnicodeEx";
+platform_window :: () -> Handle #foreign scene "platform_window";
+SetLastError :: (code: u32) #foreign kernel32 "SetLastError";
+GetCurrentThreadId :: () -> u32 #foreign kernel32 "GetCurrentThreadId";
+GetConsoleWindow :: () -> Handle #foreign kernel32 "GetConsoleWindow";
+MulDiv :: (number: s32, numerator: s32, denominator: s32) -> s32 #foreign kernel32 "MulDiv";
+SetWindowsHookExW :: (kind: s32, callback: Hook, module: Handle, thread: u32) -> Handle #foreign user32 "SetWindowsHookExW";
+UnhookWindowsHookEx :: (hook: Handle) -> s32 #foreign user32 "UnhookWindowsHookEx";
+CallNextHookEx :: (hook: Handle, code: s32, detail: usize, parameter: ssize) -> ssize #foreign user32 "CallNextHookEx";
+MessageBoxW :: (window: Handle, text: [*]const u16, title: [*]const u16, flags: u32) -> s32 #foreign user32 "MessageBoxW";
+GetFocus :: () -> Handle #foreign user32 "GetFocus";
+GetDpiForWindow :: (window: Handle) -> u32 #foreign user32 "GetDpiForWindow";
+GetSystemMetricsForDpi :: (index: s32, dpi: u32) -> s32 #foreign user32 "GetSystemMetricsForDpi";
+GetWindowLongPtrW :: (window: Handle, index: s32) -> ssize #foreign user32 "GetWindowLongPtrW";
+SetWindowLongPtrW :: (window: Handle, index: s32, value: ssize) -> ssize #foreign user32 "SetWindowLongPtrW";
+SetLayeredWindowAttributes :: (window: Handle, key: u32, alpha: u8, flags: u32) -> s32 #foreign user32 "SetLayeredWindowAttributes";
+GetLayeredWindowAttributes :: (window: Handle, key: *u32, alpha: *u8, flags: *u32) -> s32 #foreign user32 "GetLayeredWindowAttributes";
+IsWindow :: (window: Handle) -> s32 #foreign user32 "IsWindow";
+GetWindowThreadProcessId :: (window: Handle, process: ?*u32) -> u32 #foreign user32 "GetWindowThreadProcessId";
+GetLastError :: () -> u32 #foreign kernel32 "GetLastError";
+PostMessageW :: (window: Handle, message: u32, detail: usize, parameter: ssize) -> s32 #foreign user32 "PostMessageW";
+SendMessageW :: (window: Handle, message: u32, detail: usize, parameter: ssize) -> ssize #foreign user32 "SendMessageW";
+ShowWindow :: (window: Handle, command: s32) -> s32 #foreign user32 "ShowWindow";
+IsZoomed :: (window: Handle) -> s32 #foreign user32 "IsZoomed";
+ClientToScreen :: (window: Handle, point: *Point) -> s32 #foreign user32 "ClientToScreen";
+GetSystemMenu :: (window: Handle, revert: s32) -> Handle #foreign user32 "GetSystemMenu";
+TrackPopupMenuEx :: (menu: Handle, flags: u32, x: s32, y: s32, window: Handle, parameters: usize) -> u32 #foreign user32 "TrackPopupMenuEx";
+EnableMenuItem :: (menu: Handle, item: u32, flags: u32) -> s32 #foreign user32 "EnableMenuItem";
+GetDoubleClickTime :: () -> u32 #foreign user32 "GetDoubleClickTime";
+DwmSetWindowAttribute :: (window: Handle, attribute: u32, value: *const void, bytes: u32) -> s32 #foreign dwmapi "DwmSetWindowAttribute";
+GetMenu :: (window: Handle) -> Handle #foreign user32 "GetMenu";
+AdjustWindowRectExForDpi :: (rect: *Rect, style: u32, menu: s32, extended: u32, dpi: u32) -> s32 #foreign user32 "AdjustWindowRectExForDpi";
+GetClientRect :: (window: Handle, rect: *Rect) -> s32 #foreign user32 "GetClientRect";
+SetWindowPos :: (window: Handle, after: Handle, x: s32, y: s32, width: s32, height: s32, flags: u32) -> s32 #foreign user32 "SetWindowPos";
+SystemParametersInfoW :: (action: u32, parameter: u32, result: *void, flags: u32) -> s32 #foreign user32 "SystemParametersInfoW";
+GetCapture :: () -> Handle #foreign user32 "GetCapture";
+GetCursorPos :: (point: *Point) -> s32 #foreign user32 "GetCursorPos";
+WindowFromPoint :: (point: Point) -> Handle #foreign user32 "WindowFromPoint";
+SetCursor :: (cursor: Handle) -> Handle #foreign user32 "SetCursor";
+LoadCursorW :: (instance: Handle, name: [*]const u16) -> Handle #foreign user32 "LoadCursorW";
+ReleaseCapture :: () -> s32 #foreign user32 "ReleaseCapture";
+GetKeyboardState :: (state: [*]u8) -> s32 #foreign user32 "GetKeyboardState";
+GetKeyboardLayout :: (thread: u32) -> Handle #foreign user32 "GetKeyboardLayout";
+MapVirtualKeyExW :: (key: u32, mapping: u32, layout: Handle) -> u32 #foreign user32 "MapVirtualKeyExW";
+ToUnicodeEx :: (
+    key: u32,
+    scan: u32,
+    state: [*]const u8,
+    output: [*]u16,
+    capacity: s32,
+    flags: u32,
+    layout: Handle
+) -> s32 #foreign user32 "ToUnicodeEx";
 
-Release_Queue :: struct { entries:[256]u8; head:u32; tail:u32; overflow:bool; }
-observation_hook:Handle;
-observed_window:Handle;
-held_buttons:u32;
-release_queues:[3]Release_Queue;
-chrome_window:Handle;
-chrome_background:u32;
-chrome_theme_valid:bool;
-drag_tick:u64;
-drag_point:Point;
+Release_Queue :: struct {
+    entries: [256]u8;
+    head: u32;
+    tail: u32;
+    overflow: bool;
+}
+observation_hook: Handle;
+observed_window: Handle;
+held_buttons: u32;
+release_queues: [3]Release_Queue;
+chrome_window: Handle;
+chrome_background: u32;
+chrome_theme_valid: bool;
+opacity_window: Handle;
+opacity_value: f32 = 1;
+opacity_owns_layered: bool;
+opacity_original_key: u32;
+opacity_original_alpha: u8;
+opacity_original_flags: u32;
+drag_tick: u64;
+drag_point: Point;
 
-release_push :: (button:u32,kind:u8) {
-    queue:=&release_queues[button];
-    next:=(queue.head+1)%256;
-    if next==queue.tail { queue.overflow=true; return; }
-    queue.entries[queue.head]=kind; queue.head=next;
+release_push :: (button: u32, kind: u8) {
+    queue := &release_queues[button];
+    next := (queue.head + 1) % 256;
+    if next == queue.tail {
+        queue.overflow = true;
+        return;
+    }
+    queue.entries[queue.head] = kind;
+    queue.head = next;
 }
 cancelled_buttons :: () {
-    for button:cast(u32)0..3 {
-        if (held_buttons&(1<<button))!=0 release_push(button,2);
+    for button: cast(u32) 0..3 {
+        if (held_buttons & (1 << button)) != 0 release_push(button, 2);
     }
-    held_buttons=0;
+    held_buttons = 0;
 }
-observe_messages :: (code:s32,detail:usize,parameter:ssize)->ssize #c_call {
-    if code>=0 {
-        message:=cast(*Call_Message)parameter;
-        if message.window==observed_window {
-            button:u32=3;
-            if message.message== {
-            case 16#201,16#203; held_buttons|=1; // left down/double-click
-            case 16#204,16#206; held_buttons|=2;
-            case 16#207,16#209; held_buttons|=4;
-            case 16#202; button=0;
-            case 16#205; button=1;
-            case 16#208; button=2;
-            case 16#215; if cast(Handle)message.parameter!=observed_window cancelled_buttons();
-            case 16#1f,16#08,16#10,16#02; cancelled_buttons();
+observe_messages :: (code: s32, detail: usize, parameter: ssize) -> ssize #c_call {
+    if code >= 0 {
+        message := cast(*Call_Message) parameter;
+        if message.window == observed_window {
+            button: u32 = 3;
+            if message.message == {
+            case 16#201, 16#203;
+                held_buttons |= 1; // left down/double-click
+            case 16#204, 16#206;
+                held_buttons |= 2;
+            case 16#207, 16#209;
+                held_buttons |= 4;
+            case 16#202;
+                button = 0;
+            case 16#205;
+                button = 1;
+            case 16#208;
+                button = 2;
+            case 16#215;
+                if cast(Handle) message.parameter != observed_window cancelled_buttons();
+            case 16#1f, 16#08, 16#10, 16#02;
+                cancelled_buttons();
             else;
             }
-            if button<3 && (held_buttons&(1<<button))!=0 {
-                release_push(button,1); held_buttons&= ~(1<<button);
+            if button < 3 && (held_buttons & (1 << button)) != 0 {
+                release_push(button, 1);
+                held_buttons &= ~(1 << button);
             }
         }
     }
     // Observation only. Gui remains the sole input and capture owner.
-    return CallNextHookEx(observation_hook,code,detail,parameter);
+    return CallNextHookEx(observation_hook, code, detail, parameter);
 }
-win_error :: (code:u32,operation:cstr)->s32 { SetLastError(code); return P.windows_error(operation); }
+win_error :: (code: u32, operation: cstr) -> s32 {
+    SetLastError(code);
+    return P.windows_error(operation);
+}
+
+extended_style :: (window: Handle, value: ssize) -> bool {
+    SetLastError(0);
+    previous := SetWindowLongPtrW(window, -20, value);
+    return previous != 0 || GetLastError() == 0;
+}
+reset_opacity :: () {
+    if opacity_window != 0 && IsWindow(opacity_window) != 0 &&
+        GetWindowThreadProcessId(opacity_window, null) == GetCurrentThreadId() {
+        if opacity_owns_layered {
+            style := GetWindowLongPtrW(opacity_window, -20);
+            if (style & 16#80000) != 0
+                _ := extended_style(opacity_window, style & ~cast(ssize) 16#80000);
+        } else if opacity_original_flags != 0 {
+            _ := SetLayeredWindowAttributes(
+                opacity_window,
+                opacity_original_key,
+                opacity_original_alpha,
+                opacity_original_flags
+            );
+        }
+    }
+    opacity_window = 0;
+    opacity_value = 1;
+    opacity_owns_layered = false;
+    opacity_original_key = 0;
+    opacity_original_alpha = 0;
+    opacity_original_flags = 0;
+}
 
 #public {
-gui_bind :: ()->s32 {
-    window:=platform_window();
-    if window==0 return win_error(1400,"Attaching Gui window services");
-    if observation_hook!=0 && observed_window==window return 1;
-    gui_unbind(); observed_window=window;
-    observation_hook=SetWindowsHookExW(4,observe_messages,0,GetCurrentThreadId());
-    if observation_hook==0 { observed_window=0; return P.windows_error("Observing Gui pointer cancellation"); }
+
+gui_bind :: () -> s32 {
+    window := platform_window();
+    if window == 0 return win_error(1400, "Attaching Gui window services");
+    if Presentation.composed(window) != 1
+        return win_error(50, "Attaching opacity-compatible presentation");
+    if observation_hook != 0 && observed_window == window return 1;
+    gui_unbind();
+    observed_window = window;
+    observation_hook = SetWindowsHookExW(4, observe_messages, 0, GetCurrentThreadId());
+    if observation_hook == 0 {
+        observed_window = 0;
+        return P.windows_error("Observing Gui pointer cancellation");
+    }
     return 1;
 }
+presentation_composed :: () -> bool {
+    return Presentation.composed(platform_window()) == 1;
+}
 gui_unbind :: () {
-    if observation_hook!=0 _:=UnhookWindowsHookEx(observation_hook);
-    observation_hook=0; observed_window=0; held_buttons=0;
-    empty:[3]Release_Queue; release_queues=empty;
-    chrome_window=0; chrome_theme_valid=false; drag_tick=0;
+    reset_opacity();
+    if observation_hook != 0 _ := UnhookWindowsHookEx(observation_hook);
+    observation_hook = 0;
+    observed_window = 0;
+    held_buttons = 0;
+    empty: [3]Release_Queue;
+    release_queues = empty;
+    chrome_window = 0;
+    chrome_theme_valid = false;
+    drag_tick = 0;
+}
+
+/// Requested opacity of the current window; native alpha is rounded to 8 bits.
+window_opacity :: () -> f32 {
+    if opacity_window != platform_window() return 1;
+    return opacity_value;
+}
+
+/// Whole-window alpha, including text and chrome. Preserve all unrelated style
+/// bits, and remove WS_EX_LAYERED only when this service originally added it.
+set_window_opacity :: (value: f32) -> s32 {
+    if !is_finite(value) || value < 0.1 || value > 1 return win_error(87, "Setting window opacity");
+    window := platform_window();
+    if window == 0 || IsWindow(window) == 0 return win_error(1400, "Setting window opacity");
+    if opacity_window != 0 && opacity_window != window    reset_opacity();
+    if opacity_window == window && opacity_value == value return 1;
+    if opacity_window == 0 && value == 1                  return 1;
+
+    SetLastError(0);
+    style := GetWindowLongPtrW(window, -20);
+    if style == 0 && GetLastError() != 0 return P.windows_error("Reading window opacity style");
+    layered := (style & 16#80000) != 0;
+    old_key: u32;
+    old_alpha: u8;
+    old_flags: u32;
+    if layered && GetLayeredWindowAttributes(window, &old_key, &old_alpha, &old_flags) == 0
+        return P.windows_error("Reading window opacity");
+
+    owns := opacity_owns_layered;
+    if opacity_window == 0 owns = !layered;
+    // A fully opaque window returns to the ordinary presentation path. Keep
+    // a pre-existing layering style, whose original attributes are restored
+    // when this service unbinds from the window.
+    if value == 1 && owns {
+        if layered && !extended_style(window, style & ~cast(ssize) 16#80000)
+            return P.windows_error("Restoring opaque window style");
+    } else {
+        if !layered && !extended_style(window, style | 16#80000)
+            return P.windows_error("Enabling window opacity");
+        alpha := cast(u8)(value * 255 + 0.5);
+        key: u32;
+        flags: u32 = 2; // LWA_ALPHA, without click-through or a color key.
+        if opacity_window == window && !owns {
+            key = opacity_original_key;
+            flags |= opacity_original_flags;
+        } else if layered && opacity_window == 0 {
+            key = old_key;
+            flags |= old_flags;
+        }
+        if SetLayeredWindowAttributes(window, key, alpha, flags) == 0 {
+            code := GetLastError();
+            if !layered _ := extended_style(window, style);
+            else        _ := SetLayeredWindowAttributes(window, old_key, old_alpha, old_flags);
+            return win_error(code, "Setting window opacity");
+        }
+    }
+    if opacity_window == 0 {
+        opacity_window = window;
+        opacity_owns_layered = owns;
+        if layered {
+            opacity_original_key = old_key;
+            opacity_original_alpha = old_alpha;
+            opacity_original_flags = old_flags;
+        }
+    }
+    opacity_value = value;
+    return 1;
 }
 
 /// Client-side header with the standard resizable frame and system commands.
 /// The Gui window procedure and event/render ownership are left intact.
-configure_chrome :: (background:u32)->s32 {
-    window:=platform_window();
-    if window==0 return win_error(1400,"Styling terminal window");
-    if chrome_window!=window {
-        style:=GetWindowLongPtrW(window,-16);
+configure_chrome :: (background: u32) -> s32 {
+    window := platform_window();
+    if window == 0 return win_error(1400, "Styling terminal window");
+    if chrome_window != window {
+        style := GetWindowLongPtrW(window, -16);
         // Retain thick resize borders, system menu and native min/max capability.
-        replacement:=style & ~cast(ssize)16#00c00000; // WS_CAPTION
+        replacement := style & ~cast(ssize) 16#00c00000; // WS_CAPTION
         SetLastError(0);
-        previous:=SetWindowLongPtrW(window,-16,replacement);
-        if previous==0 && GetLastError()!=0 return P.windows_error("Styling terminal window");
-        if SetWindowPos(window,0,0,0,0,0,16#37)==0 { // FRAMECHANGED, no move/size/z-order/activate
-            code:=GetLastError(); _:=SetWindowLongPtrW(window,-16,style);
-            SetLastError(code); return P.windows_error("Updating terminal frame");
+        previous := SetWindowLongPtrW(window, -16, replacement);
+        if previous == 0 && GetLastError() != 0 return P.windows_error("Styling terminal window");
+        if SetWindowPos(window, 0, 0, 0, 0, 0, 16#37) == 0 { // FRAMECHANGED, no move/size/z-order/activate
+            code := GetLastError();
+            _ := SetWindowLongPtrW(window, -16, style);
+            SetLastError(code);
+            return P.windows_error("Updating terminal frame");
         }
-        chrome_window=window; chrome_theme_valid=false;
+        chrome_window = window;
+        chrome_theme_valid = false;
     }
-    if chrome_theme_valid && chrome_background==background return 1;
-    red:=(background>>16)&255; green:=(background>>8)&255; blue:=background&255;
-    dark:s32; if red*299+green*587+blue*114<128000 dark=1;
+    if chrome_theme_valid && chrome_background == background return 1;
+    red := (background >> 16) & 255;
+    green := (background >> 8) & 255;
+    blue := background & 255;
+    dark: s32;
+    if red * 299 + green * 587 + blue * 114 < 128000 dark = 1;
     // These optional DWM attributes gracefully fall back on older Windows.
-    _:=DwmSetWindowAttribute(window,20,cast(*const void)&dark,4);
-    corner:s32=2; _:=DwmSetWindowAttribute(window,33,cast(*const void)&corner,4);
-    edge:=((red*4+129)/5)|(((green*4+161)/5)<<8)|(((blue*4+193)/5)<<16);
-    _:=DwmSetWindowAttribute(window,34,cast(*const void)&edge,4);
-    caption:=red|(green<<8)|(blue<<16);
-    _:=DwmSetWindowAttribute(window,35,cast(*const void)&caption,4);
-    chrome_background=background; chrome_theme_valid=true;
+    _ := DwmSetWindowAttribute(window, 20, cast(*const void) &dark, 4);
+    corner: s32 = 2;
+    _ := DwmSetWindowAttribute(window, 33, cast(*const void) &corner, 4);
+    edge := ((red * 4 + 129) / 5) | (((green * 4 + 161) / 5) << 8) | (((blue * 4 + 193) / 5) << 16);
+    _ := DwmSetWindowAttribute(window, 34, cast(*const void) &edge, 4);
+    caption := red | (green << 8) | (blue << 16);
+    _ := DwmSetWindowAttribute(window, 35, cast(*const void) &caption, 4);
+    chrome_background = background;
+    chrome_theme_valid = true;
     return 1;
 }
-window_show :: ()->s32 {
-    window:=platform_window();
-    if window==0 return win_error(1400,"Showing terminal window");
+window_show :: () -> s32 {
+    window := platform_window();
+    if window == 0 return win_error(1400, "Showing terminal window");
     // SW_SHOWDEFAULT also honors STARTF_USESHOWWINDOW after frame setup. Tests
     // and launchers can request SW_HIDE without the frontend exposing a window.
-    _:=ShowWindow(window,10);
+    _ := ShowWindow(window, 10);
     return 1;
 }
-window_maximized :: ()->s32 { return IsZoomed(platform_window()); }
+window_maximized :: () -> s32 {
+    return IsZoomed(platform_window());
+}
 /// 1=minimize, 2=toggle maximize, 3=request the ordinary Gui close event.
-window_action :: (action:s32)->s32 {
-    window:=platform_window();
-    if window==0 return win_error(1400,"Controlling terminal window");
-    command:usize;
-    if action==1 command=16#f020;
-    else if action==2 { command=16#f030; if IsZoomed(window)!=0 command=16#f120; }
-    else if action==3 command=16#f060;
-    else return win_error(87,"Controlling terminal window");
-    if PostMessageW(window,16#112,command,0)==0 return P.windows_error("Controlling terminal window");
+window_action :: (action: s32) -> s32 {
+    window := platform_window();
+    if window == 0 return win_error(1400, "Controlling terminal window");
+    command: usize;
+    if action == 1 command = 16#f020;
+    else if action == 2 {
+        command = 16#f030;
+        if IsZoomed(window) != 0 command = 16#f120;
+    } else if action == 3 command = 16#f060;
+    else return win_error(87, "Controlling terminal window");
+    if PostMessageW(window, 16#112, command, 0) == 0
+        return P.windows_error("Controlling terminal window");
     return 1;
 }
-window_drag :: (x:s32,y:s32)->s32 {
-    window:=platform_window();
-    if window==0 return win_error(1400,"Moving terminal window");
-    point:Point=.{x,y};
-    if ClientToScreen(window,&point)==0 return P.windows_error("Locating terminal header");
-    now:=P.ticks(); distance:=MulDiv(4,window_dpi(),96);
-    dx:=point.x-drag_point.x; if dx<0 dx= -dx;
-    dy:=point.y-drag_point.y; if dy<0 dy= -dy;
-    double_click:=drag_tick!=0 && now-drag_tick<=cast(u64)GetDoubleClickTime() && dx<=distance && dy<=distance;
-    drag_tick=now; drag_point=point;
+window_drag :: (x: s32, y: s32) -> s32 {
+    window := platform_window();
+    if window == 0 return win_error(1400, "Moving terminal window");
+    point: Point = .{ x, y };
+    if ClientToScreen(window, &point) == 0 return P.windows_error("Locating terminal header");
+    now := P.ticks();
+    distance := MulDiv(4, window_dpi(), 96);
+    dx := point.x - drag_point.x;
+    if dx < 0 dx = -dx;
+    dy := point.y - drag_point.y;
+    if dy < 0 dy = -dy;
+    double_click := drag_tick != 0 && now - drag_tick <= cast(u64) GetDoubleClickTime() && dx <= distance && dy <= distance;
+    drag_tick = now;
+    drag_point = point;
     cancel_pointer();
-    if double_click { drag_tick=0; return window_action(2); }
-    packed:=cast(ssize)((cast(u32)point.x&65535)|((cast(u32)point.y&65535)<<16));
+    if double_click {
+        drag_tick = 0;
+        return window_action(2);
+    }
+    packed := cast(ssize)((cast(u32) point.x & 65535) | ((cast(u32) point.y & 65535) << 16));
     // Windows owns the move loop, resize/Snap semantics and release tracking.
-    if PostMessageW(window,16#a1,2,packed)==0 return P.windows_error("Moving terminal window");
+    if PostMessageW(window, 16#a1, 2, packed) == 0 return P.windows_error("Moving terminal window");
     return 1;
 }
-window_menu :: (x:s32,y:s32)->s32 {
-    window:=platform_window();
-    if window==0 return win_error(1400,"Opening terminal window menu");
-    menu:=GetSystemMenu(window,0);
-    if menu==0 return P.windows_error("Opening terminal window menu");
-    point:Point=.{x,y};
-    if ClientToScreen(window,&point)==0 return P.windows_error("Locating terminal window menu");
-    maximized:=IsZoomed(window)!=0;
-    normal_flags:u32; restore_flags:u32=1;
-    if maximized { normal_flags=1; restore_flags=0; }
-    _:=EnableMenuItem(menu,16#f010,normal_flags); // move
-    _:=EnableMenuItem(menu,16#f000,normal_flags); // size
-    _:=EnableMenuItem(menu,16#f030,normal_flags); // maximize
-    _:=EnableMenuItem(menu,16#f120,restore_flags);
+window_menu :: (x: s32, y: s32) -> s32 {
+    window := platform_window();
+    if window == 0 return win_error(1400, "Opening terminal window menu");
+    menu := GetSystemMenu(window, 0);
+    if menu == 0 return P.windows_error("Opening terminal window menu");
+    point: Point = .{ x, y };
+    if ClientToScreen(window, &point) == 0 return P.windows_error("Locating terminal window menu");
+    maximized := IsZoomed(window) != 0;
+    normal_flags: u32;
+    restore_flags: u32 = 1;
+    if maximized {
+        normal_flags = 1;
+        restore_flags = 0;
+    }
+    _ := EnableMenuItem(menu, 16#f010, normal_flags); // move
+    _ := EnableMenuItem(menu, 16#f000, normal_flags); // size
+    _ := EnableMenuItem(menu, 16#f030, normal_flags); // maximize
+    _ := EnableMenuItem(menu, 16#f120, restore_flags);
     cancel_pointer();
-    command:=TrackPopupMenuEx(menu,16#102,point.x,point.y,window,0);
-    if command!=0 && PostMessageW(window,16#112,command,0)==0 return P.windows_error("Running terminal window command");
+    command := TrackPopupMenuEx(menu, 16#102, point.x, point.y, window, 0);
+    if command != 0 && PostMessageW(window, 16#112, command, 0) == 0
+        return P.windows_error("Running terminal window command");
     return 1;
 }
-pointer_release :: (button:s32)->s32 {
-    if button<0 || button>2 return 2;
-    queue:=&release_queues[button];
-    if queue.overflow { queue.head=0; queue.tail=0; queue.overflow=false; return 2; }
-    if queue.head==queue.tail return 1;
-    kind:=queue.entries[queue.tail]; queue.tail=(queue.tail+1)%256;
-    return cast(s32)kind;
+pointer_release :: (button: s32) -> s32 {
+    if button < 0 || button > 2 return 2;
+    queue := &release_queues[button];
+    if queue.overflow {
+        queue.head = 0;
+        queue.tail = 0;
+        queue.overflow = false;
+        return 2;
+    }
+    if queue.head == queue.tail return 1;
+    kind := queue.entries[queue.tail];
+    queue.tail = (queue.tail + 1) % 256;
+    return cast(s32) kind;
 }
-error_dialog :: (message:cstr) {
-    value:="An error occurred.";
-    if cast(usize)message.data!=0 value=message.to_string();
-    text:=value.cstring16_from_string(); defer text.free();
-    title:="wst".cstring16_from_string(); defer title.free();
-    _:=MessageBoxW(platform_window(),text.data,title.data,16#10);
+error_dialog :: (message: cstr) {
+    value := "An error occurred.";
+    if cast(usize) message.data != 0 value = message.to_string();
+    text := value.cstring16_from_string();
+    defer text.free();
+    title := "wst".cstring16_from_string();
+    defer title.free();
+    _ := MessageBoxW(platform_window(), text.data, title.data, 16#10);
 }
-help_dialog :: (message:cstr) {
-    if GetConsoleWindow()!=0 return;
-    value:="wst";
-    if cast(usize)message.data!=0 value=message.to_string();
-    text:=value.cstring16_from_string(); defer text.free();
-    title:="wst usage".cstring16_from_string(); defer title.free();
-    _:=MessageBoxW(0,text.data,title.data,16#40);
+help_dialog :: (message: cstr) {
+    if GetConsoleWindow() != 0 return;
+    value := "wst";
+    if cast(usize) message.data != 0 value = message.to_string();
+    text := value.cstring16_from_string();
+    defer text.free();
+    title := "wst usage".cstring16_from_string();
+    defer title.free();
+    _ := MessageBoxW(0, text.data, title.data, 16#40);
 }
-gui_window_handle :: ()->usize { return platform_window(); }
-window_focus :: ()->s32 {
-    window:=platform_window();
-    if window!=0 && GetFocus()==window return 1;
+gui_window_handle :: () -> usize {
+    return platform_window();
+}
+window_focus :: () -> s32 {
+    window := platform_window();
+    if window != 0 && GetFocus() == window return 1;
     return 0;
 }
-window_dpi :: ()->s32 {
-    window:=platform_window(); dpi:u32=96;
-    if window!=0 dpi=GetDpiForWindow(window);
-    if dpi==0 return 96;
-    return cast(s32)dpi;
+window_dpi :: () -> s32 {
+    window := platform_window();
+    dpi: u32 = 96;
+    if window != 0 dpi = GetDpiForWindow(window);
+    if dpi == 0    return 96;
+    return cast(s32) dpi;
 }
-window_minimum :: (width:*s32,height:*s32)->s32 {
-    window:=platform_window();
-    if window==0 || cast(usize)width==0 || cast(usize)height==0 return win_error(87,"Reading minimum terminal size");
-    dpi:=window_dpi();
-    minimum_width:=MulDiv(320,dpi,96); minimum_height:=MulDiv(200,dpi,96);
-    system_width:=GetSystemMetricsForDpi(34,cast(u32)dpi);
-    system_height:=GetSystemMetricsForDpi(35,cast(u32)dpi);
-    if system_width>minimum_width minimum_width=system_width;
-    if system_height>minimum_height minimum_height=system_height;
-    style:=cast(u32)GetWindowLongPtrW(window,-16);
-    extended:=cast(u32)GetWindowLongPtrW(window,-20);
-    margins:Rect; menu:s32; if GetMenu(window)!=0 menu=1;
-    if AdjustWindowRectExForDpi(&margins,style,menu,extended,cast(u32)dpi)==0 return P.windows_error("Reading terminal window margins");
-    width.*=minimum_width-(margins.right-margins.left);
-    height.*=minimum_height-(margins.bottom-margins.top);
-    if width.*<1 width.*=1;
-    if height.*<1 height.*=1;
+window_minimum :: (width: *s32, height: *s32) -> s32 {
+    window := platform_window();
+    if window == 0 || cast(usize) width == 0 || cast(usize) height == 0
+        return win_error(87, "Reading minimum terminal size");
+    dpi := window_dpi();
+    minimum_width := MulDiv(320, dpi, 96);
+    minimum_height := MulDiv(200, dpi, 96);
+    system_width := GetSystemMetricsForDpi(34, cast(u32) dpi);
+    system_height := GetSystemMetricsForDpi(35, cast(u32) dpi);
+    if system_width > minimum_width   minimum_width = system_width;
+    if system_height > minimum_height minimum_height = system_height;
+    style := cast(u32) GetWindowLongPtrW(window, -16);
+    extended := cast(u32) GetWindowLongPtrW(window, -20);
+    margins: Rect;
+    menu: s32;
+    if GetMenu(window) != 0 menu = 1;
+    if AdjustWindowRectExForDpi(&margins, style, menu, extended, cast(u32) dpi) == 0
+        return P.windows_error("Reading terminal window margins");
+    width.* = minimum_width - (margins.right - margins.left);
+    height.* = minimum_height - (margins.bottom - margins.top);
+    if width.* < 1  width.* = 1;
+    if height.* < 1 height.* = 1;
     return 1;
 }
-resize_client :: (width:s32,height:s32)->s32 {
-    window:=platform_window();
-    if window==0 || width<0 || height<0 return win_error(87,"Resizing terminal window");
-    if width==0 && height==0 return 1;
-    client:Rect;
-    if GetClientRect(window,&client)==0 return P.windows_error("Reading terminal window size");
-    if width==0 width=client.right;
-    if height==0 height=client.bottom;
-    if width<=0 || height<=0 || width>16384 || height>16384 return win_error(87,"Resizing terminal window");
-    if width==client.right && height==client.bottom return 1;
-    style:=cast(u32)GetWindowLongPtrW(window,-16);
-    extended:=cast(u32)GetWindowLongPtrW(window,-20);
-    outer:Rect=.{0,0,width,height}; menu:s32; if GetMenu(window)!=0 menu=1;
-    if AdjustWindowRectExForDpi(&outer,style,menu,extended,cast(u32)window_dpi())==0 return P.windows_error("Calculating terminal window size");
-    if SetWindowPos(window,0,0,0,outer.right-outer.left,outer.bottom-outer.top,16#16)==0 return P.windows_error("Resizing terminal window");
+resize_client :: (width: s32, height: s32) -> s32 {
+    window := platform_window();
+    if window == 0 || width < 0 || height < 0 return win_error(87, "Resizing terminal window");
+    if width == 0 && height == 0              return 1;
+    client: Rect;
+    if GetClientRect(window, &client) == 0 return P.windows_error("Reading terminal window size");
+    if width == 0                          width = client.right;
+    if height == 0                         height = client.bottom;
+    if width <= 0 || height <= 0 || width > 16384 || height > 16384
+        return win_error(87, "Resizing terminal window");
+    if width == client.right && height == client.bottom return 1;
+    style := cast(u32) GetWindowLongPtrW(window, -16);
+    extended := cast(u32) GetWindowLongPtrW(window, -20);
+    outer: Rect = .{ 0, 0, width, height };
+    menu: s32;
+    if GetMenu(window) != 0 menu = 1;
+    if AdjustWindowRectExForDpi(&outer, style, menu, extended, cast(u32) window_dpi()) == 0
+        return P.windows_error("Calculating terminal window size");
+    if SetWindowPos(window, 0, 0, 0, outer.right - outer.left, outer.bottom - outer.top, 16#16) == 0
+        return P.windows_error("Resizing terminal window");
     return 1;
 }
-grid_client_pixels :: (count:s32,cell:s32,padding:s32,chrome:s32,dpi:s32)->s32 {
-    if count==0 return 0;
-    grid:=cast(s64)count*cast(s64)cell; inset:=2*cast(s64)padding+cast(s64)chrome;
-    logical:=(grid*96+cast(s64)dpi-1)/cast(s64)dpi+inset;
-    physical:=(logical*cast(s64)dpi+95)/96;
-    scale:=cast(f32)dpi/96.0;
+grid_client_pixels :: (count: s32, cell: s32, padding: s32, chrome: s32, dpi: s32) -> s32 {
+    if count == 0 return 0;
+    grid := cast(s64) count * cast(s64) cell;
+    inset := 2 * cast(s64) padding + cast(s64) chrome;
+    logical := (grid * 96 + cast(s64) dpi - 1) / cast(s64) dpi + inset;
+    physical := (logical * cast(s64) dpi + 95) / 96;
+    scale := cast(f32) dpi / 96.0;
     // Mirror Clay layout's logical-integer and float scaling conversions.
-    while cast(s64)(cast(f32)(cast(s64)(cast(f32)physical/scale)-inset)*scale)<grid physical+=1;
-    return cast(s32)physical;
+    while cast(s64)(cast(f32)(cast(s64)(cast(f32) physical / scale) - inset) * scale) < grid physical += 1;
+    return cast(s32) physical;
 }
-scroll_lines :: ()->s32 {
-    lines:u32=3; _:=SystemParametersInfoW(104,0,cast(*void)&lines,0);
-    if lines==16#ffffffff return -1;
-    if lines>1000 return 1000;
-    return cast(s32)lines;
+scroll_lines :: () -> s32 {
+    lines: u32 = 3;
+    _ := SystemParametersInfoW(104, 0, cast(*void) &lines, 0);
+    if lines == 16#ffffffff return -1;
+    if lines > 1000         return 1000;
+    return cast(s32) lines;
 }
-pointer_cursor :: (axis:s32) {
-    window:=platform_window(); point:Point;
-    if window==0 return;
-    if GetCapture()!=window && (GetCursorPos(&point)==0 || WindowFromPoint(point)!=window) return;
-    resource:usize=32513;
-    if axis==1 resource=32644;
-    else if axis==2 resource=32645;
-    _:=SetCursor(LoadCursorW(0,cast([*]const u16)resource));
+pointer_cursor :: (axis: s32) {
+    window := platform_window();
+    point: Point;
+    if window == 0 return;
+    if GetCapture() != window && (GetCursorPos(&point) == 0 || WindowFromPoint(point) != window)
+        return;
+    resource: usize = 32513;
+    if      axis == 1 resource = 32644;
+    else if axis == 2 resource = 32645;
+    _ := SetCursor(LoadCursorW(0, cast([*]const u16) resource));
 }
 pointer_arrow :: () {
-    window:=platform_window(); point:Point;
-    if window==0 return;
-    if GetCapture()!=window && (GetCursorPos(&point)==0 || WindowFromPoint(point)!=window) return;
-    _:=SetCursor(LoadCursorW(0,cast([*]const u16)32512));
+    window := platform_window();
+    point: Point;
+    if window == 0 return;
+    if GetCapture() != window && (GetCursorPos(&point) == 0 || WindowFromPoint(point) != window)
+        return;
+    _ := SetCursor(LoadCursorW(0, cast([*]const u16) 32512));
 }
 cancel_pointer :: () {
-    window:=platform_window();
-    if window!=0 && GetCapture()==window { _:=ReleaseCapture(); pointer_cursor(0); }
+    window := platform_window();
+    if window != 0 && GetCapture() == window {
+        _ := ReleaseCapture();
+        pointer_cursor(0);
+    }
 }
-key_text :: (key:s32,scancode:s32,mods:s32,output:[*]u32,capacity:s32)->s32 {
-    if key<1 || key>255 || mods<0 || mods>7 || capacity<0 || (capacity>0 && cast(usize)output==0) return 0;
-    state:[256]u8; _:=GetKeyboardState(cast([*]u8)&state);
-    keys:[9]s32=.[16,160,161,17,162,163,18,164,165];
-    for vk:keys state[vk]&=1;
-    if (mods&1)!=0 { state[16]=128; state[160]=128; }
-    if (mods&2)!=0 { state[17]=128; state[162]=128; }
-    if (mods&4)!=0 { state[18]=128; state[164]=128; }
-    state[key]|=128;
-    layout:=GetKeyboardLayout(0); scan:=cast(u32)scancode;
-    if scan==0 scan=MapVirtualKeyExW(cast(u32)key,0,layout);
-    units:[16]u16;
+key_text :: (key: s32, scancode: s32, mods: s32, output: [*]u32, capacity: s32) -> s32 {
+    if key < 1 || key > 255 || mods < 0 || mods > 7 || capacity < 0 ||
+       (capacity > 0 && cast(usize) output == 0)
+        return 0;
+    state: [256]u8;
+    _ := GetKeyboardState(cast([*]u8) &state);
+    keys: [9]s32 = .[16, 160, 161, 17, 162, 163, 18, 164, 165];
+    for vk: keys state[vk] &= 1;
+    if (mods & 1) != 0 {
+        state[16] = 128;
+        state[160] = 128;
+    }
+    if (mods & 2) != 0 {
+        state[17] = 128;
+        state[162] = 128;
+    }
+    if (mods & 4) != 0 {
+        state[18] = 128;
+        state[164] = 128;
+    }
+    state[key] |= 128;
+    layout := GetKeyboardLayout(0);
+    scan := cast(u32) scancode;
+    if scan == 0 scan = MapVirtualKeyExW(cast(u32) key, 0, layout);
+    units: [16]u16;
     // Flag4 predicts text without altering Windows' dead-key state.
-    count:=ToUnicodeEx(cast(u32)key,scan,cast([*]const u8)&state,cast([*]u16)&units,16,4,layout);
-    if count<=0 return 0;
-    written:s32; i:s32;
-    while i<count && written<capacity {
-        value:=cast(u32)units[i];
-        if value>=16#d800 && value<=16#dbff && i+1<count && units[i+1]>=16#dc00 && units[i+1]<=16#dfff {
-            i+=1; value=16#10000+((value-16#d800)<<10)+(cast(u32)units[i]-16#dc00);
-        } else if value>=16#d800 && value<=16#dfff value=16#fffd;
-        output[written]=value; written+=1; i+=1;
+    count := ToUnicodeEx(
+        cast(u32) key,
+        scan,
+        cast([*]const u8) &state,
+        cast([*]u16) &units,
+        16,
+        4,
+        layout
+    );
+    if count <= 0 return 0;
+    written: s32;
+    i: s32;
+    while i < count && written < capacity {
+        value := cast(u32) units[i];
+        if value >= 16#d800 && value <= 16#dbff && i + 1 < count && units[i + 1] >= 16#dc00 && units[i + 1] <= 16#dfff {
+            i += 1;
+            value = 16#10000 + ((value - 16#d800) << 10) + (cast(u32) units[i] - 16#dc00);
+        } else if value >= 16#d800 && value <= 16#dfff value = 16#fffd;
+        output[written] = value;
+        written += 1;
+        i += 1;
     }
     return written;
 }
+
 }
-
-
-
-
-
-

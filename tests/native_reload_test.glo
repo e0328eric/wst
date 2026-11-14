@@ -10,192 +10,269 @@ FS :: #import "File_System/Directory";
 #import "Strings/Utf8";
 kernel32 :: #library,system "kernel32";
 user32 :: #library,system "user32";
-Sleep :: (milliseconds:u32) #foreign kernel32;
-Rect :: struct #c_call { left:s32; top:s32; right:s32; bottom:s32; }
-GetWindowRect :: (window:usize,rect:*Rect)->s32 #foreign user32;
+Sleep :: (milliseconds: u32) #foreign kernel32;
+Rect :: struct #c_call {
+    left: s32;
+    top: s32;
+    right: s32;
+    bottom: s32;
+}
+GetWindowRect :: (window: usize, rect: *Rect) -> s32 #foreign user32;
 
-contains :: (text:str,needle:str)->bool {
-    if text.count<needle.count return false;
-    for i:0..text.count-needle.count+1 if text[i..i+needle.count]==needle return true;
+contains :: (text: str, needle: str) -> bool {
+    if text.count < needle.count return false;
+    for i: 0..text.count - needle.count + 1 if text[i..i + needle.count] == needle return true;
     return false;
 }
-pump :: () { event:P.Event; while P.next_event(&event)!=0 {} }
-send :: (command:str) { #assert P.pty_send(command.data,cast(s32)command.count)!=0; }
+pump :: () {
+    event: P.Event;
+    while P.next_event(&event) != 0 {}
+}
+send :: (command: str) {
+    #assert P.pty_send(command.data, cast(s32) command.count) != 0;
+}
 quiet :: () {
-    data:[65536]u8;
-    last:=P.ticks(); start:=last;
-    while P.ticks()-last<150 {
+    data: [65536]u8;
+    last := P.ticks();
+    start := last;
+    while P.ticks() - last < 150 {
         pump();
-        while P.pty_read(cast([*]u8)&data,65536)>0 last=P.ticks();
-        #assert P.ticks()-start<5000,"shell output settles";
+        while P.pty_read(cast([*]u8) &data, 65536) > 0 last = P.ticks();
+        #assert P.ticks() - start < 5000, "shell output settles";
         Sleep(5);
     }
 }
-read_until :: (marker:str,exited:bool=false,rejected:str="") {
-    output:[..]u8;
+read_until :: (marker: str, exited: bool = false, rejected: str = "") {
+    output: [..]u8;
     defer output.free();
-    data:[65536]u8;
-    start:=P.ticks(); found:=false; finished:=false; exit_code:s32;
-    while P.ticks()-start<15000 {
+    data: [65536]u8;
+    start := P.ticks();
+    found := false;
+    finished := false;
+    exit_code: s32;
+    while P.ticks() - start < 15000 {
         pump();
-        n:=P.pty_read(cast([*]u8)&data,65536);
-        for i:0..n output.push(data[i]);
-        text:=cast(str)output.view();
-        if contains(text,marker) found=true;
-        if rejected.count>0 #assert !contains(text,rejected),"replacement output never contains the old session queue";
-        finished=P.pty_status(&exit_code)==1;
+        n := P.pty_read(cast([*]u8) &data, 65536);
+        for i: 0..n output.push(data[i]);
+        text := cast(str) output.view();
+        if contains(text, marker) found = true;
+        if rejected.count > 0
+            #assert !contains(text, rejected), "replacement output never contains the old session queue";
+        finished = P.pty_status(&exit_code) == 1;
         if found && (!exited || finished) break;
         P.wait(10);
     }
-    if !found print("Expected {} in shell output:\n{}\n",marker,cast(str)output.view());
-    #assert found,"actual shell output reaches the active queue";
-    if exited #assert finished && exit_code==0,"replacement shell exits successfully";
+    if !found print("Expected {} in shell output:\n{}\n", marker, cast(str) output.view());
+    #assert found, "actual shell output reaches the active queue";
+    if exited #assert finished && exit_code == 0, "replacement shell exits successfully";
 }
-native_key :: (window:usize,key:s32,bound:bool) {
+native_key :: (window: usize, key: s32, bound: bool) {
     pump();
-    #assert H.post_key(window,key,0)!=0;
-    event:P.Event; keys,text:s32;
-    while P.next_event(&event)!=0 {
-        if event.kind==1 && event.a==key keys+=1;
-        if event.kind==2 text+=event.length;
+    #assert H.post_key(window, key, 0) != 0;
+    event: P.Event;
+    keys, text: s32;
+    while P.next_event(&event) != 0 {
+        if event.kind == 1 && event.a == key keys += 1;
+        if event.kind == 2                   text += event.length;
     }
-    if bound #assert keys==1 && text==0,"combined update installs the expected key binding";
-    else #assert keys==0 && text>0,"unbound native key produces text";
+    if bound #assert keys == 1 && text == 0, "combined update installs the expected key binding";
+    else     #assert keys == 0 && text > 0, "unbound native key produces text";
 }
-pixels :: (path:str)->str {
-    if read_file(path,64*1024*1024)== {
-    case .Ok(data); return data;
-    case .Err(error); print("reload snapshot read failed: {}\n",error.kind); exit(1);
+pixels :: (path: str) -> str {
+    if read_file(path, 64 * 1024 * 1024) == {
+    case .Ok(data);
+        return data;
+    case .Err(error);
+        print("reload snapshot read failed: {}\n", error.kind);
+        exit(1);
     }
 }
-dip :: (value:s32)->s32 { return (value*P.dpi()+48)/96; }
+dip :: (value: s32) -> s32 {
+    return (value * P.dpi() + 48) / 96;
+}
 grid_sizing_cases :: () {
-    for dpi_value:.[96,120,144,168,192,97] {
-        dpi:=cast(s32)dpi_value;
-        scale:=cast(f32)dpi/96.0;
-        for pad_value:.[0,12,17,100] {
-            padding:=cast(s32)pad_value;
-            width:=G.client_pixels(101,9,padding,12,dpi);
-            height:=G.client_pixels(31,17,padding,36,dpi);
-            layout:=L.compute(width,height,padding,scale);
-            #assert cast(s32)layout.viewport_width/9==101 && cast(s32)layout.viewport_height/17==31,"native sizing preserves requested grid through actual Clay DPI conversions";
+    for dpi_value: .[96, 120, 144, 168, 192, 97] {
+        dpi := cast(s32) dpi_value;
+        scale := cast(f32) dpi / 96.0;
+        for pad_value: .[0, 12, 17, 100] {
+            padding := cast(s32) pad_value;
+            width := G.client_pixels(101, 9, padding, 12, dpi);
+            height := G.client_pixels(31, 17, padding, 36, dpi);
+            layout := L.compute(width, height, padding, scale);
+            #assert cast(s32) layout.viewport_width / 9 == 101 && cast(s32) layout.viewport_height / 17 == 31, "native sizing preserves requested grid through actual Clay DPI conversions";
         }
         // 485 grid pixels at custom DPI 97 exposes float rounding beyond the
         // integer rational ceiling; the production helper covers that too.
-        width:=G.client_pixels(97,5,17,12,dpi);
-        height:=G.client_pixels(23,11,17,36,dpi);
-        layout:=L.compute(width,height,17,scale);
-        #assert cast(s32)layout.viewport_width/5==97 && cast(s32)layout.viewport_height/11==23,"custom DPI float rounding cannot steal a cell";
-        #assert G.client_pixels(0,9,12,12,dpi)==0,"unspecified window axes remain unchanged";
+        width := G.client_pixels(97, 5, 17, 12, dpi);
+        height := G.client_pixels(23, 11, 17, 36, dpi);
+        layout := L.compute(width, height, 17, scale);
+        #assert cast(s32) layout.viewport_width / 5 == 97 && cast(s32) layout.viewport_height / 11 == 23, "custom DPI float rounding cannot steal a cell";
+        #assert G.client_pixels(0, 9, 12, 12, dpi) == 0, "unspecified window axes remain unchanged";
     }
 }
 
 main :: () {
     grid_sizing_cases();
-    #assert P.open("Consolas",16,80,24,12,1)!=0;
+    #assert P.open("Consolas", 16, 80, 24, 12, 1) != 0;
     defer P.close();
-    window:=H.test_window();
-    #assert window!=0;
-    position:Rect; after:Rect;
-    #assert GetWindowRect(window,&position)!=0;
-    width,height,cw,ch:s32;
-    P.metrics(&width,&height,&cw,&ch);
-    old_width:=width; old_height:=height; old_cw:=cw; old_ch:=ch;
-    previous:[1]P.Key_Binding=.[.{65,0,1}];
-    next:[1]P.Key_Binding=.[.{66,0,2}];
-    #assert P.set_keybindings(cast([*]const P.Key_Binding)&previous,1)!=0;
-    #assert P.apply_all_settings("Courier New",24,cast([*]const P.Key_Binding)&next,1,-1,30,12)==0;
-    #assert P.apply_all_settings("Courier New",24,cast([*]const P.Key_Binding)&next,1,0,0,101)==0;
-    #assert P.apply_all_settings("",24,cast([*]const P.Key_Binding)&next,1,100,30,12)==0;
-    invalid:=next; invalid[0].mods=8;
-    #assert P.apply_all_settings("Courier New",24,cast([*]const P.Key_Binding)&invalid,1,100,30,12)==0;
-    #assert P.resize_client(-1,0)==0 && P.resize_grid_window(513,0,12)==0;
-    P.metrics(&width,&height,&cw,&ch);
-    #assert width==old_width && height==old_height && cw==old_cw && ch==old_ch,"rejected settings retain the complete native geometry and font";
-    native_key(window,65,true); native_key(window,66,false);
+    window := H.test_window();
+    #assert window != 0;
+    position: Rect;
+    after: Rect;
+    #assert GetWindowRect(window, &position) != 0;
+    width, height, cw, ch: s32;
+    P.metrics(&width, &height, &cw, &ch);
+    old_width := width;
+    old_height := height;
+    old_cw := cw;
+    old_ch := ch;
+    previous: [1]P.Key_Binding = .[.{ 65, 0, 1 }];
+    next: [1]P.Key_Binding = .[.{ 66, 0, 2 }];
+    #assert P.set_keybindings(cast([*]const P.Key_Binding) &previous, 1) != 0;
+    #assert P.apply_all_settings(
+        "Courier New",
+        24,
+        cast([*]const P.Key_Binding) &next,
+        1,
+        -1,
+        30,
+        12
+    ) == 0;
+    #assert P.apply_all_settings(
+        "Courier New",
+        24,
+        cast([*]const P.Key_Binding) &next,
+        1,
+        0,
+        0,
+        101
+    ) == 0;
+    #assert P.apply_all_settings("", 24, cast([*]const P.Key_Binding) &next, 1, 100, 30, 12) == 0;
+    invalid := next;
+    invalid[0].mods = 8;
+    #assert P.apply_all_settings(
+        "Courier New",
+        24,
+        cast([*]const P.Key_Binding) &invalid,
+        1,
+        100,
+        30,
+        12
+    ) == 0;
+    #assert P.resize_client(-1, 0) == 0 && P.resize_grid_window(513, 0, 12) == 0;
+    P.metrics(&width, &height, &cw, &ch);
+    #assert width == old_width && height == old_height && cw == old_cw && ch == old_ch, "rejected settings retain the complete native geometry and font";
+    native_key(window, 65, true);
+    native_key(window, 66, false);
 
-    #assert P.apply_all_settings("Consolas",24,cast([*]const P.Key_Binding)&next,1,101,31,17)!=0;
-    P.metrics(&width,&height,&cw,&ch);
-    #assert cw>old_cw && ch>old_ch,"combined update prepares the new font";
-    #assert width==G.client_pixels(101,cw,17,12,P.dpi()) && height==G.client_pixels(31,ch,17,36,P.dpi()),"requested grid uses prepared font metrics and DPI-scaled Clay chrome";
-    #assert GetWindowRect(window,&after)!=0 && after.left==position.left && after.top==position.top,"config window resizing preserves its position";
-    native_key(window,65,false); native_key(window,66,true);
+    #assert P.apply_all_settings("Consolas", 24, cast([*]const P.Key_Binding) &next, 1, 101, 31, 17) != 0;
+    P.metrics(&width, &height, &cw, &ch);
+    #assert cw > old_cw && ch > old_ch, "combined update prepares the new font";
+    #assert width == G.client_pixels(101, cw, 17, 12, P.dpi()) && height == G.client_pixels(
+        31,
+        ch,
+        17,
+        36,
+        P.dpi()
+    ), "requested grid uses prepared font metrics and DPI-scaled Clay chrome";
+    #assert GetWindowRect(window, &after) != 0 && after.left == position.left && after.top == position.top, "config window resizing preserves its position";
+    native_key(window, 65, false);
+    native_key(window, 66, true);
 
-    #assert P.resize_client(width+7,height+11)!=0;
-    P.metrics(&width,&height,&cw,&ch);
-    manual_width:=width; manual_height:=height;
-    #assert P.apply_all_settings("Consolas",20,cast([*]const P.Key_Binding)&next,1,0,0,30)!=0;
-    P.metrics(&width,&height,&cw,&ch);
-    #assert width==manual_width && height==manual_height,"font and padding changes preserve manually chosen client dimensions";
-    #assert P.resize_grid_window(100,0,30)!=0;
-    P.metrics(&width,&height,&cw,&ch);
-    #assert width==G.client_pixels(100,cw,30,12,P.dpi()) && height==manual_height,"zero rows preserve the exact client height";
-    manual_width=width;
-    #assert P.resize_grid_window(0,29,30)!=0;
-    P.metrics(&width,&height,&cw,&ch);
-    #assert width==manual_width && height==G.client_pixels(29,ch,30,36,P.dpi()),"zero columns preserve the exact client width";
-    saved_width:=width; saved_height:=height;
-    #assert P.resize_grid_window(1,1,0)!=0;
-    #assert GetWindowRect(window,&after)!=0 && after.right-after.left>=dip(320) && after.bottom-after.top>=dip(200),"small configured grids honor the DPI-scaled window minimum";
-    #assert P.resize_client(saved_width,saved_height)!=0,"exact client dimensions can be restored after minimum clamping";
+    #assert P.resize_client(width + 7, height + 11) != 0;
+    P.metrics(&width, &height, &cw, &ch);
+    manual_width := width;
+    manual_height := height;
+    #assert P.apply_all_settings("Consolas", 20, cast([*]const P.Key_Binding) &next, 1, 0, 0, 30) != 0;
+    P.metrics(&width, &height, &cw, &ch);
+    #assert width == manual_width && height == manual_height, "font and padding changes preserve manually chosen client dimensions";
+    #assert P.resize_grid_window(100, 0, 30) != 0;
+    P.metrics(&width, &height, &cw, &ch);
+    #assert width == G.client_pixels(100, cw, 30, 12, P.dpi()) && height == manual_height, "zero rows preserve the exact client height";
+    manual_width = width;
+    #assert P.resize_grid_window(0, 29, 30) != 0;
+    P.metrics(&width, &height, &cw, &ch);
+    #assert width == manual_width && height == G.client_pixels(29, ch, 30, 36, P.dpi()), "zero columns preserve the exact client width";
+    saved_width := width;
+    saved_height := height;
+    #assert P.resize_grid_window(1, 1, 0) != 0;
+    #assert GetWindowRect(window, &after) != 0 && after.right - after.left >= dip(320) && after.bottom - after.top >= dip(
+        200
+    ), "small configured grids honor the DPI-scaled window minimum";
+    #assert P.resize_client(saved_width, saved_height) != 0, "exact client dimensions can be restored after minimum clamping";
 
     // Padding can move the viewport while every glyph and background color is
     // unchanged. A full-settings commit must clear retained pixels regardless.
-    P.frame_begin(16#112233); P.rect(15,80,30,30,16#ffffff); P.frame_end();
-    #assert P.apply_all_settings("Consolas",20,cast([*]const P.Key_Binding)&next,1,0,0,31)!=0;
-    P.frame_begin(16#112233); P.frame_end();
-    #assert P.snapshot("build/native_reload_after.bmp")!=0;
-    changed:=pixels("build/native_reload_after.bmp"); defer changed.free();
-    P.frame_begin(0); P.frame_begin(16#112233); P.frame_end();
-    #assert P.snapshot("build/native_reload_fresh.bmp")!=0;
-    fresh:=pixels("build/native_reload_fresh.bmp"); defer fresh.free();
-    #assert changed==fresh,"padding-only commits invalidate retained frame pixels";
+    P.frame_begin(16#112233);
+    P.rect(15, 80, 30, 30, 16#ffffff);
+    P.frame_end();
+    #assert P.apply_all_settings("Consolas", 20, cast([*]const P.Key_Binding) &next, 1, 0, 0, 31) != 0;
+    P.frame_begin(16#112233);
+    P.frame_end();
+    #assert P.snapshot("build/native_reload_after.bmp") != 0;
+    changed := pixels("build/native_reload_after.bmp");
+    defer changed.free();
+    P.frame_begin(0);
+    P.frame_begin(16#112233);
+    P.frame_end();
+    #assert P.snapshot("build/native_reload_fresh.bmp") != 0;
+    fresh := pixels("build/native_reload_fresh.bmp");
+    defer fresh.free();
+    #assert changed == fresh, "padding-only commits invalidate retained frame pixels";
 
-    #assert P.pty_start("cmd.exe /d /q",100,30)!=0;
+    #assert P.pty_start("cmd.exe /d /q", 100, 30) != 0;
     quiet();
     send("set ST_WIN_RELOAD_TOKEN=GLOSSO_RELOAD_\recho %ST_WIN_RELOAD_TOKEN%ORIGINAL_READY\r");
     read_until("GLOSSO_RELOAD_ORIGINAL_READY");
-    #assert P.pty_prepare("st_win_intentionally_missing_shell.exe",100,30)==0;
-    exit_code:s32;
-    #assert P.pty_status(&exit_code)==0,"failed replacement keeps the original process running";
+    #assert P.pty_prepare("st_win_intentionally_missing_shell.exe", 100, 30) == 0;
+    exit_code: s32;
+    #assert P.pty_status(&exit_code) == 0, "failed replacement keeps the original process running";
     send("echo %ST_WIN_RELOAD_TOKEN%FAILED_PREPARE_KEPT_STATE\r");
     read_until("GLOSSO_RELOAD_FAILED_PREPARE_KEPT_STATE");
-    #assert P.pty_start("st_win_intentionally_missing_shell.exe",100,30)==0;
-    #assert P.pty_resize(0,30)==0 && contains(P.error().to_string(),"Resizing ConPTY shell"),"active resize failures replace stale startup diagnostics";
+    #assert P.pty_start("st_win_intentionally_missing_shell.exe", 100, 30) == 0;
+    #assert P.pty_resize(0, 30) == 0 && contains(P.error().to_string(), "Resizing ConPTY shell"), "active resize failures replace stale startup diagnostics";
     send("echo %ST_WIN_RELOAD_TOKEN%FAILED_START_KEPT_STATE\r");
     read_until("GLOSSO_RELOAD_FAILED_START_KEPT_STATE");
 
-    staged_path:str="build/native_reload_staged_side_effect.txt";
-    _:=FS.remove(staged_path);
-    defer { _:=FS.remove(staged_path); }
-    #assert P.file_exists(staged_path.c_string())==0;
-    staged_command:cstr="cmd.exe /d /q /c echo SHOULD_NOT_EXECUTE > build\\native_reload_staged_side_effect.txt";
+    staged_path: str = "build/native_reload_staged_side_effect.txt";
+    _ := FS.remove(staged_path);
+    defer {
+        _ := FS.remove(staged_path);
+    }
+    #assert P.file_exists(staged_path.c_string()) == 0;
+    staged_command: cstr = "cmd.exe /d /q /c echo SHOULD_NOT_EXECUTE > build\\native_reload_staged_side_effect.txt";
     for 0..3 {
-        #assert P.pty_prepare(staged_command,100,30)!=0;
-        #assert P.pty_resize_prepared(97,29)!=0;
+        #assert P.pty_prepare(staged_command, 100, 30) != 0;
+        #assert P.pty_resize_prepared(97, 29) != 0;
         Sleep(100);
-        #assert P.file_exists(staged_path.c_string())==0,"prepared command stays suspended before commit";
+        #assert P.file_exists(staged_path.c_string()) == 0, "prepared command stays suspended before commit";
         send("echo %ST_WIN_RELOAD_TOKEN%PENDING_KEPT_STATE\r");
         read_until("GLOSSO_RELOAD_PENDING_KEPT_STATE");
         P.pty_discard();
-        #assert P.file_exists(staged_path.c_string())==0,"discard never executes the prepared command";
-        #assert P.pty_status(&exit_code)==0;
+        #assert P.file_exists(staged_path.c_string()) == 0, "discard never executes the prepared command";
+        #assert P.pty_status(&exit_code) == 0;
     }
     quiet();
-    #assert P.pty_prepare("powershell.exe -NoLogo -NoProfile -Command \"[Console]::Write('RELOAD_COLS_' + [Console]::WindowWidth + '_ROWS_' + [Console]::WindowHeight + '_DONE')\"",100,30)!=0;
-    #assert P.pty_resize_prepared(97,29)!=0;
-    #assert P.pty_resize_prepared(0,29)==0,"invalid prepared resize is rejected without dropping pending session";
+    #assert P.pty_prepare(
+        "powershell.exe -NoLogo -NoProfile -Command \"[Console]::Write('RELOAD_COLS_' + [Console]::WindowWidth + '_ROWS_' + [Console]::WindowHeight + '_DONE')\"",
+        100,
+        30
+    ) != 0;
+    #assert P.pty_resize_prepared(97, 29) != 0;
+    #assert P.pty_resize_prepared(0, 29) == 0, "invalid prepared resize is rejected without dropping pending session";
     send("echo OLD_SESSION_QUEUE_MUST_DISAPPEAR\r");
     Sleep(200);
-    #assert P.pty_commit()!=0;
-    read_until("RELOAD_COLS_97_ROWS_29_DONE",true,"OLD_SESSION_QUEUE_MUST_DISAPPEAR");
+    #assert P.pty_commit() != 0;
+    read_until("RELOAD_COLS_97_ROWS_29_DONE", true, "OLD_SESSION_QUEUE_MUST_DISAPPEAR");
 
-    #assert P.pty_prepare(staged_command,100,30)!=0;
+    #assert P.pty_prepare(staged_command, 100, 30) != 0;
     P.pty_close();
-    #assert P.pty_status(&exit_code)== -1 && P.pty_commit()==0 && P.pty_resize_prepared(100,30)==0,"close cleans both active and staged sessions";
-    #assert P.pty_resize(100,30)==0 && contains(P.error().to_string(),"Resizing ConPTY shell"),"missing active session has a specific resize diagnostic";
-    #assert P.file_exists(staged_path.c_string())==0,"shutdown never executes a suspended pending command";
-    #assert P.pty_start("cmd.exe /d /q /c echo GLOSSO_RELOAD_RESTARTED",100,30)!=0;
-    read_until("GLOSSO_RELOAD_RESTARTED",true);
-    print("Native reload tests passed: full settings transaction, exact window axes, DPI/position, frame invalidation, suspended shell staging, rollback, queue isolation, resize, cleanup.\n");
+    #assert P.pty_status(&exit_code) == -1 && P.pty_commit() == 0 && P.pty_resize_prepared(100, 30) == 0, "close cleans both active and staged sessions";
+    #assert P.pty_resize(100, 30) == 0 && contains(P.error().to_string(), "Resizing ConPTY shell"), "missing active session has a specific resize diagnostic";
+    #assert P.file_exists(staged_path.c_string()) == 0, "shutdown never executes a suspended pending command";
+    #assert P.pty_start("cmd.exe /d /q /c echo GLOSSO_RELOAD_RESTARTED", 100, 30) != 0;
+    read_until("GLOSSO_RELOAD_RESTARTED", true);
+    print(
+        "Native reload tests passed: full settings transaction, exact window axes, DPI/position, frame invalidation, suspended shell staging, rollback, queue isolation, resize, cleanup.\n"
+    );
 }

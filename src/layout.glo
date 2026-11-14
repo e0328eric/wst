@@ -9,103 +9,154 @@ layout_failed: bool;
 bytes_view :: (data: [*]const u8, count: ssize) -> []const u8 #magic "slice_from_pointer";
 
 layout_error :: (error: C.Clay_ErrorData) #c_call {
-    layout_failed=true;
+    layout_failed = true;
     if error.errorText.chars == {
     case ?chars;
-        print("wst: Clay: {}\n", cast(str)bytes_view(chars,error.errorText.length));
+        print("wst: Clay: {}\n", cast(str) bytes_view(chars, error.errorText.length));
     case null;
     }
 }
 
 initialize :: () -> bool {
-    if clay_context != null { C.Clay_SetCurrentContext(clay_context); return true; }
-    capacity:=C.Clay_MinMemorySize();
+    if clay_context != null {
+        C.Clay_SetCurrentContext(clay_context);
+        return true;
+    }
+    capacity := C.Clay_MinMemorySize();
     #push_allocator(Ctx.heap_allocator());
-    if Ctx.mem_alloc_raw(Ctx.Layout.bytes(cast(ssize)capacity)) == {
+    if Ctx.mem_alloc_raw(Ctx.Layout.bytes(cast(ssize) capacity)) == {
     case ?memory;
-        arena_memory=memory;
-        bytes:=cast([*]u8)memory;
-        for i:0..capacity bytes[i]=0;
-        arena:=C.Clay_CreateArenaWithCapacityAndMemory(capacity,cast([*]void)memory);
-        clay_context=C.Clay_Initialize(arena,.{1,1},.{layout_error,null});
+        arena_memory = memory;
+        bytes := cast([*]u8) memory;
+        for i: 0..capacity bytes[i] = 0;
+        arena := C.Clay_CreateArenaWithCapacityAndMemory(capacity, cast([*]void) memory);
+        clay_context = C.Clay_Initialize(arena, .{ 1, 1 }, .{ layout_error, null });
         if clay_context != null return true;
-        Ctx.mem_free_raw(memory,Ctx.Layout.bytes(cast(ssize)capacity)); arena_memory=null;
+        Ctx.mem_free_raw(memory, Ctx.Layout.bytes(cast(ssize) capacity));
+        arena_memory = null;
     case null;
     }
-    print("wst: could not initialize Clay layout\n"); return false;
+    print("wst: could not initialize Clay layout\n");
+    return false;
 }
 
-element_id :: (name:str) -> C.Clay_ElementId {
-    return C.Clay_GetElementId(.{true,cast(s32)name.count,name.data});
+element_id :: (name: str) -> C.Clay_ElementId {
+    return C.Clay_GetElementId(.{ true, cast(s32) name.count, name.data });
 }
-grow :: () -> C.Clay_SizingAxis { return .{0,0,C.CLAY__SIZING_TYPE_GROW}; }
-fixed :: (pixels:s32) -> C.Clay_SizingAxis {
-    return .{cast(f32)pixels,cast(f32)pixels,C.CLAY__SIZING_TYPE_FIXED};
+grow :: () -> C.Clay_SizingAxis {
+    return .{ 0, 0, C.CLAY__SIZING_TYPE_GROW };
 }
-open_element :: (name:str,width:C.Clay_SizingAxis,height:C.Clay_SizingAxis,padding:u16=0,direction:s32=0) {
-    declaration:C.Clay_ElementDeclaration;
-    declaration.layout.sizing=.{width,height};
-    declaration.layout.padding=.{padding,padding,padding,padding};
-    declaration.layout.layoutDirection=direction;
+fixed :: (pixels: s32) -> C.Clay_SizingAxis {
+    return .{ cast(f32) pixels, cast(f32) pixels, C.CLAY__SIZING_TYPE_FIXED };
+}
+open_element :: (
+    name: str,
+    width: C.Clay_SizingAxis,
+    height: C.Clay_SizingAxis,
+    padding: u16 = 0,
+    direction: s32 = 0
+) {
+    declaration: C.Clay_ElementDeclaration;
+    declaration.layout.sizing = .{ width, height };
+    declaration.layout.padding = .{ padding, padding, padding, padding };
+    declaration.layout.layoutDirection = direction;
     C.Clay__OpenElementWithId(element_id(name));
-    C.Clay__ConfigureOpenElementPtr(cast([*]const C.Clay_ElementDeclaration)&declaration);
+    C.Clay__ConfigureOpenElementPtr(cast([*]const C.Clay_ElementDeclaration) &declaration);
 }
-minimum :: (a:s32,b:s32)->s32 { if a<b return a; return b; }
+minimum :: (a: s32, b: s32) -> s32 {
+    if a < b return a;
+    return b;
+}
 
-compute_logical :: (width:s32,height:s32,padding:s32,result:*Layout)->bool {
+compute_logical :: (width: s32, height: s32, padding: s32, result: *Layout) -> bool {
     if !initialize() return false;
-    w:=width; h:=height; p:=padding;
-    if w<1 w=1;
-    if h<1 h=1;
-    header_height:=minimum(36,h);
-    body_height:=h-header_height;
-    if p<0 p=0;
-    p=minimum(p,minimum(w/2,body_height/2));
-    p=minimum(p,65535);
-    gutter:=minimum(12,w-2*p);
-    layout_failed=false;
-    C.Clay_SetLayoutDimensions(.{cast(f32)w,cast(f32)h});
+    w := width;
+    h := height;
+    p := padding;
+    if w < 1 w = 1;
+    if h < 1 h = 1;
+    header_height := minimum(36, h);
+    body_height := h - header_height;
+    if p < 0 p = 0;
+    p = minimum(p, minimum(w / 2, body_height / 2));
+    p = minimum(p, 65535);
+    gutter := minimum(12, w - 2 * p);
+    layout_failed = false;
+    C.Clay_SetLayoutDimensions(.{ cast(f32) w, cast(f32) h });
     C.Clay_BeginLayout();
-    open_element("wst-root",grow(),grow(),0,C.CLAY_TOP_TO_BOTTOM);
-    open_element("wst-header",grow(),fixed(header_height));
+    open_element("wst-root", grow(), grow(), 0, C.CLAY_TOP_TO_BOTTOM);
+    open_element("wst-header", grow(), fixed(header_height));
     C.Clay__CloseElement();
-    open_element("wst-body",grow(),grow(),cast(u16)p,C.CLAY_LEFT_TO_RIGHT);
-    open_element("wst-viewport",grow(),grow());
+    open_element("wst-body", grow(), grow(), cast(u16) p, C.CLAY_LEFT_TO_RIGHT);
+    open_element("wst-viewport", grow(), grow());
     C.Clay__CloseElement();
-    open_element("wst-scrollbar",fixed(gutter),grow());
+    open_element("wst-scrollbar", fixed(gutter), grow());
     C.Clay__CloseElement();
     C.Clay__CloseElement();
     C.Clay__CloseElement();
-    _:=C.Clay_EndLayout(0);
-    viewport:=C.Clay_GetElementData(element_id("wst-viewport"));
-    header:=C.Clay_GetElementData(element_id("wst-header"));
-    scrollbar:=C.Clay_GetElementData(element_id("wst-scrollbar"));
+    _ := C.Clay_EndLayout(0);
+    viewport := C.Clay_GetElementData(element_id("wst-viewport"));
+    header := C.Clay_GetElementData(element_id("wst-header"));
+    scrollbar := C.Clay_GetElementData(element_id("wst-scrollbar"));
     if layout_failed || !viewport.found || !header.found || !scrollbar.found return false;
-    result.*=.{viewport.boundingBox.x,viewport.boundingBox.y,viewport.boundingBox.width,viewport.boundingBox.height,
-        header.boundingBox.x,header.boundingBox.y,header.boundingBox.width,header.boundingBox.height,
-        scrollbar.boundingBox.x,scrollbar.boundingBox.y,scrollbar.boundingBox.width,scrollbar.boundingBox.height};
+    result.* = .{
+        viewport.boundingBox.x,
+        viewport.boundingBox.y,
+        viewport.boundingBox.width,
+        viewport.boundingBox.height,
+        header.boundingBox.x,
+        header.boundingBox.y,
+        header.boundingBox.width,
+        header.boundingBox.height,
+        scrollbar.boundingBox.x,
+        scrollbar.boundingBox.y,
+        scrollbar.boundingBox.width,
+        scrollbar.boundingBox.height
+    };
     return true;
 }
 
 #public {
+
 Layout :: struct #c_call {
-    viewport_x:f32; viewport_y:f32; viewport_width:f32; viewport_height:f32;
-    header_x:f32; header_y:f32; header_width:f32; header_height:f32;
-    scrollbar_x:f32; scrollbar_y:f32; scrollbar_width:f32; scrollbar_height:f32;
+    viewport_x: f32;
+    viewport_y: f32;
+    viewport_width: f32;
+    viewport_height: f32;
+    header_x: f32;
+    header_y: f32;
+    header_width: f32;
+    header_height: f32;
+    scrollbar_x: f32;
+    scrollbar_y: f32;
+    scrollbar_width: f32;
+    scrollbar_height: f32;
 }
 
-compute :: (width:s32,height:s32,padding:s32,scale:f32=1.0)->Layout {
-    dpi_scale:=scale;
-    if dpi_scale<0.5 dpi_scale=1.0;
-    result:Layout;
-    if !compute_logical(cast(s32)(cast(f32)width/dpi_scale),cast(s32)(cast(f32)height/dpi_scale),padding,&result)
+compute :: (width: s32, height: s32, padding: s32, scale: f32 = 1.0) -> Layout {
+    dpi_scale := scale;
+    if dpi_scale < 0.5 dpi_scale = 1.0;
+    result: Layout;
+    if !compute_logical(
+        cast(s32)(cast(f32) width / dpi_scale),
+        cast(s32)(cast(f32) height / dpi_scale),
+        padding,
+        &result
+    )
         print("wst: terminal layout unavailable\n");
-    result.viewport_x*=dpi_scale; result.viewport_y*=dpi_scale;
-    result.viewport_width*=dpi_scale; result.viewport_height*=dpi_scale;
-    result.header_x*=dpi_scale; result.header_y*=dpi_scale;
-    result.header_width*=dpi_scale; result.header_height*=dpi_scale;
-    result.scrollbar_x*=dpi_scale; result.scrollbar_y*=dpi_scale;
-    result.scrollbar_width*=dpi_scale; result.scrollbar_height*=dpi_scale;
+    result.viewport_x *= dpi_scale;
+    result.viewport_y *= dpi_scale;
+    result.viewport_width *= dpi_scale;
+    result.viewport_height *= dpi_scale;
+    result.header_x *= dpi_scale;
+    result.header_y *= dpi_scale;
+    result.header_width *= dpi_scale;
+    result.header_height *= dpi_scale;
+    result.scrollbar_x *= dpi_scale;
+    result.scrollbar_y *= dpi_scale;
+    result.scrollbar_width *= dpi_scale;
+    result.scrollbar_height *= dpi_scale;
     return result;
 }
+
 }

@@ -7,10 +7,18 @@ U :: #import "sessions.glo";
 M :: #import "workspace.glo";
 H :: #import "launch.glo";
 #import "Strings/Utf8";
-#export "config.glo" { Config };
-#export "terminal.glo" { Terminal };
-#export "sessions.glo" { Book };
-#export "workspace.glo" { Workspace };
+#export "config.glo" {
+    Config
+};
+#export "terminal.glo" {
+    Terminal
+};
+#export "sessions.glo" {
+    Book
+};
+#export "workspace.glo" {
+    Workspace
+};
 
 reload_error_storage: [4096]u8;
 reload_error_count: ssize;
@@ -28,227 +36,290 @@ State :: struct {
 /// Capture the loaded file before applying command-line overrides.
 start :: (state: *State, configured: *const C.Config) {
     close(state);
-    state.file_config=C.clone(configured);
-    state.configured_font_size=configured.font_size;
+    state.file_config = C.clone(configured);
+    state.configured_font_size = configured.font_size;
 }
 
 close :: (state: *State) {
     C.release(&state.file_config);
-    state.configured_font_size=0;
-    state.session_replaced=false;
-    state.grid_changed=false;
+    state.configured_font_size = 0;
+    state.session_replaced = false;
+    state.grid_changed = false;
 }
 
 /// Owned result; release it after passing it to the native layer.
 launch_command :: (cfg: *const C.Config) -> str {
-    if cfg.command.count>0 return cfg.command.clone();
-    if cfg.shell=="cmd" return "cmd.exe /d".clone();
-    if cfg.shell=="nushell" return "nu.exe".clone();
+    if cfg.command.count > 0  return cfg.command.clone();
+    if cfg.shell == "cmd"     return "cmd.exe /d".clone();
+    if cfg.shell == "nushell" return "nu.exe".clone();
     return "powershell.exe -NoLogo".clone();
 }
 
 /// Borrowed fixed storage; valid until the next reload attempt.
 error_message :: () -> str {
-    return reload_error_view(cast([*]const u8)&reload_error_storage,reload_error_count);
+    return reload_error_view(cast([*]const u8) &reload_error_storage, reload_error_count);
 }
 
 /// Apply all file settings together. File comparisons retain CLI overrides,
 /// temporary zoom and manually resized axes until those file values change.
 /// A replacement child is suspended until every fallible preparation succeeds.
 reload :: (path: str, active: *C.Config, terminal: *T.Terminal, state: *State) -> bool {
-    reload_error_count=0;
-    state.session_replaced=false;
-    state.grid_changed=false;
-    candidate:=C.defaults();
+    reload_error_count = 0;
+    state.session_replaced = false;
+    state.grid_changed = false;
+    candidate := C.defaults();
     defer C.release(&candidate);
-    if !C.load(path,&candidate) {
+    if !C.load(path, &candidate) {
         remember_error(C.error_message());
         return false;
     }
-    target:=C.clone(&candidate);
+    target := C.clone(&candidate);
     defer C.release(&target);
-    if candidate.shell==state.file_config.shell && candidate.command==state.file_config.command {
-        target.shell.free(); target.shell=active.shell.clone();
-        target.command.free(); target.command=active.command.clone();
+    if candidate.shell == state.file_config.shell && candidate.command == state.file_config.command {
+        target.shell.free();
+        target.shell = active.shell.clone();
+        target.command.free();
+        target.command = active.command.clone();
     }
-    if candidate.close_on_exit==state.file_config.close_on_exit target.close_on_exit=active.close_on_exit;
-    if candidate.font_size==state.configured_font_size target.font_size=active.font_size;
-    preserve_default_profile(&candidate,active,state,&target);
-    if candidate.font_family==state.file_config.font_family {
-        target.font_family.free(); target.font_family=active.font_family.clone();
+    if candidate.close_on_exit == state.file_config.close_on_exit
+        target.close_on_exit = active.close_on_exit;
+    if candidate.font_size == state.configured_font_size target.font_size = active.font_size;
+    preserve_default_profile(&candidate, active, state, &target);
+    if candidate.font_family == state.file_config.font_family {
+        target.font_family.free();
+        target.font_family = active.font_family.clone();
     }
-    cols_axis,rows_axis:s32;
-    if candidate.columns!=state.file_config.columns cols_axis=candidate.columns;
-    else target.columns=active.columns;
-    if candidate.rows!=state.file_config.rows rows_axis=candidate.rows;
-    else target.rows=active.rows;
+    cols_axis, rows_axis: s32;
+    if candidate.columns != state.file_config.columns cols_axis = candidate.columns;
+    else                                              target.columns = active.columns;
+    if candidate.rows != state.file_config.rows rows_axis = candidate.rows;
+    else                                        target.rows = active.rows;
 
-    previous_command:=launch_command(active); defer previous_command.free();
-    next_command:=launch_command(&target); defer next_command.free();
-    replace_session:=previous_command!=next_command;
-    if replace_session && P.pty_prepare(next_command.c_string(),terminal.cols,terminal.rows)==0 {
+    previous_command := launch_command(active);
+    defer previous_command.free();
+    next_command := launch_command(&target);
+    defer next_command.free();
+    replace_session := previous_command != next_command;
+    if replace_session && P.pty_prepare(next_command.c_string(), terminal.cols, terminal.rows) == 0 {
         remember_error(P.error().to_string());
         return false;
     }
     // Harmless after a successful commit and covers every failure below.
-    defer { if replace_session P.pty_discard(); }
-    old_width,old_height,cw,ch:s32;
-    P.metrics(&old_width,&old_height,&cw,&ch);
-    if P.apply_all_settings(target.font_family.c_string(),target.font_size,
-        cast([*]const P.Key_Binding)&target.keybindings.items,target.keybindings.count,
-        cols_axis,rows_axis,target.padding)==0 {
+    defer {
+        if replace_session P.pty_discard();
+    }
+    old_width, old_height, cw, ch: s32;
+    P.metrics(&old_width, &old_height, &cw, &ch);
+    if P.apply_all_settings(
+        target.font_family.c_string(),
+        target.font_size,
+        cast([*]const P.Key_Binding) &target.keybindings.items,
+        target.keybindings.count,
+        cols_axis,
+        rows_axis,
+        target.padding,
+        ?target.window_opacity
+    ) == 0 {
         remember_error(P.error().to_string());
         return false;
     }
-    width,height:s32;
-    P.metrics(&width,&height,&cw,&ch);
-    layout:=L.compute(width,height,target.padding,cast(f32)P.dpi()/96.0);
-    cols:=reload_clamp(cast(s32)layout.viewport_width/cw,2,512);
-    rows:=reload_clamp(cast(s32)layout.viewport_height/ch,1,256);
-    grid_changed:=cols!=terminal.cols || rows!=terminal.rows;
+    width, height: s32;
+    P.metrics(&width, &height, &cw, &ch);
+    layout := L.compute(width, height, target.padding, cast(f32) P.dpi() / 96.0);
+    cols := reload_clamp(cast(s32) layout.viewport_width / cw, 2, 512);
+    rows := reload_clamp(cast(s32) layout.viewport_height / ch, 1, 256);
+    grid_changed := cols != terminal.cols || rows != terminal.rows;
     if replace_session {
-        if P.pty_resize_prepared(cols,rows)==0 || P.pty_commit()==0 {
+        if P.pty_resize_prepared(cols, rows) == 0 || P.pty_commit() == 0 {
             remember_error(P.error().to_string());
-            restore_native(active,old_width,old_height);
+            restore_native(active, old_width, old_height);
             return false;
         }
     } else if grid_changed {
-        exit_code:s32;
-        if P.pty_status(&exit_code)==0 && P.pty_resize(cols,rows)==0 {
+        exit_code: s32;
+        if P.pty_status(&exit_code) == 0 && P.pty_resize(cols, rows) == 0 {
             remember_error(P.error().to_string());
-            restore_native(active,old_width,old_height);
-            _:=P.pty_resize(terminal.cols,terminal.rows);
+            restore_native(active, old_width, old_height);
+            _ := P.pty_resize(terminal.cols, terminal.rows);
             return false;
         }
     }
 
-    T.set_history_limit(terminal,target.scrollback);
-    T.set_default_colors(terminal,target.foreground,target.background);
-    T.set_palette(terminal,&target.palette);
+    T.set_history_limit(terminal, target.scrollback);
+    T.set_default_colors(terminal, target.foreground, target.background);
+    T.set_palette(terminal, &target.palette);
     if replace_session T.begin_session(terminal);
-    T.resize(terminal,cols,rows);
+    T.resize(terminal, cols, rows);
     C.release(active);
-    active.*=C.take(&target);
+    active.* = C.take(&target);
     C.release(&state.file_config);
-    state.file_config=C.take(&candidate);
-    state.configured_font_size=state.file_config.font_size;
-    state.session_replaced=replace_session;
-    state.grid_changed=grid_changed;
-    P.set_colors(active.selection_fg,active.selection_bg,active.cursor_text);
+    state.file_config = C.take(&candidate);
+    state.configured_font_size = state.file_config.font_size;
+    state.session_replaced = replace_session;
+    state.grid_changed = grid_changed;
+    P.set_colors(active.selection_fg, active.selection_bg, active.cursor_text);
     P.set_ligatures(active.font_ligatures);
     P.invalidate_frame();
     return true;
 }
 
 /// Stage the complete configuration across every tab before publishing it.
-reload_workspace :: (path:str,active:*C.Config,book:*U.Book,workspace:*M.Workspace,state:*State)->bool {
-    reload_error_count=0;
-    state.session_replaced=false; state.grid_changed=false;
-    candidate:=C.defaults(); defer C.release(&candidate);
-    if !C.load(path,&candidate) { remember_error(C.error_message()); return false; }
-    target:=C.clone(&candidate); defer C.release(&target);
-    if candidate.shell==state.file_config.shell && candidate.command==state.file_config.command {
-        target.shell.free(); target.shell=active.shell.clone();
-        target.command.free(); target.command=active.command.clone();
+reload_workspace :: (
+    path: str,
+    active: *C.Config,
+    book: *U.Book,
+    workspace: *M.Workspace,
+    state: *State
+) -> bool {
+    reload_error_count = 0;
+    state.session_replaced = false;
+    state.grid_changed = false;
+    candidate := C.defaults();
+    defer C.release(&candidate);
+    if !C.load(path, &candidate) {
+        remember_error(C.error_message());
+        return false;
     }
-    if candidate.close_on_exit==state.file_config.close_on_exit target.close_on_exit=active.close_on_exit;
-    if candidate.font_size==state.configured_font_size target.font_size=active.font_size;
-    preserve_default_profile(&candidate,active,state,&target);
-    cols_axis,rows_axis:s32;
-    if candidate.columns!=state.file_config.columns cols_axis=candidate.columns;
-    else target.columns=active.columns;
-    if candidate.rows!=state.file_config.rows rows_axis=candidate.rows;
-    else target.rows=active.rows;
-    next_launches:[32]H.Launch;
-    replacements:[32]bool;
-    resized_active:[32]bool;
-    replace_session:=false;
-    defer { for i:0..32 H.release(&next_launches[i]); }
-    selected:=P.pty_selected();
+    target := C.clone(&candidate);
+    defer C.release(&target);
+    if candidate.shell == state.file_config.shell && candidate.command == state.file_config.command {
+        target.shell.free();
+        target.shell = active.shell.clone();
+        target.command.free();
+        target.command = active.command.clone();
+    }
+    if candidate.close_on_exit == state.file_config.close_on_exit
+        target.close_on_exit = active.close_on_exit;
+    if candidate.font_size == state.configured_font_size target.font_size = active.font_size;
+    preserve_default_profile(&candidate, active, state, &target);
+    cols_axis, rows_axis: s32;
+    if candidate.columns != state.file_config.columns cols_axis = candidate.columns;
+    else                                              target.columns = active.columns;
+    if candidate.rows != state.file_config.rows rows_axis = candidate.rows;
+    else                                        target.rows = active.rows;
+    next_launches: [32]H.Launch;
+    replacements: [32]bool;
+    resized_active: [32]bool;
+    replace_session := false;
     defer {
-        for i:0..32 if book.panes[i].used {
-            _:=P.pty_select(book.panes[i].handle);
+        for i: 0..32 H.release(&next_launches[i]);
+    }
+    selected := P.pty_selected();
+    defer {
+        for i: 0..32 if book.panes[i].used {
+            _ := P.pty_select(book.panes[i].handle);
             P.pty_discard();
         }
-        _:=P.pty_select(selected);
+        _ := P.pty_select(selected);
     }
-    for i:0..32 if book.panes[i].used {
-        pane:=&book.panes[i];
-        profile_id:=pane.launch.profile_id;
+    for i: 0..32 if book.panes[i].used {
+        pane := &book.panes[i];
+        profile_id := pane.launch.profile_id;
         // Removed definitions stop future launches without disturbing a live pane.
-        if profile_id.count>0 && C.profile_index(&target,profile_id)<0
-            next_launches[i]=H.clone(&pane.launch);
-        else _:=H.resolve(&target,profile_id,&next_launches[i]);
-        launch:=&next_launches[i];
-        replacements[i]=launch.command!=pane.launch.command || launch.directory!=pane.launch.directory;
+        if profile_id.count > 0 && C.profile_index(&target, profile_id) < 0
+            next_launches[i] = H.clone(&pane.launch);
+        else
+            _ := H.resolve(&target, profile_id, &next_launches[i]);
+        launch := &next_launches[i];
+        replacements[i] = launch.command != pane.launch.command || launch.directory != pane.launch.directory;
         if replacements[i] {
-            replace_session=true;
-            _:=P.pty_select(pane.handle);
-            if P.pty_prepare_at(launch.command.c_string(),launch.directory.c_string(),pane.terminal.cols,pane.terminal.rows)==0 {
-                remember_error(P.error().to_string()); return false;
+            replace_session = true;
+            _ := P.pty_select(pane.handle);
+            if P.pty_prepare_at(
+                launch.command.c_string(),
+                launch.directory.c_string(),
+                pane.terminal.cols,
+                pane.terminal.rows
+            ) == 0 {
+                remember_error(P.error().to_string());
+                return false;
             }
         }
     }
-    old_width,old_height,cw,ch:s32;
-    P.metrics(&old_width,&old_height,&cw,&ch);
-    if P.apply_all_settings(target.font_family.c_string(),target.font_size,
-        cast([*]const P.Key_Binding)&target.keybindings.items,target.keybindings.count,
-        cols_axis,rows_axis,target.padding)==0 {
-        remember_error(P.error().to_string()); return false;
+    old_width, old_height, cw, ch: s32;
+    P.metrics(&old_width, &old_height, &cw, &ch);
+    if P.apply_all_settings(
+        target.font_family.c_string(),
+        target.font_size,
+        cast([*]const P.Key_Binding) &target.keybindings.items,
+        target.keybindings.count,
+        cols_axis,
+        rows_axis,
+        target.padding,
+        ?target.window_opacity
+    ) == 0 {
+        remember_error(P.error().to_string());
+        return false;
     }
-    width,height:s32;
-    P.metrics(&width,&height,&cw,&ch);
-    base:=L.compute(width,height,target.padding,cast(f32)P.dpi()/96.0);
-    rects:[32]M.Rect;
-    U.geometry(workspace,base,&rects);
-    changed:=false; ok:=true;
-    for i:0..32 if book.panes[i].used {
-        pane:=&book.panes[i];
-        layout:=U.pane_layout(base,rects[i]);
-        cols:=U.columns(layout,cw); rows:=U.rows(layout,ch);
-        resized:=cols!=pane.terminal.cols || rows!=pane.terminal.rows;
-        if resized changed=true;
-        _:=P.pty_select(pane.handle);
-        code:s32;
+    width, height: s32;
+    P.metrics(&width, &height, &cw, &ch);
+    base := L.compute(width, height, target.padding, cast(f32) P.dpi() / 96.0);
+    rects: [32]M.Rect;
+    U.geometry(workspace, base, &rects);
+    changed := false;
+    ok := true;
+    for i: 0..32 if book.panes[i].used {
+        pane := &book.panes[i];
+        layout := U.pane_layout(base, rects[i]);
+        cols := U.columns(layout, cw);
+        rows := U.rows(layout, ch);
+        resized := cols != pane.terminal.cols || rows != pane.terminal.rows;
+        if resized changed = true;
+        _ := P.pty_select(pane.handle);
+        code: s32;
         if replacements[i] {
-            if P.pty_resize_prepared(cols,rows)==0 { ok=false; break; }
-        } else if resized && P.pty_status(&code)==0 {
-            resized_active[i]=true;
-            if P.pty_resize(cols,rows)==0 { ok=false; break; }
+            if P.pty_resize_prepared(cols, rows) == 0 {
+                ok = false;
+                break;
+            }
+        } else if resized && P.pty_status(&code) == 0 {
+            resized_active[i] = true;
+            if P.pty_resize(cols, rows) == 0 {
+                ok = false;
+                break;
+            }
         }
     }
-    if ok && replace_session && P.pty_commit_all()==0 ok=false;
+    if ok && replace_session && P.pty_commit_all() == 0 ok = false;
     if !ok {
         remember_error(P.error().to_string());
-        restore_native(active,old_width,old_height);
-        for i:0..32 if book.panes[i].used && resized_active[i] {
-            pane:=&book.panes[i]; code:s32;
-            _:=P.pty_select(pane.handle);
-            if P.pty_status(&code)==0 _:=P.pty_resize(pane.terminal.cols,pane.terminal.rows);
+        restore_native(active, old_width, old_height);
+        for i: 0..32 if book.panes[i].used && resized_active[i] {
+            pane := &book.panes[i];
+            code: s32;
+            _ := P.pty_select(pane.handle);
+            if P.pty_status(&code) == 0 _ := P.pty_resize(pane.terminal.cols, pane.terminal.rows);
         }
         return false;
     }
-    book.rects=rects;
-    for i:0..32 if book.panes[i].used {
-        pane:=&book.panes[i]; old_offset:=pane.terminal.view_offset;
-        layout:=U.pane_layout(base,rects[i]);
-        cols:=U.columns(layout,cw); rows:=U.rows(layout,ch);
-        if cols!=pane.terminal.cols || rows!=pane.terminal.rows pane.selection.active=false;
-        T.set_history_limit(&pane.terminal,target.scrollback);
-        T.set_default_colors(&pane.terminal,target.foreground,target.background);
-        T.set_palette(&pane.terminal,&target.palette);
+    book.rects = rects;
+    for i: 0..32 if book.panes[i].used {
+        pane := &book.panes[i];
+        old_offset := pane.terminal.view_offset;
+        layout := U.pane_layout(base, rects[i]);
+        cols := U.columns(layout, cw);
+        rows := U.rows(layout, ch);
+        if cols != pane.terminal.cols || rows != pane.terminal.rows pane.selection.active = false;
+        T.set_history_limit(&pane.terminal, target.scrollback);
+        T.set_default_colors(&pane.terminal, target.foreground, target.background);
+        T.set_palette(&pane.terminal, &target.palette);
         if replacements[i] U.reset_session(pane);
-        T.resize(&pane.terminal,cols,rows);
-        if old_offset!=pane.terminal.view_offset pane.selection.active=false;
-        pane.selection.dragging=false; pane.scroll_dragging=false;
-        pane.layout=layout;
-        H.release(&pane.launch); pane.launch=H.take(&next_launches[i]);
+        T.resize(&pane.terminal, cols, rows);
+        if old_offset != pane.terminal.view_offset pane.selection.active = false;
+        pane.selection.dragging = false;
+        pane.scroll_dragging = false;
+        pane.layout = layout;
+        H.release(&pane.launch);
+        pane.launch = H.take(&next_launches[i]);
     }
-    C.release(active); active.*=C.take(&target);
-    C.release(&state.file_config); state.file_config=C.take(&candidate);
-    state.configured_font_size=state.file_config.font_size;
-    state.session_replaced=replace_session; state.grid_changed=changed;
-    P.set_colors(active.selection_fg,active.selection_bg,active.cursor_text);
+    C.release(active);
+    active.* = C.take(&target);
+    C.release(&state.file_config);
+    state.file_config = C.take(&candidate);
+    state.configured_font_size = state.file_config.font_size;
+    state.session_replaced = replace_session;
+    state.grid_changed = changed;
+    P.set_colors(active.selection_fg, active.selection_bg, active.cursor_text);
     P.set_ligatures(active.font_ligatures);
     P.invalidate_frame();
     return true;
@@ -256,56 +327,74 @@ reload_workspace :: (path:str,active:*C.Config,book:*U.Book,workspace:*M.Workspa
 
 /// Compatibility helper for callers that only install the keyboard table.
 reload_keybindings :: (path: str, active: *C.Config) -> bool {
-    reload_error_count=0;
-    candidate:=C.defaults();
+    reload_error_count = 0;
+    candidate := C.defaults();
     defer C.release(&candidate);
-    if !C.load(path,&candidate) {
+    if !C.load(path, &candidate) {
         remember_error(C.error_message());
         return false;
     }
-    bindings:=candidate.keybindings;
-    for i:0..bindings.count if bindings.profile_ids[i]>0 {
-        source:=bindings.profile_ids[i]-1;
-        index:=C.profile_index(active,candidate.profiles[source].id);
-        if index<0 { remember_error("Keyboard-only reload cannot introduce a new profile; reload the complete configuration"); return false; }
-        bindings.profile_ids[i]=index+1;
+    bindings := candidate.keybindings;
+    for i: 0..bindings.count if bindings.profile_ids[i] > 0 {
+        source := bindings.profile_ids[i] - 1;
+        index := C.profile_index(active, candidate.profiles[source].id);
+        if index < 0 {
+            remember_error(
+                "Keyboard-only reload cannot introduce a new profile; reload the complete configuration"
+            );
+            return false;
+        }
+        bindings.profile_ids[i] = index + 1;
     }
-    if P.set_keybindings(cast([*]const P.Key_Binding)&bindings.items,
-        bindings.count)==0 {
+    if P.set_keybindings(cast([*]const P.Key_Binding) &bindings.items, bindings.count) == 0 {
         remember_error(P.error().to_string());
         return false;
     }
-    active.keybindings=bindings;
+    active.keybindings = bindings;
     return true;
 }
 
 }
 
-preserve_default_profile :: (candidate:*const C.Config,active:*const C.Config,state:*const State,target:*C.Config) {
-    if candidate.default_profile==state.file_config.default_profile &&
-        (active.default_profile.count==0 || C.profile_index(target,active.default_profile)>=0) {
-        target.default_profile.free(); target.default_profile=active.default_profile.clone();
+preserve_default_profile :: (
+    candidate: *const C.Config,
+    active: *const C.Config,
+    state: *const State,
+    target: *C.Config
+) {
+    if candidate.default_profile == state.file_config.default_profile &&
+        (active.default_profile.count == 0 || C.profile_index(target, active.default_profile) >= 0) {
+        target.default_profile.free();
+        target.default_profile = active.default_profile.clone();
     }
 }
 
-restore_native :: (active: *const C.Config,width: s32,height: s32) {
-    _:=P.apply_all_settings(active.font_family.c_string(),active.font_size,
-        cast([*]const P.Key_Binding)&active.keybindings.items,active.keybindings.count,0,0,active.padding);
-    _:=P.resize_client(width,height);
+restore_native :: (active: *const C.Config, width: s32, height: s32) {
+    _ := P.apply_all_settings(
+        active.font_family.c_string(),
+        active.font_size,
+        cast([*]const P.Key_Binding) &active.keybindings.items,
+        active.keybindings.count,
+        0,
+        0,
+        active.padding,
+        ?active.window_opacity
+    );
+    _ := P.resize_client(width, height);
     P.invalidate_frame();
 }
 
-reload_clamp :: (n: s32,low: s32,high: s32) -> s32 {
-    if n<low return low;
-    if n>high return high;
+reload_clamp :: (n: s32, low: s32, high: s32) -> s32 {
+    if n < low  return low;
+    if n > high return high;
     return n;
 }
 
 remember_error :: (message: str) {
-    reload_error_count=message.count;
-    if reload_error_count>4095 reload_error_count=4095;
-    for i:0..reload_error_count reload_error_storage[i]=message[i];
-    reload_error_storage[reload_error_count]=0;
+    reload_error_count = message.count;
+    if reload_error_count > 4095 reload_error_count = 4095;
+    for i: 0..reload_error_count reload_error_storage[i] = message[i];
+    reload_error_storage[reload_error_count] = 0;
 }
 
-reload_error_view :: (data: [*]const u8,count: ssize) -> str #magic "string_from_raw_parts";
+reload_error_view :: (data: [*]const u8, count: ssize) -> str #magic "string_from_raw_parts";

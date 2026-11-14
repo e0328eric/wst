@@ -4,68 +4,127 @@ N :: #import "../src/windows_gui.glo";
 #import "Io";
 #import "Meta";
 user :: #library,system "user32";
-Rect :: struct #c_call { left:s32; top:s32; right:s32; bottom:s32; }
-Point :: struct #c_call { x:s32; y:s32; }
-Message :: struct #c_call {
-    window:usize; message:u32; detail:usize; parameter:ssize;
-    time:u32; point:Point; private:u32;
+Rect :: struct #c_call {
+    left: s32;
+    top: s32;
+    right: s32;
+    bottom: s32;
 }
-GetWindowLongPtrW :: (window:usize,index:s32)->ssize #foreign user;
-SetWindowLongPtrW :: (window:usize,index:s32,value:ssize)->ssize #foreign user;
-GetWindowRect :: (window:usize,rect:*Rect)->s32 #foreign user;
-GetSystemMenu :: (window:usize,revert:s32)->usize #foreign user;
-IsWindowVisible :: (window:usize)->s32 #foreign user;
-ClientToScreen :: (window:usize,point:*Point)->s32 #foreign user;
-SendMessageW :: (window:usize,message:u32,detail:usize,parameter:ssize)->ssize #foreign user;
-PeekMessageW :: (message:*Message,window:usize,first:u32,last:u32,remove:u32)->s32 #foreign user;
+Point :: struct #c_call {
+    x: s32;
+    y: s32;
+}
+Message :: struct #c_call {
+    window: usize;
+    message: u32;
+    detail: usize;
+    parameter: ssize;
+    time: u32;
+    point: Point;
+    private: u32;
+}
+GetWindowLongPtrW :: (window: usize, index: s32) -> ssize #foreign user;
+SetWindowLongPtrW :: (window: usize, index: s32, value: ssize) -> ssize #foreign user;
+GetWindowRect :: (window: usize, rect: *Rect) -> s32 #foreign user;
+GetSystemMenu :: (window: usize, revert: s32) -> usize #foreign user;
+IsWindowVisible :: (window: usize) -> s32 #foreign user;
+ClientToScreen :: (window: usize, point: *Point) -> s32 #foreign user;
+SendMessageW :: (window: usize, message: u32, detail: usize, parameter: ssize) -> ssize #foreign user;
+PeekMessageW :: (message: *Message, window: usize, first: u32, last: u32, remove: u32) -> s32 #foreign user;
 
-check :: (ok:bool,message:str) { if !ok { print("FAIL: {}\n",message); exit(1); } }
-packed :: (x:s32,y:s32)->ssize { return cast(ssize)((cast(u32)x&65535)|((cast(u32)y&65535)<<16)); }
-command :: (window:usize,expected:usize) {
-    message:Message;
-    check(PeekMessageW(&message,window,16#112,16#112,1)!=0 && message.detail==expected,"header action posts the matching native system command");
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
+}
+packed :: (x: s32, y: s32) -> ssize {
+    return cast(ssize)((cast(u32) x & 65535) | ((cast(u32) y & 65535) << 16));
+}
+command :: (window: usize, expected: usize) {
+    message: Message;
+    check(
+        PeekMessageW(&message, window, 16#112, 16#112, 1) != 0 && message.detail == expected,
+        "header action posts the matching native system command"
+    );
 }
 main :: () {
-    window:=G.create_window(400,300,"wst client header test",.Hidden|.High_Dpi);
-    check(G.window_valid(window),"Gui creates the hidden window"); defer G.destroy_window(window);
-    check(N.gui_bind()!=0,"bind supplemental native services"); defer N.gui_unbind();
-    handle:=N.gui_window_handle(); procedure:=GetWindowLongPtrW(handle,-4);
-    check(N.configure_chrome(16#080808)!=0,"configure integrated header");
-    style:=GetWindowLongPtrW(handle,-16);
-    check((style&16#00c00000)==0,"standard caption is removed");
-    check((style&16#000f0000)==16#000f0000,"native resize, system menu, minimize and maximize styles remain");
-    check(GetWindowLongPtrW(handle,-4)==procedure,"Gui remains the sole window procedure");
-    check(GetSystemMenu(handle,0)!=0 && IsWindowVisible(handle)==0,"system menu exists and hidden setup stays hidden");
-    check(N.resize_client(600,400)!=0 && G.update_window_events(window),"resize custom-frame client");
-    dimensions:=G.render_dimensions(window);
-    check(dimensions.x==600 && dimensions.y==400,"client geometry is exact after removing caption");
-    before,after:Rect; check(GetWindowRect(handle,&before)!=0,"read window bounds");
-    check(N.configure_chrome(16#eeeeee)!=0,"hot reload native frame appearance");
-    check(GetWindowRect(handle,&after)!=0 && before.left==after.left && before.top==after.top && before.right==after.right && before.bottom==after.bottom,"theme changes preserve size and position");
-    hit:=SendMessageW(handle,16#84,0,packed(before.left+1,(before.top+before.bottom)/2));
-    check(hit==10,"native left resize edge remains active");
-    hit=SendMessageW(handle,16#84,0,packed((before.left+before.right)/2,before.top+1));
-    check(hit==12,"native top resize edge remains active");
+    window := G.create_window(400, 300, "wst client header test", .Hidden | .High_Dpi);
+    check(G.window_valid(window), "Gui creates the hidden window");
+    defer G.destroy_window(window);
+    check(N.gui_bind() != 0, "bind supplemental native services");
+    defer N.gui_unbind();
+    handle := N.gui_window_handle();
+    procedure := GetWindowLongPtrW(handle, -4);
+    check(N.configure_chrome(16#080808) != 0, "configure integrated header");
+    style := GetWindowLongPtrW(handle, -16);
+    check((style & 16#00c00000) == 0, "standard caption is removed");
+    check(
+        (style & 16#000f0000) == 16#000f0000,
+        "native resize, system menu, minimize and maximize styles remain"
+    );
+    check(GetWindowLongPtrW(handle, -4) == procedure, "Gui remains the sole window procedure");
+    check(
+        GetSystemMenu(handle, 0) != 0 && IsWindowVisible(handle) == 0,
+        "system menu exists and hidden setup stays hidden"
+    );
+    check(
+        N.resize_client(600, 400) != 0 && G.update_window_events(window),
+        "resize custom-frame client"
+    );
+    dimensions := G.render_dimensions(window);
+    check(
+        dimensions.x == 600 && dimensions.y == 400,
+        "client geometry is exact after removing caption"
+    );
+    before, after: Rect;
+    check(GetWindowRect(handle, &before) != 0, "read window bounds");
+    check(N.configure_chrome(16#eeeeee) != 0, "hot reload native frame appearance");
+    check(
+        GetWindowRect(handle, &after) != 0 && before.left == after.left && before.top == after.top && before.right == after.right && before.bottom == after.bottom,
+        "theme changes preserve size and position"
+    );
+    hit := SendMessageW(handle, 16#84, 0, packed(before.left + 1, (before.top + before.bottom) / 2));
+    check(hit == 10, "native left resize edge remains active");
+    hit = SendMessageW(handle, 16#84, 0, packed((before.left + before.right) / 2, before.top + 1));
+    check(hit == 12, "native top resize edge remains active");
 
     // Inspect queued commands instead of opening an OS menu/move loop or showing
     // a test window over the user's desktop. Windows owns command execution.
-    check(N.window_action(0)==0,"reject invalid window action");
-    check(N.window_action(1)!=0,"minimize command"); command(handle,16#f020);
-    check(N.window_action(2)!=0,"maximize command"); command(handle,16#f030);
-    _:=SetWindowLongPtrW(handle,-16,style|16#01000000);
-    check(N.window_maximized()!=0 && N.window_action(2)!=0,"restore command reflects native zoom state"); command(handle,16#f120);
-    _:=SetWindowLongPtrW(handle,-16,style);
-    check(N.window_maximized()==0,"normal state is restored without showing the test window");
-    check(N.window_drag(120,18)!=0,"begin native caption movement");
-    message:Message;
-    check(PeekMessageW(&message,handle,16#a1,16#a1,1)!=0 && message.detail==2,"drag posts native HTCAPTION rather than moving the window itself");
-    point:Point=.{120,18}; check(ClientToScreen(handle,&point)!=0 && message.parameter==packed(point.x,point.y),"drag coordinates are physical screen pixels");
-    check(N.window_drag(120,18)!=0,"double-click header command"); command(handle,16#f030);
-    check(IsWindowVisible(handle)==0,"native command tests never expose their window");
-    check(N.window_action(3)!=0,"request ordinary Gui close");
-    _:=G.update_window_events(window);
-    events:=G.input_events(window); closed:bool;
-    for i:0..events.count if G.input_event(events,cast(u32)i).kind==.Close closed=true;
-    check(closed,"close button enters Gui's ordered Close stream");
-    print("Client header tests passed: Gui ownership, native frame/resize/menu, theme reload, commands, caption drag and ordered close.\n");
+    check(N.window_action(0) == 0, "reject invalid window action");
+    check(N.window_action(1) != 0, "minimize command");
+    command(handle, 16#f020);
+    check(N.window_action(2) != 0, "maximize command");
+    command(handle, 16#f030);
+    _ := SetWindowLongPtrW(handle, -16, style | 16#01000000);
+    check(
+        N.window_maximized() != 0 && N.window_action(2) != 0,
+        "restore command reflects native zoom state"
+    );
+    command(handle, 16#f120);
+    _ := SetWindowLongPtrW(handle, -16, style);
+    check(N.window_maximized() == 0, "normal state is restored without showing the test window");
+    check(N.window_drag(120, 18) != 0, "begin native caption movement");
+    message: Message;
+    check(
+        PeekMessageW(&message, handle, 16#a1, 16#a1, 1) != 0 && message.detail == 2,
+        "drag posts native HTCAPTION rather than moving the window itself"
+    );
+    point: Point = .{ 120, 18 };
+    check(
+        ClientToScreen(handle, &point) != 0 && message.parameter == packed(point.x, point.y),
+        "drag coordinates are physical screen pixels"
+    );
+    check(N.window_drag(120, 18) != 0, "double-click header command");
+    command(handle, 16#f030);
+    check(IsWindowVisible(handle) == 0, "native command tests never expose their window");
+    check(N.window_action(3) != 0, "request ordinary Gui close");
+    _ := G.update_window_events(window);
+    events := G.input_events(window);
+    closed: bool;
+    for i: 0..events.count if G.input_event(events, cast(u32) i).kind == .Close closed = true;
+    check(closed, "close button enters Gui's ordered Close stream");
+    print(
+        "Client header tests passed: Gui ownership, native frame/resize/menu, theme reload, commands, caption drag and ordered close.\n"
+    );
 }

@@ -3,410 +3,667 @@
 #import "../src/terminal.glo";
 
 check :: (ok: bool, message: str) {
-    if !ok { print("FAIL: {}\n",message); exit(1); }
-}
-cell :: (t: *Terminal, x: s32, y: s32, u: u32) {
-    actual := visible_cell(t,x,y).codepoint;
-    if actual != u {
-        print("cell ({},{}): expected {}, got {}\n",x,y,u,actual);
-        check(false,"cell contents");
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
     }
 }
-colors :: (t: *Terminal,x: s32,y: s32,fg: u32,bg: u32,message: str) {
-    c:=visible_cell(t,x,y);
-    check(c.fg==fg && c.bg==bg,message);
+cell :: (t: *Terminal, x: s32, y: s32, u: u32) {
+    actual := visible_cell(t, x, y).codepoint;
+    if actual != u {
+        print("cell ({},{}): expected {}, got {}\n", x, y, u, actual);
+        check(false, "cell contents");
+    }
+}
+colors :: (t: *Terminal, x: s32, y: s32, fg: u32, bg: u32, message: str) {
+    c := visible_cell(t, x, y);
+    check(c.fg == fg && c.bg == bg, message);
 }
 theme_tests :: () {
-    old_fg: u32=16#112233; old_bg: u32=16#445566;
-    first_fg: u32=16#abcdef; first_bg: u32=16#010203;
-    second_fg: u32=16#987654; second_bg: u32=16#001122;
+    old_fg: u32 = 16#112233;
+    old_bg: u32 = 16#445566;
+    first_fg: u32 = 16#abcdef;
+    first_bg: u32 = 16#010203;
+    second_fg: u32 = 16#987654;
+    second_bg: u32 = 16#001122;
     theme: Terminal;
-    init(&theme,12,4,8,old_fg,old_bg);
+    init(&theme, 12, 4, 8, old_fg, old_bg);
     defer release(&theme);
-    feed(&theme,"A\x1b[7mI\x1b[0m한\x1b[38;2;17;34;51;48;2;68;85;102mE");
-    check(visible_cell(&theme,0,0).flags==96,"initial defaults carry independent provenance");
-    check(visible_cell(&theme,4,0).flags==0,"explicit RGB clears both default markers");
-    x:=theme.cursor_x; y:=theme.cursor_y;
-    set_default_colors(&theme,first_fg,first_bg);
-    check(theme.cursor_x==x && theme.cursor_y==y,"recoloring preserves cursor");
-    colors(&theme,0,0,first_fg,first_bg,"existing default cells follow the new theme");
-    colors(&theme,1,0,first_fg,first_bg,"inverse retains its underlying default colors");
-    check((visible_cell(&theme,1,0).flags&4)!=0,"inverse style is preserved");
-    colors(&theme,2,0,first_fg,first_bg,"wide leading cell follows theme");
-    colors(&theme,3,0,first_fg,first_bg,"wide continuation follows theme");
-    check((visible_cell(&theme,3,0).flags&96)==96,"wide continuation retains default markers");
-    colors(&theme,4,0,old_fg,old_bg,"explicit RGB equal to the old defaults remains explicit");
-    check(theme.fg==old_fg && theme.bg==old_bg,"explicit current attributes remain unchanged");
-    feed(&theme,"F\x1b[39mG\x1b[49mH\x1b[91;44mP");
-    colors(&theme,5,0,old_fg,old_bg,"subsequent explicit printing keeps its original colors");
-    colors(&theme,6,0,first_fg,old_bg,"SGR39 restores only default foreground");
-    colors(&theme,7,0,first_fg,first_bg,"SGR49 restores default background");
-    check(visible_cell(&theme,6,0).flags==32 && visible_cell(&theme,7,0).flags==96,"SGR39/49 update origin markers independently");
-    palette:=visible_cell(&theme,8,0);
-    check((palette.flags&96)==0,"bright and standard palette colors are explicit");
+    feed(&theme, "A\x1b[7mI\x1b[0m한\x1b[38;2;17;34;51;48;2;68;85;102mE");
+    check(visible_cell(&theme, 0, 0).flags == 96, "initial defaults carry independent provenance");
+    check(visible_cell(&theme, 4, 0).flags == 0, "explicit RGB clears both default markers");
+    x := theme.cursor_x;
+    y := theme.cursor_y;
+    set_default_colors(&theme, first_fg, first_bg);
+    check(theme.cursor_x == x && theme.cursor_y == y, "recoloring preserves cursor");
+    colors(&theme, 0, 0, first_fg, first_bg, "existing default cells follow the new theme");
+    colors(&theme, 1, 0, first_fg, first_bg, "inverse retains its underlying default colors");
+    check((visible_cell(&theme, 1, 0).flags & 4) != 0, "inverse style is preserved");
+    colors(&theme, 2, 0, first_fg, first_bg, "wide leading cell follows theme");
+    colors(&theme, 3, 0, first_fg, first_bg, "wide continuation follows theme");
+    check(
+        (visible_cell(&theme, 3, 0).flags & 96) == 96,
+        "wide continuation retains default markers"
+    );
+    colors(&theme, 4, 0, old_fg, old_bg, "explicit RGB equal to the old defaults remains explicit");
+    check(theme.fg == old_fg && theme.bg == old_bg, "explicit current attributes remain unchanged");
+    feed(&theme, "F\x1b[39mG\x1b[49mH\x1b[91;44mP");
+    colors(&theme, 5, 0, old_fg, old_bg, "subsequent explicit printing keeps its original colors");
+    colors(&theme, 6, 0, first_fg, old_bg, "SGR39 restores only default foreground");
+    colors(&theme, 7, 0, first_fg, first_bg, "SGR49 restores default background");
+    check(
+        visible_cell(&theme, 6, 0).flags == 32 && visible_cell(&theme, 7, 0).flags == 96,
+        "SGR39/49 update origin markers independently"
+    );
+    palette := visible_cell(&theme, 8, 0);
+    check((palette.flags & 96) == 0, "bright and standard palette colors are explicit");
 
     // A reload can happen between pipe chunks, including in the middle of UTF-8.
-    feed(&theme,"\x1b[0m\x1b7\x1b[2;1HS\x1b[38;2;171;205;239m");
-    hangul: [3]u8=.[237,149,156];
-    feed(&theme,cast(str)hangul[0..2]);
-    remaining:=theme.utf_remaining;
-    set_default_colors(&theme,second_fg,second_bg);
-    check(theme.utf_remaining==remaining && remaining==1,"theme change preserves partial UTF-8 state");
-    check(theme.fg==first_fg && theme.bg==second_bg,"explicit foreground and default background update independently");
-    feed(&theme,cast(str)hangul[2..3]);
-    cell(&theme,1,1,16#d55c);
-    colors(&theme,1,1,first_fg,second_bg,"continued UTF-8 printing uses current color origins");
-    colors(&theme,3,0,second_fg,second_bg,"repeated reload updates a stored wide continuation");
-    colors(&theme,8,0,palette.fg,palette.bg,"palette colors remain unchanged through repeated reloads");
-    feed(&theme,"\x1b8R");
-    colors(&theme,9,0,second_fg,second_bg,"saved default attributes restore the new theme");
+    feed(&theme, "\x1b[0m\x1b7\x1b[2;1HS\x1b[38;2;171;205;239m");
+    hangul: [3]u8 = .[237, 149, 156];
+    feed(&theme, cast(str) hangul[0..2]);
+    remaining := theme.utf_remaining;
+    set_default_colors(&theme, second_fg, second_bg);
+    check(
+        theme.utf_remaining == remaining && remaining == 1,
+        "theme change preserves partial UTF-8 state"
+    );
+    check(
+        theme.fg == first_fg && theme.bg == second_bg,
+        "explicit foreground and default background update independently"
+    );
+    feed(&theme, cast(str) hangul[2..3]);
+    cell(&theme, 1, 1, 16#d55c);
+    colors(&theme, 1, 1, first_fg, second_bg, "continued UTF-8 printing uses current color origins");
+    colors(&theme, 3, 0, second_fg, second_bg, "repeated reload updates a stored wide continuation");
+    colors(
+        &theme,
+        8,
+        0,
+        palette.fg,
+        palette.bg,
+        "palette colors remain unchanged through repeated reloads"
+    );
+    feed(&theme, "\x1b8R");
+    colors(&theme, 9, 0, second_fg, second_bg, "saved default attributes restore the new theme");
 
     // Both screen buffers, primary attributes and alternate saved attributes
     // survive a reload without resetting screen contents or modes.
-    feed(&theme,"\x1b[0m\x1b[?1049hA\x1b[38;5;196;48;5;22mC");
-    explicit_alt:=visible_cell(&theme,1,0);
-    set_default_colors(&theme,16#102030,16#405060);
-    colors(&theme,0,0,16#102030,16#405060,"active alternate default cells update");
-    colors(&theme,1,0,explicit_alt.fg,explicit_alt.bg,"alternate 256-color cells remain explicit");
-    check(theme.primary_fg==16#102030 && theme.primary_bg==16#405060,"primary default attributes update while alternate is active");
-    feed(&theme,"\x1b[?1049l\x1b[3;1HT");
-    colors(&theme,0,2,16#102030,16#405060,"returning to primary restores current defaults");
-    set_default_colors(&theme,16#203040,16#506070);
-    check(theme.alt_cells[0].fg==16#203040 && theme.alt_cells[0].bg==16#506070,"inactive alternate screen updates too");
-    check(theme.alt_cells[1].fg==explicit_alt.fg && theme.alt_cells[1].bg==explicit_alt.bg,"inactive explicit alternate colors remain unchanged");
+    feed(&theme, "\x1b[0m\x1b[?1049hA\x1b[38;5;196;48;5;22mC");
+    explicit_alt := visible_cell(&theme, 1, 0);
+    set_default_colors(&theme, 16#102030, 16#405060);
+    colors(&theme, 0, 0, 16#102030, 16#405060, "active alternate default cells update");
+    colors(
+        &theme,
+        1,
+        0,
+        explicit_alt.fg,
+        explicit_alt.bg,
+        "alternate 256-color cells remain explicit"
+    );
+    check(
+        theme.primary_fg == 16#102030 && theme.primary_bg == 16#405060,
+        "primary default attributes update while alternate is active"
+    );
+    feed(&theme, "\x1b[?1049l\x1b[3;1HT");
+    colors(&theme, 0, 2, 16#102030, 16#405060, "returning to primary restores current defaults");
+    set_default_colors(&theme, 16#203040, 16#506070);
+    check(
+        theme.alt_cells[0].fg == 16#203040 && theme.alt_cells[0].bg == 16#506070,
+        "inactive alternate screen updates too"
+    );
+    check(
+        theme.alt_cells[1].fg == explicit_alt.fg && theme.alt_cells[1].bg == explicit_alt.bg,
+        "inactive explicit alternate colors remain unchanged"
+    );
 
-    feed(&theme,"\x1b[38;2;32;48;64;48;2;80;96;112m\x1b7");
-    set_default_colors(&theme,16#304050,16#607080);
-    feed(&theme,"\x1b[0m\x1b8X");
-    check(theme.fg==16#203040 && theme.bg==16#506070 && (theme.attributes&96)==0,
-        "saved explicit colors equal to the previous defaults are never recolored");
-    feed(&theme,"\x1bcQ");
-    colors(&theme,0,0,16#304050,16#607080,"RIS resets to the latest configured defaults");
-    check((visible_cell(&theme,0,0).flags&96)==96,"RIS restores default origin markers");
+    feed(&theme, "\x1b[38;2;32;48;64;48;2;80;96;112m\x1b7");
+    set_default_colors(&theme, 16#304050, 16#607080);
+    feed(&theme, "\x1b[0m\x1b8X");
+    check(
+        theme.fg == 16#203040 && theme.bg == 16#506070 && (theme.attributes & 96) == 0,
+        "saved explicit colors equal to the previous defaults are never recolored"
+    );
+    feed(&theme, "\x1bcQ");
+    colors(&theme, 0, 0, 16#304050, 16#607080, "RIS resets to the latest configured defaults");
+    check((visible_cell(&theme, 0, 0).flags & 96) == 96, "RIS restores default origin markers");
 
     history_theme: Terminal;
-    init(&history_theme,6,2,2,old_fg,old_bg);
+    init(&history_theme, 6, 2, 2, old_fg, old_bg);
     defer release(&history_theme);
-    feed(&history_theme,"A한Z\r\n\x1b[38;2;17;34;51;48;2;68;85;102mE\x1b[0m\r\nlast");
-    scroll_view(&history_theme,1);
-    count:=history_theme.history_count; offset:=history_theme.view_offset;
-    resize(&history_theme,2,2);
-    set_default_colors(&history_theme,first_fg,first_bg);
-    check(history_theme.history_count==count && history_theme.view_offset==offset,"theme changes preserve history and viewport position");
-    colors(&history_theme,0,0,first_fg,first_bg,"scrolled historical default cells update");
-    clipped:=visible_cell(&history_theme,1,0);
-    check(clipped.codepoint==32 && (clipped.flags&96)==96,"clipped historical wide glyph keeps its default origins");
-    check(history_theme.history[1].fg==first_fg && history_theme.history[2].bg==first_bg,"hidden history columns and wide tails update");
-    resize(&history_theme,8,2);
-    set_default_colors(&history_theme,second_fg,second_bg);
-    cell(&history_theme,1,0,16#d55c);
-    colors(&history_theme,1,0,second_fg,second_bg,"restoring width reveals current themed history");
-    padded:=visible_cell(&history_theme,7,0);
-    check(padded.codepoint==32 && padded.fg==second_fg && padded.bg==second_bg && padded.flags==96,"new history columns stay attached to configured defaults");
-    feed(&history_theme,"\x1b[H\x1b[38;2;17;34;51mN\x1b[0m\x1b[2;1HX\r\n");
-    set_default_colors(&history_theme,16#010101,16#020202);
-    colors(&history_theme,0,1,old_fg,16#020202,"new history preserves explicit foreground but recolors default background");
-    feed(&history_theme,"\r\nZ\r\n");
-    set_default_colors(&history_theme,16#030303,16#040404);
-    for c:history_theme.history {
-        if (c.flags&32)!=0 check(c.fg==16#030303,"all wrapped history slots update default foreground");
-        if (c.flags&64)!=0 check(c.bg==16#040404,"all wrapped history slots update default background");
+    feed(&history_theme, "A한Z\r\n\x1b[38;2;17;34;51;48;2;68;85;102mE\x1b[0m\r\nlast");
+    scroll_view(&history_theme, 1);
+    count := history_theme.history_count;
+    offset := history_theme.view_offset;
+    resize(&history_theme, 2, 2);
+    set_default_colors(&history_theme, first_fg, first_bg);
+    check(
+        history_theme.history_count == count && history_theme.view_offset == offset,
+        "theme changes preserve history and viewport position"
+    );
+    colors(&history_theme, 0, 0, first_fg, first_bg, "scrolled historical default cells update");
+    clipped := visible_cell(&history_theme, 1, 0);
+    check(
+        clipped.codepoint == 32 && (clipped.flags & 96) == 96,
+        "clipped historical wide glyph keeps its default origins"
+    );
+    check(
+        history_theme.history[1].fg == first_fg && history_theme.history[2].bg == first_bg,
+        "hidden history columns and wide tails update"
+    );
+    resize(&history_theme, 8, 2);
+    set_default_colors(&history_theme, second_fg, second_bg);
+    cell(&history_theme, 1, 0, 16#d55c);
+    colors(
+        &history_theme,
+        1,
+        0,
+        second_fg,
+        second_bg,
+        "restoring width reveals current themed history"
+    );
+    padded := visible_cell(&history_theme, 7, 0);
+    check(
+        padded.codepoint == 32 && padded.fg == second_fg && padded.bg == second_bg && padded.flags == 96,
+        "new history columns stay attached to configured defaults"
+    );
+    feed(&history_theme, "\x1b[H\x1b[38;2;17;34;51mN\x1b[0m\x1b[2;1HX\r\n");
+    set_default_colors(&history_theme, 16#010101, 16#020202);
+    colors(
+        &history_theme,
+        0,
+        1,
+        old_fg,
+        16#020202,
+        "new history preserves explicit foreground but recolors default background"
+    );
+    feed(&history_theme, "\r\nZ\r\n");
+    set_default_colors(&history_theme, 16#030303, 16#040404);
+    for c: history_theme.history {
+        if (c.flags & 32) != 0
+            check(c.fg == 16#030303, "all wrapped history slots update default foreground");
+        if (c.flags & 64) != 0
+            check(c.bg == 16#040404, "all wrapped history slots update default background");
     }
 }
 history_limit_tests :: () {
     t: Terminal;
-    init(&t,6,2,4,16#eeeeee,16#111111);
+    init(&t, 6, 2, 4, 16#eeeeee, 16#111111);
     defer release(&t);
-    feed(&t,"A한XY\r\nBBBBBB\r\nCCCCCC\r\nDDDDDD\r\nEEEEEE\r\nFFFFFF");
-    check(t.history_count==4 && t.history_start==0,"history reaches its initial limit");
-    scroll_view(&t,3);
-    cell(&t,0,0,66);
-    x:=t.cursor_x; y:=t.cursor_y;
-    set_history_limit(&t,8);
-    check(t.history_limit==8 && t.history_count==4 && t.history_start==0 && t.view_offset==3,
-        "growing a partial history retains rows and viewport");
-    cell(&t,0,0,66);
-    check(t.cursor_x==x && t.cursor_y==y,"limit changes do not move the live cursor");
-    feed(&t,"\r\nGGGGGG\r\nHHHHHH\r\nIIIIII\r\nJJJJJJ\r\nKKKKKK");
-    check(t.history_count==8 && t.history_start==1,"new rows fill the grown ring and roll it");
-    scroll_view(&t,1000);
-    cell(&t,0,0,66);
-    set_history_limit(&t,3);
-    check(t.history_limit==3 && t.history_count==3 && t.history_start==0 && t.view_offset==3,
-        "shrinking a rolled history keeps newest rows and clips old viewport");
-    cell(&t,0,0,71); cell(&t,0,1,72);
-    scroll_view(&t,-2);
-    cell(&t,0,0,73); cell(&t,0,1,74);
-    set_history_limit(&t,5);
-    check(t.history_count==3 && t.view_offset==1,"growth preserves distance above live output");
-    cell(&t,0,0,73);
-    feed(&t,"\r\nLLLLLL\r\nMMMMMM\r\nNNNNNN");
-    check(t.history_count==5 && t.history_start==1,"normalized grown ring accepts and rolls future rows");
-    scroll_view(&t,1000); cell(&t,0,0,72); cell(&t,0,1,73);
+    feed(&t, "A한XY\r\nBBBBBB\r\nCCCCCC\r\nDDDDDD\r\nEEEEEE\r\nFFFFFF");
+    check(t.history_count == 4 && t.history_start == 0, "history reaches its initial limit");
+    scroll_view(&t, 3);
+    cell(&t, 0, 0, 66);
+    x := t.cursor_x;
+    y := t.cursor_y;
+    set_history_limit(&t, 8);
+    check(
+        t.history_limit == 8 && t.history_count == 4 && t.history_start == 0 && t.view_offset == 3,
+        "growing a partial history retains rows and viewport"
+    );
+    cell(&t, 0, 0, 66);
+    check(t.cursor_x == x && t.cursor_y == y, "limit changes do not move the live cursor");
+    feed(&t, "\r\nGGGGGG\r\nHHHHHH\r\nIIIIII\r\nJJJJJJ\r\nKKKKKK");
+    check(t.history_count == 8 && t.history_start == 1, "new rows fill the grown ring and roll it");
+    scroll_view(&t, 1000);
+    cell(&t, 0, 0, 66);
+    set_history_limit(&t, 3);
+    check(
+        t.history_limit == 3 && t.history_count == 3 && t.history_start == 0 && t.view_offset == 3,
+        "shrinking a rolled history keeps newest rows and clips old viewport"
+    );
+    cell(&t, 0, 0, 71);
+    cell(&t, 0, 1, 72);
+    scroll_view(&t, -2);
+    cell(&t, 0, 0, 73);
+    cell(&t, 0, 1, 74);
+    set_history_limit(&t, 5);
+    check(t.history_count == 3 && t.view_offset == 1, "growth preserves distance above live output");
+    cell(&t, 0, 0, 73);
+    feed(&t, "\r\nLLLLLL\r\nMMMMMM\r\nNNNNNN");
+    check(
+        t.history_count == 5 && t.history_start == 1,
+        "normalized grown ring accepts and rolls future rows"
+    );
+    scroll_view(&t, 1000);
+    cell(&t, 0, 0, 72);
+    cell(&t, 0, 1, 73);
 
     // The maximum limit is bounded, and zero releases all allocated rows while
     // leaving the active grid and parser unchanged, even mid-escape sequence.
-    set_history_limit(&t,2147483647);
-    check(t.history_limit==10000 && t.history_count==5,"maximum limit is clamped safely");
-    feed(&t,"\x1b[38;2;1;");
-    state:=t.state; argc:=t.argc; arg0:=t.args[0]; arg1:=t.args[1];
-    before:=t.cells[0];
-    set_history_limit(&t,-1);
-    check(t.history_limit==0 && t.history_count==0 && t.history_start==0 && t.view_offset==0 &&
-        t.history.count==0 && t.history.capacity==0,"zero limit releases scrollback storage");
-    check(t.cells[0].codepoint==before.codepoint && t.cells[0].fg==before.fg && t.cells[0].bg==before.bg &&
-        t.cells[0].flags==before.flags && t.state==state && t.argc==argc && t.args[0]==arg0 && t.args[1]==arg1,
-        "clearing history preserves the active grid and partial CSI parser");
-    feed(&t,"2;3mZ\r\n");
-    check(t.fg==16#010203 && t.history_count==0,"disabled history keeps parsing and scrolling normally");
-    set_history_limit(&t,2);
-    feed(&t,"\x1b[0m\r\nP\r\nQ");
-    check(t.history_limit==2 && t.history_count==2,"history can be enabled again without reset");
-    scroll_view(&t,1000);
-    check(t.view_offset==2,"restored scrollback can be viewed");
+    set_history_limit(&t, 2147483647);
+    check(t.history_limit == 10000 && t.history_count == 5, "maximum limit is clamped safely");
+    feed(&t, "\x1b[38;2;1;");
+    state := t.state;
+    argc := t.argc;
+    arg0 := t.args[0];
+    arg1 := t.args[1];
+    before := t.cells[0];
+    set_history_limit(&t, -1);
+    check(
+        t.history_limit == 0 && t.history_count == 0 && t.history_start == 0 && t.view_offset == 0 && t.history.count == 0 && t.history.capacity == 0,
+        "zero limit releases scrollback storage"
+    );
+    check(
+        t.cells[0].codepoint == before.codepoint && t.cells[0].fg == before.fg && t.cells[0].bg == before.bg && t.cells[0].flags == before.flags && t.state == state && t.argc == argc && t.args[0] == arg0 && t.args[1] == arg1,
+        "clearing history preserves the active grid and partial CSI parser"
+    );
+    feed(&t, "2;3mZ\r\n");
+    check(
+        t.fg == 16#010203 && t.history_count == 0,
+        "disabled history keeps parsing and scrolling normally"
+    );
+    set_history_limit(&t, 2);
+    feed(&t, "\x1b[0m\r\nP\r\nQ");
+    check(
+        t.history_limit == 2 && t.history_count == 2,
+        "history can be enabled again without reset"
+    );
+    scroll_view(&t, 1000);
+    check(t.view_offset == 2, "restored scrollback can be viewed");
 
     hidden: Terminal;
-    init(&hidden,6,2,2,16#112233,16#445566);
+    init(&hidden, 6, 2, 2, 16#112233, 16#445566);
     defer release(&hidden);
-    feed(&hidden,"A한XY\r\n\x1b[31mBBBBBB\x1b[0m\r\nCCCCCC\r\nDDDDDD");
-    check(hidden.history_count==2,"hidden-column test has history");
-    resize(&hidden,2,2);
-    set_history_limit(&hidden,4);
-    set_default_colors(&hidden,16#abcdef,16#010203);
-    scroll_view(&hidden,1000);
-    cell(&hidden,0,0,65); cell(&hidden,1,0,32);
-    check(hidden.history_stride==6 && hidden.history[1].codepoint==16#d55c &&
-        hidden.history[1].fg==16#abcdef && hidden.history[2].bg==16#010203,
-        "limit changes preserve hidden wide pairs and default color markers");
-    resize(&hidden,6,2);
-    cell(&hidden,1,0,16#d55c); cell(&hidden,2,0,0); cell(&hidden,4,0,89);
-    check(visible_cell(&hidden,0,1).fg!=hidden.default_fg,"explicit historical color remains explicit");
-    set_history_limit(&hidden,1);
-    check(hidden.history_count==1 && hidden.view_offset==1,"shrinking discards only the oldest physical row");
-    cell(&hidden,0,0,66);
+    feed(&hidden, "A한XY\r\n\x1b[31mBBBBBB\x1b[0m\r\nCCCCCC\r\nDDDDDD");
+    check(hidden.history_count == 2, "hidden-column test has history");
+    resize(&hidden, 2, 2);
+    set_history_limit(&hidden, 4);
+    set_default_colors(&hidden, 16#abcdef, 16#010203);
+    scroll_view(&hidden, 1000);
+    cell(&hidden, 0, 0, 65);
+    cell(&hidden, 1, 0, 32);
+    check(
+        hidden.history_stride == 6 && hidden.history[1].codepoint == 16#d55c && hidden.history[1].fg == 16#abcdef && hidden.history[2].bg == 16#010203,
+        "limit changes preserve hidden wide pairs and default color markers"
+    );
+    resize(&hidden, 6, 2);
+    cell(&hidden, 1, 0, 16#d55c);
+    cell(&hidden, 2, 0, 0);
+    cell(&hidden, 4, 0, 89);
+    check(
+        visible_cell(&hidden, 0, 1).fg != hidden.default_fg,
+        "explicit historical color remains explicit"
+    );
+    set_history_limit(&hidden, 1);
+    check(
+        hidden.history_count == 1 && hidden.view_offset == 1,
+        "shrinking discards only the oldest physical row"
+    );
+    cell(&hidden, 0, 0, 66);
 
-    feed(&hidden,"\x1b[?1049h\x1b[38;5;196mALT\x1b[2;3H\x1b[?25l");
-    alt:=hidden.alt_cells[0];
-    x=hidden.cursor_x; y=hidden.cursor_y;
-    attributes:=hidden.attributes; foreground:=hidden.fg;
-    set_history_limit(&hidden,0);
-    check(hidden.alternate && !hidden.cursor_visible && hidden.cursor_x==x && hidden.cursor_y==y &&
-        hidden.attributes==attributes && hidden.fg==foreground && hidden.alt_cells[0].codepoint==alt.codepoint &&
-        hidden.alt_cells[0].fg==alt.fg,"limit changes preserve active alternate screen and attributes");
-    set_history_limit(&hidden,3);
-    feed(&hidden,"\r\n\r\n\r\n");
-    check(hidden.history_count==0,"alternate screen never contributes history after limit changes");
-    feed(&hidden,"\x1b[?1049l\r\nZ\r\n");
-    check(hidden.history_count>0 && hidden.history_limit==3,"primary history resumes after alternate screen");
+    feed(&hidden, "\x1b[?1049h\x1b[38;5;196mALT\x1b[2;3H\x1b[?25l");
+    alt := hidden.alt_cells[0];
+    x = hidden.cursor_x;
+    y = hidden.cursor_y;
+    attributes := hidden.attributes;
+    foreground := hidden.fg;
+    set_history_limit(&hidden, 0);
+    check(
+        hidden.alternate && !hidden.cursor_visible && hidden.cursor_x == x && hidden.cursor_y == y && hidden.attributes == attributes && hidden.fg == foreground && hidden.alt_cells[0].codepoint == alt.codepoint && hidden.alt_cells[0].fg == alt.fg,
+        "limit changes preserve active alternate screen and attributes"
+    );
+    set_history_limit(&hidden, 3);
+    feed(&hidden, "\r\n\r\n\r\n");
+    check(
+        hidden.history_count == 0,
+        "alternate screen never contributes history after limit changes"
+    );
+    feed(&hidden, "\x1b[?1049l\r\nZ\r\n");
+    check(
+        hidden.history_count > 0 && hidden.history_limit == 3,
+        "primary history resumes after alternate screen"
+    );
 }
 begin_session_tests :: () {
     t: Terminal;
-    init(&t,8,4,4,16#123456,16#203040);
+    init(&t, 8, 4, 4, 16#123456, 16#203040);
     defer release(&t);
-    feed(&t,"hist1\r\nhist2\r\nold1\r\n\r\nold2");
-    check(t.history_count==1,"session archive starts with earlier retained output");
-    feed(&t,"\x1b]2;old title\x07\x1b[6n\x1b[?1h\x1b[?2004h\x1b[?25l\x1b[?7l\x1b[4h\x1b[2;3r\x1b[?6h\x1b[31m\x1b7\x1b]2;unfinished");
-    check(t.state==3 && t.osc.count>0 && t.replies.count>0 && t.title.count>0,"old shell has pending OSC and response state");
+    feed(&t, "hist1\r\nhist2\r\nold1\r\n\r\nold2");
+    check(t.history_count == 1, "session archive starts with earlier retained output");
+    feed(
+        &t,
+        "\x1b]2;old title\x07\x1b[6n\x1b[?1h\x1b[?2004h\x1b[?25l\x1b[?7l\x1b[4h\x1b[2;3r\x1b[?6h\x1b[31m\x1b7\x1b]2;unfinished"
+    );
+    check(
+        t.state == 3 && t.osc.count > 0 && t.replies.count > 0 && t.title.count > 0,
+        "old shell has pending OSC and response state"
+    );
     begin_session(&t);
-    check(t.cols==8 && t.rows==4 && t.history_limit==4 && t.history_stride==8 &&
-        t.history_count==4 && t.view_offset==0,"session reset retains bounded history and geometry");
-    check(t.default_fg==16#123456 && t.default_bg==16#203040 && t.fg==t.default_fg && t.bg==t.default_bg,
-        "session reset retains theme and restores default drawing attributes");
-    check(t.cursor_x==0 && t.cursor_y==0 && t.saved_x==0 && t.saved_y==0 &&
-        t.primary_x==0 && t.primary_y==0 && t.attributes==96 && t.saved_attributes==96 && t.primary_attributes==96,
-        "session reset clears current and saved cursor/style state");
-    check(t.cursor_visible && t.autowrap && !t.alternate && !t.application_cursor && !t.bracketed_paste &&
-        !t.origin && !t.insert_mode && !t.pending_wrap && t.top==0 && t.bottom==3,
-        "session reset clears terminal modes and scroll margins");
-    check(t.state==0 && t.argc==1 && !t.private_mode && !t.intermediate && t.utf_remaining==0 &&
-        t.utf_value==0 && t.utf_min==0 && t.last_codepoint==0 && t.osc.count==0 &&
-        t.title.count==0 && t.replies.count==0,"session reset clears decoders, pending strings, title and replies");
-    for arg:t.args check(arg==0,"new session starts with clear CSI arguments");
-    for c:t.cells check(c.codepoint==32 && c.fg==t.default_fg && c.bg==t.default_bg && c.flags==96,
-        "new primary screen is blank in the current theme");
-    for c:t.alt_cells check(c.codepoint==32 && c.fg==t.default_fg && c.bg==t.default_bg && c.flags==96,
-        "new alternate screen is also blank");
-    scroll_view(&t,1000);
-    cell(&t,0,0,104); cell(&t,4,0,50); // hist2, the newest retained old-history row.
-    cell(&t,0,1,111); cell(&t,3,1,49); // old1.
-    cell(&t,0,2,32); // Blank rows between old text are retained.
-    cell(&t,0,3,111); cell(&t,3,3,50); // old2.
-    scroll_view(&t,-1000);
-    feed(&t,"NEW");
-    cell(&t,0,0,78); cell(&t,1,0,69); cell(&t,2,0,87);
-    check(t.state==0 && t.title.count==0,"new shell text is not swallowed by the previous OSC");
+    check(
+        t.cols == 8 && t.rows == 4 && t.history_limit == 4 && t.history_stride == 8 && t.history_count == 4 && t.view_offset == 0,
+        "session reset retains bounded history and geometry"
+    );
+    check(
+        t.default_fg == 16#123456 && t.default_bg == 16#203040 && t.fg == t.default_fg && t.bg == t.default_bg,
+        "session reset retains theme and restores default drawing attributes"
+    );
+    check(
+        t.cursor_x == 0 && t.cursor_y == 0 && t.saved_x == 0 && t.saved_y == 0 && t.primary_x == 0 && t.primary_y == 0 && t.attributes == 96 && t.saved_attributes == 96 && t.primary_attributes == 96,
+        "session reset clears current and saved cursor/style state"
+    );
+    check(
+        t.cursor_visible && t.autowrap && !t.alternate && !t.application_cursor && !t.bracketed_paste && !t.origin && !t.insert_mode && !t.pending_wrap && t.top == 0 && t.bottom == 3,
+        "session reset clears terminal modes and scroll margins"
+    );
+    check(
+        t.state == 0 && t.argc == 1 && !t.private_mode && !t.intermediate && t.utf_remaining == 0 && t.utf_value == 0 && t.utf_min == 0 && t.last_codepoint == 0 && t.osc.count == 0 && t.title.count == 0 && t.replies.count == 0,
+        "session reset clears decoders, pending strings, title and replies"
+    );
+    for arg: t.args check(arg == 0, "new session starts with clear CSI arguments");
+    for c: t.cells check(
+        c.codepoint == 32 && c.fg == t.default_fg && c.bg == t.default_bg && c.flags == 96,
+        "new primary screen is blank in the current theme"
+    );
+    for c: t.alt_cells check(
+        c.codepoint == 32 && c.fg == t.default_fg && c.bg == t.default_bg && c.flags == 96,
+        "new alternate screen is also blank"
+    );
+    scroll_view(&t, 1000);
+    cell(&t, 0, 0, 104);
+    cell(&t, 4, 0, 50); // hist2, the newest retained old-history row.
+    cell(&t, 0, 1, 111);
+    cell(&t, 3, 1, 49); // old1.
+    cell(&t, 0, 2, 32); // Blank rows between old text are retained.
+    cell(&t, 0, 3, 111);
+    cell(&t, 3, 3, 50); // old2.
+    scroll_view(&t, -1000);
+    feed(&t, "NEW");
+    cell(&t, 0, 0, 78);
+    cell(&t, 1, 0, 69);
+    cell(&t, 2, 0, 87);
+    check(t.state == 0 && t.title.count == 0, "new shell text is not swallowed by the previous OSC");
 
     alt: Terminal;
-    init(&alt,8,3,5,16#eeeeee,16#111111);
+    init(&alt, 8, 3, 5, 16#eeeeee, 16#111111);
     defer release(&alt);
-    feed(&alt,"PRIMARY\r\nKEPT\x1b[?1049hEPHEMER\x1b[31m");
-    emoji: [4]u8=.[240,159,152,128];
-    feed(&alt,cast(str)emoji[0..2]);
-    check(alt.alternate && alt.utf_remaining==2,"old alternate application has incomplete UTF-8");
+    feed(&alt, "PRIMARY\r\nKEPT\x1b[?1049hEPHEMER\x1b[31m");
+    emoji: [4]u8 = .[240, 159, 152, 128];
+    feed(&alt, cast(str) emoji[0..2]);
+    check(alt.alternate && alt.utf_remaining == 2, "old alternate application has incomplete UTF-8");
     begin_session(&alt);
-    check(!alt.alternate && alt.utf_remaining==0 && alt.utf_value==0 && alt.history_count==2 && alt.view_offset==0,
-        "replacement archives primary output while dropping ephemeral alternate state");
-    scroll_view(&alt,1000);
-    cell(&alt,0,0,80); cell(&alt,0,1,75); cell(&alt,0,2,32);
-    scroll_view(&alt,-1000);
-    feed(&alt,"N"); cell(&alt,0,0,78); cell(&alt,1,0,32);
-    check(alt.fg==alt.default_fg && (alt.attributes&96)==96,"replacement does not inherit alternate explicit colors");
+    check(
+        !alt.alternate && alt.utf_remaining == 0 && alt.utf_value == 0 && alt.history_count == 2 && alt.view_offset == 0,
+        "replacement archives primary output while dropping ephemeral alternate state"
+    );
+    scroll_view(&alt, 1000);
+    cell(&alt, 0, 0, 80);
+    cell(&alt, 0, 1, 75);
+    cell(&alt, 0, 2, 32);
+    scroll_view(&alt, -1000);
+    feed(&alt, "N");
+    cell(&alt, 0, 0, 78);
+    cell(&alt, 1, 0, 32);
+    check(
+        alt.fg == alt.default_fg && (alt.attributes & 96) == 96,
+        "replacement does not inherit alternate explicit colors"
+    );
 
     // A blank terminal adds no artificial history; a disabled limit archives
     // nothing and still resets an incomplete CSI independently of its parser.
     disabled: Terminal;
-    init(&disabled,4,2,0,16#abcdef,16#010203);
+    init(&disabled, 4, 2, 0, 16#abcdef, 16#010203);
     defer release(&disabled);
     begin_session(&disabled);
-    check(disabled.history_count==0,"blank session produces no retained rows");
-    feed(&disabled,"OLD\x1b[38;2;1;");
-    check(disabled.state==2,"old shell leaves an incomplete CSI");
+    check(disabled.history_count == 0, "blank session produces no retained rows");
+    feed(&disabled, "OLD\x1b[38;2;1;");
+    check(disabled.state == 2, "old shell leaves an incomplete CSI");
     begin_session(&disabled);
-    check(disabled.history_count==0 && disabled.history.count==0 && disabled.state==0 && disabled.argc==1,
-        "disabled scrollback remains empty after direct CSI reset");
-    feed(&disabled,"OK"); cell(&disabled,0,0,79); cell(&disabled,1,0,75);
+    check(
+        disabled.history_count == 0 && disabled.history.count == 0 && disabled.state == 0 && disabled.argc == 1,
+        "disabled scrollback remains empty after direct CSI reset"
+    );
+    feed(&disabled, "OK");
+    cell(&disabled, 0, 0, 79);
+    cell(&disabled, 1, 0, 75);
 }
 main :: () {
     theme_tests();
     history_limit_tests();
     begin_session_tests();
     t: Terminal;
-    init(&t,8,4,3,16#eeeeee,16#111111);
+    init(&t, 8, 4, 3, 16#eeeeee, 16#111111);
     defer release(&t);
-    feed(&t,"abcdefgh");
-    check(t.cursor_y == 0 && t.cursor_x == 7,"deferred last-column wrap");
-    feed(&t,"\x1b[?25l\x1b[>0c");
-    feed(&t,"i"); cell(&t,0,1,105);
-    feed(&t,"\x1b[2;3H\x1b[38;2;12;34;56;48;5;196;1;4mX");
-    c := visible_cell(&t,2,1);
-    check(c.codepoint == 88 && c.fg == 16#0c2238 && c.bg == 16#ff0000 && (c.flags&7) == 3 &&
-        (c.flags&CELL_INDEXED_BG)!=0,"SGR colors, styles and indexed-color origin");
-    feed(&t,"\x1b[0m\x1b[2K"); cell(&t,2,1,32);
-    feed(&t,"\x1b[1;1HA\x1b[?1049hB\x1b[?1049l");
-    cell(&t,0,0,65); check(!t.alternate,"alternate screen restoration");
-    feed(&t,"\x1b[?1h\x1b[?25l\x1b[?2004h");
-    check(t.application_cursor && !t.cursor_visible && t.bracketed_paste,"DEC modes");
-    feed(&t,"\x1b]2;streamed title\x1b"); feed(&t,"\\");
-    check(cast(str)t.title.view() == "streamed title","OSC ST title");
-    feed(&t,"\x1b[3;4H\x1b[6n\x1b[5n");
-    check(cast(str)t.replies.view() == "\x1b[3;4R\x1b[0n","cursor and status replies");
+    feed(&t, "abcdefgh");
+    check(t.cursor_y == 0 && t.cursor_x == 7, "deferred last-column wrap");
+    feed(&t, "\x1b[?25l\x1b[>0c");
+    feed(&t, "i");
+    cell(&t, 0, 1, 105);
+    feed(&t, "\x1b[2;3H\x1b[38;2;12;34;56;48;5;196;1;4mX");
+    c := visible_cell(&t, 2, 1);
+    check(
+        c.codepoint == 88 && c.fg == 16#0c2238 && c.bg == 16#ff0000 && (c.flags & 7) == 3 && (
+            c.flags & CELL_INDEXED_BG
+        ) != 0,
+        "SGR colors, styles and indexed-color origin"
+    );
+    feed(&t, "\x1b[0m\x1b[2K");
+    cell(&t, 2, 1, 32);
+    feed(&t, "\x1b[1;1HA\x1b[?1049hB\x1b[?1049l");
+    cell(&t, 0, 0, 65);
+    check(!t.alternate, "alternate screen restoration");
+    feed(&t, "\x1b[?1h\x1b[?25l\x1b[?2004h");
+    check(t.application_cursor && !t.cursor_visible && t.bracketed_paste, "DEC modes");
+    feed(&t, "\x1b]2;streamed title\x1b");
+    feed(&t, "\\");
+    check(cast(str) t.title.view() == "streamed title", "OSC ST title");
+    feed(&t, "\x1b[3;4H\x1b[6n\x1b[5n");
+    check(cast(str) t.replies.view() == "\x1b[3;4R\x1b[0n", "cursor and status replies");
     t.replies.clear();
-    feed(&t,"\x1bc\x1b[2;3r\x1b[1;1HTOP\x1b[4;1HBOTTOM\x1b[3;1H\n");
-    cell(&t,0,0,84); cell(&t,0,3,66);
-    feed(&t,"\x1bc한😀");
-    cell(&t,0,0,16#d55c); cell(&t,2,0,16#1f600);
-    check(visible_cell(&t,1,0).flags == 112 && t.cursor_x == 4,"Unicode wide cells");
-    feed(&t,"\x1b[1;2HX"); cell(&t,0,0,32); cell(&t,1,0,88);
-    feed(&t,"\x1bc1\r\n2\r\n3\r\n4\r\n5");
-    scroll_view(&t,1); cell(&t,0,0,49); cell(&t,0,3,52);
-    scroll_view(&t,-1); cell(&t,0,0,50); cell(&t,0,3,53);
-    resize(&t,10,5); cell(&t,0,0,50);
-    check(t.view_offset == 0 && t.cols == 10 && t.rows == 5,"resize preserves grid");
-    feed(&t,"\x1bc\x1b[31mA\x1b[?1049h\x1b[32m\x1b7\x1b[?1049lB");
-    check(visible_cell(&t,0,0).fg == visible_cell(&t,1,0).fg,"alternate attributes survive alternate save cursor");
-    feed(&t,"\x1bc한A\x1b[1;1H\x1b[P");
-    cell(&t,0,0,32); cell(&t,1,0,65);
-    emoji: [4]u8 = .[240,159,152,128];
-    feed(&t,"\x1bc"); feed(&t,cast(str)emoji[0..2]); feed(&t,cast(str)emoji[2..4]);
-    cell(&t,0,0,16#1f600);
-    invalid: [2]u8 = .[192,175];
-    feed(&t,cast(str)invalid[..]);
-    cell(&t,2,0,16#fffd); cell(&t,3,0,16#fffd);
-    history: Terminal; init(&history,4,2,2,16#eeeeee,0);
+    feed(&t, "\x1bc\x1b[2;3r\x1b[1;1HTOP\x1b[4;1HBOTTOM\x1b[3;1H\n");
+    cell(&t, 0, 0, 84);
+    cell(&t, 0, 3, 66);
+    feed(&t, "\x1bc한😀");
+    cell(&t, 0, 0, 16#d55c);
+    cell(&t, 2, 0, 16#1f600);
+    check(visible_cell(&t, 1, 0).flags == 112 && t.cursor_x == 4, "Unicode wide cells");
+    feed(&t, "\x1b[1;2HX");
+    cell(&t, 0, 0, 32);
+    cell(&t, 1, 0, 88);
+    feed(&t, "\x1bc1\r\n2\r\n3\r\n4\r\n5");
+    scroll_view(&t, 1);
+    cell(&t, 0, 0, 49);
+    cell(&t, 0, 3, 52);
+    scroll_view(&t, -1);
+    cell(&t, 0, 0, 50);
+    cell(&t, 0, 3, 53);
+    resize(&t, 10, 5);
+    cell(&t, 0, 0, 50);
+    check(t.view_offset == 0 && t.cols == 10 && t.rows == 5, "resize preserves grid");
+    feed(&t, "\x1bc\x1b[31mA\x1b[?1049h\x1b[32m\x1b7\x1b[?1049lB");
+    check(
+        visible_cell(&t, 0, 0).fg == visible_cell(&t, 1, 0).fg,
+        "alternate attributes survive alternate save cursor"
+    );
+    feed(&t, "\x1bc한A\x1b[1;1H\x1b[P");
+    cell(&t, 0, 0, 32);
+    cell(&t, 1, 0, 65);
+    emoji: [4]u8 = .[240, 159, 152, 128];
+    feed(&t, "\x1bc");
+    feed(&t, cast(str) emoji[0..2]);
+    feed(&t, cast(str) emoji[2..4]);
+    cell(&t, 0, 0, 16#1f600);
+    invalid: [2]u8 = .[192, 175];
+    feed(&t, cast(str) invalid[..]);
+    cell(&t, 2, 0, 16#fffd);
+    cell(&t, 3, 0, 16#fffd);
+    history: Terminal;
+    init(&history, 4, 2, 2, 16#eeeeee, 0);
     defer release(&history);
-    feed(&history,"1\r\n2\r\n3\r\n4\r\n5");
-    scroll_view(&history,1000);
-    cell(&history,0,0,50); cell(&history,0,1,51);
-    check(history.view_offset == 2,"bounded history ring");
-    feed(&history,"\r\n6");
-    cell(&history,0,0,51); cell(&history,0,1,52);
-    scroll_view(&history,-1000); cell(&history,0,0,53); cell(&history,0,1,54);
+    feed(&history, "1\r\n2\r\n3\r\n4\r\n5");
+    scroll_view(&history, 1000);
+    cell(&history, 0, 0, 50);
+    cell(&history, 0, 1, 51);
+    check(history.view_offset == 2, "bounded history ring");
+    feed(&history, "\r\n6");
+    cell(&history, 0, 0, 51);
+    cell(&history, 0, 1, 52);
+    scroll_view(&history, -1000);
+    cell(&history, 0, 0, 53);
+    cell(&history, 0, 1, 54);
     // Zooming changes physical columns while retaining older stored columns.
-    zoom: Terminal; init(&zoom,6,2,3,16#eeeeee,16#111111);
+    zoom: Terminal;
+    init(&zoom, 6, 2, 3, 16#eeeeee, 16#111111);
     defer release(&zoom);
-    feed(&zoom,"\x1b[31mAB한EF\r\nGHIJKL\r\nMNOPQR\r\nSTUVWX");
-    scroll_view(&zoom,1000);
-    check(zoom.history_count == 2 && zoom.view_offset == 2,"zoom history starts with two rows");
-    cell(&zoom,2,0,16#d55c); cell(&zoom,3,0,0); cell(&zoom,5,0,70);
-    resize(&zoom,3,2);
-    check(zoom.history_count == 2 && zoom.view_offset == 2 && zoom.history_stride == 6,"narrow zoom keeps history and viewport");
-    cell(&zoom,0,0,65); cell(&zoom,1,0,66); cell(&zoom,2,0,32);
-    check((visible_cell(&zoom,2,0).flags & 24) == 0,"partly clipped history wide glyph is a safe blank");
-    resize(&zoom,6,2);
-    cell(&zoom,2,0,16#d55c); cell(&zoom,3,0,0); cell(&zoom,4,0,69); cell(&zoom,5,0,70);
-    check((visible_cell(&zoom,2,0).flags & 8) != 0 && (visible_cell(&zoom,3,0).flags & 16) != 0,"zoom restore reveals stored wide pair");
-    resize(&zoom,8,3);
-    check(zoom.history_count == 2 && zoom.view_offset == 2 && zoom.history_stride == 8,"widening repacks history and keeps offset");
-    cell(&zoom,0,0,65); cell(&zoom,5,0,70); cell(&zoom,0,1,71);
-    padded := visible_cell(&zoom,6,0);
-    check(padded.codepoint == 32 && padded.fg == zoom.default_fg && padded.bg == zoom.default_bg && padded.flags == 96,"new history columns use default blank colors");
+    feed(&zoom, "\x1b[31mAB한EF\r\nGHIJKL\r\nMNOPQR\r\nSTUVWX");
+    scroll_view(&zoom, 1000);
+    check(zoom.history_count == 2 && zoom.view_offset == 2, "zoom history starts with two rows");
+    cell(&zoom, 2, 0, 16#d55c);
+    cell(&zoom, 3, 0, 0);
+    cell(&zoom, 5, 0, 70);
+    resize(&zoom, 3, 2);
+    check(
+        zoom.history_count == 2 && zoom.view_offset == 2 && zoom.history_stride == 6,
+        "narrow zoom keeps history and viewport"
+    );
+    cell(&zoom, 0, 0, 65);
+    cell(&zoom, 1, 0, 66);
+    cell(&zoom, 2, 0, 32);
+    check(
+        (visible_cell(&zoom, 2, 0).flags & 24) == 0,
+        "partly clipped history wide glyph is a safe blank"
+    );
+    resize(&zoom, 6, 2);
+    cell(&zoom, 2, 0, 16#d55c);
+    cell(&zoom, 3, 0, 0);
+    cell(&zoom, 4, 0, 69);
+    cell(&zoom, 5, 0, 70);
+    check(
+        (visible_cell(&zoom, 2, 0).flags & 8) != 0 && (visible_cell(&zoom, 3, 0).flags & 16) != 0,
+        "zoom restore reveals stored wide pair"
+    );
+    resize(&zoom, 8, 3);
+    check(
+        zoom.history_count == 2 && zoom.view_offset == 2 && zoom.history_stride == 8,
+        "widening repacks history and keeps offset"
+    );
+    cell(&zoom, 0, 0, 65);
+    cell(&zoom, 5, 0, 70);
+    cell(&zoom, 0, 1, 71);
+    padded := visible_cell(&zoom, 6, 0);
+    check(
+        padded.codepoint == 32 && padded.fg == zoom.default_fg && padded.bg == zoom.default_bg && padded.flags == 96,
+        "new history columns use default blank colors"
+    );
 
-    ring_zoom: Terminal; init(&ring_zoom,4,2,2,16#eeeeee,16#111111);
+    ring_zoom: Terminal;
+    init(&ring_zoom, 4, 2, 2, 16#eeeeee, 16#111111);
     defer release(&ring_zoom);
-    feed(&ring_zoom,"ABCD\r\nEFGH\r\nIJKL\r\nMNOP\r\nQRST");
-    scroll_view(&ring_zoom,1000);
-    check(ring_zoom.history_start == 1,"history ring rolled before resize");
-    resize(&ring_zoom,2,2);
-    cell(&ring_zoom,0,0,69); cell(&ring_zoom,1,0,70); cell(&ring_zoom,0,1,73);
-    resize(&ring_zoom,6,2);
-    check(ring_zoom.history_start == 0 && ring_zoom.view_offset == 2 && ring_zoom.history_count == 2,"stride growth normalizes ring order");
-    cell(&ring_zoom,0,0,69); cell(&ring_zoom,3,0,72); cell(&ring_zoom,0,1,73); cell(&ring_zoom,3,1,76);
-    resize(&ring_zoom,2,2);
-    feed(&ring_zoom,"\x1b[31m\x1b[Hxy\x1b[2;1Hzz\r\n");
-    resize(&ring_zoom,6,2);
-    cell(&ring_zoom,0,0,73); cell(&ring_zoom,3,0,76); cell(&ring_zoom,0,1,120); cell(&ring_zoom,1,1,121);
-    padded = visible_cell(&ring_zoom,2,1);
-    check(padded.codepoint == 32 && padded.fg == ring_zoom.default_fg && padded.bg == ring_zoom.default_bg && padded.flags == 96,"narrow history overwrite clears stale wide columns");
+    feed(&ring_zoom, "ABCD\r\nEFGH\r\nIJKL\r\nMNOP\r\nQRST");
+    scroll_view(&ring_zoom, 1000);
+    check(ring_zoom.history_start == 1, "history ring rolled before resize");
+    resize(&ring_zoom, 2, 2);
+    cell(&ring_zoom, 0, 0, 69);
+    cell(&ring_zoom, 1, 0, 70);
+    cell(&ring_zoom, 0, 1, 73);
+    resize(&ring_zoom, 6, 2);
+    check(
+        ring_zoom.history_start == 0 && ring_zoom.view_offset == 2 && ring_zoom.history_count == 2,
+        "stride growth normalizes ring order"
+    );
+    cell(&ring_zoom, 0, 0, 69);
+    cell(&ring_zoom, 3, 0, 72);
+    cell(&ring_zoom, 0, 1, 73);
+    cell(&ring_zoom, 3, 1, 76);
+    resize(&ring_zoom, 2, 2);
+    feed(&ring_zoom, "\x1b[31m\x1b[Hxy\x1b[2;1Hzz\r\n");
+    resize(&ring_zoom, 6, 2);
+    cell(&ring_zoom, 0, 0, 73);
+    cell(&ring_zoom, 3, 0, 76);
+    cell(&ring_zoom, 0, 1, 120);
+    cell(&ring_zoom, 1, 1, 121);
+    padded = visible_cell(&ring_zoom, 2, 1);
+    check(
+        padded.codepoint == 32 && padded.fg == ring_zoom.default_fg && padded.bg == ring_zoom.default_bg && padded.flags == 96,
+        "narrow history overwrite clears stale wide columns"
+    );
 
-    no_history: Terminal; init(&no_history,4,2,0,16#eeeeee,0);
+    no_history: Terminal;
+    init(&no_history, 4, 2, 0, 16#eeeeee, 0);
     defer release(&no_history);
-    feed(&no_history,"1\r\n2\r\n3\r\n4");
-    resize(&no_history,2,2); resize(&no_history,8,3); scroll_view(&no_history,1000);
-    check(no_history.history_count == 0 && no_history.history.count == 0 && no_history.view_offset == 0,"zero scrollback remains empty through zoom");
-    edge: Terminal; init(&edge,4,3,0,16#eeeeee,0);
+    feed(&no_history, "1\r\n2\r\n3\r\n4");
+    resize(&no_history, 2, 2);
+    resize(&no_history, 8, 3);
+    scroll_view(&no_history, 1000);
+    check(
+        no_history.history_count == 0 && no_history.history.count == 0 && no_history.view_offset == 0,
+        "zero scrollback remains empty through zoom"
+    );
+    edge: Terminal;
+    init(&edge, 4, 3, 0, 16#eeeeee, 0);
     defer release(&edge);
-    feed(&edge,"abcd\x1b[6nE");
-    cell(&edge,0,0,97); cell(&edge,3,0,100); cell(&edge,0,1,69);
-    check(cast(str)edge.replies.view() == "\x1b[1;4R","CPR preserves pending wrap");
-    feed(&edge,"\x1bcab\x1b[2bE");
-    cell(&edge,3,0,98); cell(&edge,0,1,69);
-    feed(&edge,"\x1bc\x1b[<0c\x1b[=1c\x1b[>0cZ");
-    cell(&edge,0,0,90); cell(&edge,1,0,32);
-    feed(&t,"\x1bc한A\x1b[H\x1b[@");
-    cell(&t,0,0,32); cell(&t,1,0,16#d55c); cell(&t,2,0,0); cell(&t,3,0,65);
-    check((visible_cell(&t,1,0).flags & 8) != 0 && (visible_cell(&t,2,0).flags & 16) != 0,"ICH preserves shifted wide glyph");
-    feed(&t,"\x1bc한A\x1b[H\x1b[4hX\x1b[4l");
-    cell(&t,0,0,88); cell(&t,1,0,16#d55c); cell(&t,2,0,0); cell(&t,3,0,65);
-    resize(&edge,6,3);
-    feed(&edge,"\x1bcABCD한\x1b[1;3H\x1b[P");
-    cell(&edge,0,0,65); cell(&edge,1,0,66); cell(&edge,2,0,68);
-    cell(&edge,3,0,16#d55c); cell(&edge,4,0,0); cell(&edge,5,0,32);
-    check((visible_cell(&edge,3,0).flags & 8) != 0 && (visible_cell(&edge,4,0).flags & 16) != 0,"DCH preserves shifted wide glyph");
+    feed(&edge, "abcd\x1b[6nE");
+    cell(&edge, 0, 0, 97);
+    cell(&edge, 3, 0, 100);
+    cell(&edge, 0, 1, 69);
+    check(cast(str) edge.replies.view() == "\x1b[1;4R", "CPR preserves pending wrap");
+    feed(&edge, "\x1bcab\x1b[2bE");
+    cell(&edge, 3, 0, 98);
+    cell(&edge, 0, 1, 69);
+    feed(&edge, "\x1bc\x1b[<0c\x1b[=1c\x1b[>0cZ");
+    cell(&edge, 0, 0, 90);
+    cell(&edge, 1, 0, 32);
+    feed(&t, "\x1bc한A\x1b[H\x1b[@");
+    cell(&t, 0, 0, 32);
+    cell(&t, 1, 0, 16#d55c);
+    cell(&t, 2, 0, 0);
+    cell(&t, 3, 0, 65);
+    check(
+        (visible_cell(&t, 1, 0).flags & 8) != 0 && (visible_cell(&t, 2, 0).flags & 16) != 0,
+        "ICH preserves shifted wide glyph"
+    );
+    feed(&t, "\x1bc한A\x1b[H\x1b[4hX\x1b[4l");
+    cell(&t, 0, 0, 88);
+    cell(&t, 1, 0, 16#d55c);
+    cell(&t, 2, 0, 0);
+    cell(&t, 3, 0, 65);
+    resize(&edge, 6, 3);
+    feed(&edge, "\x1bcABCD한\x1b[1;3H\x1b[P");
+    cell(&edge, 0, 0, 65);
+    cell(&edge, 1, 0, 66);
+    cell(&edge, 2, 0, 68);
+    cell(&edge, 3, 0, 16#d55c);
+    cell(&edge, 4, 0, 0);
+    cell(&edge, 5, 0, 32);
+    check(
+        (visible_cell(&edge, 3, 0).flags & 8) != 0 && (visible_cell(&edge, 4, 0).flags & 16) != 0,
+        "DCH preserves shifted wide glyph"
+    );
 
     // Every possible byte split must give the same state, including UTF-8/OSC/CSI.
     sample := "A한😀\x1b[38;2;10;20;30mZ\x1b[2;3H!\x1b]2;title\x1b\\\x1b[6n";
-    reference: Terminal; init(&reference,12,4,4,16#eeeeee,0);
+    reference: Terminal;
+    init(&reference, 12, 4, 4, 16#eeeeee, 0);
     defer release(&reference);
-    feed(&reference,sample);
+    feed(&reference, sample);
     split: ssize = 0;
     while split <= sample.count {
-        part: Terminal; init(&part,12,4,4,16#eeeeee,0);
-        feed(&part,sample[0..split]); feed(&part,sample[split..sample.count]);
-        check(part.cursor_x == reference.cursor_x && part.cursor_y == reference.cursor_y,"stream cursor");
+        part: Terminal;
+        init(&part, 12, 4, 4, 16#eeeeee, 0);
+        feed(&part, sample[0..split]);
+        feed(&part, sample[split..sample.count]);
+        check(
+            part.cursor_x == reference.cursor_x && part.cursor_y == reference.cursor_y,
+            "stream cursor"
+        );
         y: s32 = 0;
         while y < 4 {
             x: s32 = 0;
             while x < 12 {
-                a := visible_cell(&part,x,y); b := visible_cell(&reference,x,y);
-                check(a.codepoint == b.codepoint && a.fg == b.fg && a.bg == b.bg && a.flags == b.flags,"stream grid");
+                a := visible_cell(&part, x, y);
+                b := visible_cell(&reference, x, y);
+                check(
+                    a.codepoint == b.codepoint && a.fg == b.fg && a.bg == b.bg && a.flags == b.flags,
+                    "stream grid"
+                );
                 x += 1;
             }
             y += 1;
         }
-        check(cast(str)part.title.view() == cast(str)reference.title.view(),"stream title");
-        check(cast(str)part.replies.view() == cast(str)reference.replies.view(),"stream replies");
+        check(cast(str) part.title.view() == cast(str) reference.title.view(), "stream title");
+        check(cast(str) part.replies.view() == cast(str) reference.replies.view(), "stream replies");
         release(&part);
         split += 1;
     }
-    print("terminal tests passed ({} byte splits)\n",sample.count+1);
+    print("terminal tests passed ({} byte splits)\n", sample.count + 1);
 }

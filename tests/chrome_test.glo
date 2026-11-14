@@ -5,249 +5,404 @@ C :: #import "../src/config.glo";
 K :: #import "../src/keybindings.glo";
 #import "Io";
 
-case_width:s32;
-case_height:s32;
-case_dpi:s32;
-case_count:s32;
-case_active:s32;
+case_width: s32;
+case_height: s32;
+case_dpi: s32;
+case_count: s32;
+case_active: s32;
 
-check :: (ok:bool,message:str) {
+check :: (ok: bool, message: str) {
     if !ok {
-        print("FAIL: {} [client {}x{}, DPI {}, items {}, active {}]\n",
-            message,case_width,case_height,case_dpi,case_count,case_active);
+        print(
+            "FAIL: {} [client {}x{}, DPI {}, items {}, active {}]\n",
+            message,
+            case_width,
+            case_height,
+            case_dpi,
+            case_count,
+            case_active
+        );
         exit(1);
     }
 }
-overlaps :: (a:Ch.Rect,b:Ch.Rect)->bool {
-    return a.width>0 && a.height>0 && b.width>0 && b.height>0 &&
-        a.x<b.x+b.width && b.x<a.x+a.width && a.y<b.y+b.height && b.y<a.y+a.height;
+overlaps :: (a: Ch.Rect, b: Ch.Rect) -> bool {
+    return a.width > 0 && a.height > 0 && b.width > 0 && b.height > 0 &&
+        a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }
-inside :: (outer:Ch.Rect,inner:Ch.Rect)->bool {
-    return inner.width>0 && inner.height>0 && inner.x>=outer.x && inner.y>=outer.y &&
-        inner.x+inner.width<=outer.x+outer.width && inner.y+inner.height<=outer.y+outer.height;
+inside :: (outer: Ch.Rect, inner: Ch.Rect) -> bool {
+    return inner.width > 0 && inner.height > 0 && inner.x >= outer.x && inner.y >= outer.y &&
+        inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
 }
-hit_region :: (g:*const Ch.Geometry,rect:Ch.Rect,kind:s32,index:s32= -1) {
-    check(inside(.{0,0,g.width,g.height},rect),"visible controls fit inside the title rail");
+hit_region :: (g: *const Ch.Geometry, rect: Ch.Rect, kind: s32, index: s32 = -1) {
+    check(inside(.{ 0, 0, g.width, g.height }, rect), "visible controls fit inside the title rail");
     // Probe the corners as well as the centre, so partial coverage cannot pass.
-    xs:[3]s32=.[rect.x,rect.x+rect.width/2,rect.x+rect.width-1];
-    ys:[3]s32=.[rect.y,rect.y+rect.height/2,rect.y+rect.height-1];
-    for x:xs for y:ys {
-        target:=Ch.hit(g,x,y);
-        check(target.kind==kind,"painted controls route to their own action across the entire target");
-        if index>=0 check(target.index==index,"a tab target preserves its workspace index");
+    xs: [3]s32 = .[rect.x, rect.x + rect.width / 2, rect.x + rect.width - 1];
+    ys: [3]s32 = .[rect.y, rect.y + rect.height / 2, rect.y + rect.height - 1];
+    for x: xs for y: ys {
+        target := Ch.hit(g, x, y);
+        check(
+            target.kind == kind,
+            "painted controls route to their own action across the entire target"
+        );
+        if index >= 0 check(target.index == index, "a tab target preserves its workspace index");
     }
 }
 
-rail_case :: (width:s32,dpi:s32,count:s32,active:s32) {
-    height:=Ch.pixels(36,dpi);
-    case_width=width; case_height=height; case_dpi=dpi; case_count=count; case_active=active;
-    g:=Ch.geometry(width,height,dpi,count,active);
-    check(g.visible>=1 && g.visible<=count && g.first>=0 && g.first+g.visible<=count,
-        "the tab viewport is a nonempty interval of real tabs");
-    check(active>=g.first && active<g.first+g.visible,"the focused tab stays in view when tabs overflow");
+rail_case :: (width: s32, dpi: s32, count: s32, active: s32) {
+    height := Ch.pixels(36, dpi);
+    case_width = width;
+    case_height = height;
+    case_dpi = dpi;
+    case_count = count;
+    case_active = active;
+    g := Ch.geometry(width, height, dpi, count, active);
+    check(
+        g.visible >= 1 && g.visible <= count && g.first >= 0 && g.first + g.visible <= count,
+        "the tab viewport is a nonempty interval of real tabs"
+    );
+    check(
+        active >= g.first && active < g.first + g.visible,
+        "the focused tab stays in view when tabs overflow"
+    );
 
-    controls:[9]Ch.Rect=.[g.brand,g.new_tab,g.menu,g.zoom_out,g.reset_zoom,g.zoom_in,g.minimize,g.maximize,g.close];
-    actions:[9]s32=.[Ch.Brand,Ch.New_Tab,Ch.Menu,Ch.Zoom_Out,Ch.Reset_Zoom,Ch.Zoom_In,Ch.Minimize,Ch.Maximize,Ch.Close];
-    regions:[32]Ch.Rect; region_count:s32;
-    for i:0..9 {
-        rect:=controls[i];
-        if rect.width==0 || rect.height==0 continue;
-        hit_region(&g,rect,actions[i]);
-        regions[region_count]=rect; region_count+=1;
+    controls: [9]Ch.Rect = .[
+        g.brand,
+        g.new_tab,
+        g.menu,
+        g.zoom_out,
+        g.reset_zoom,
+        g.zoom_in,
+        g.minimize,
+        g.maximize,
+        g.close
+    ];
+    actions: [9]s32 = .[
+        Ch.Brand,
+        Ch.New_Tab,
+        Ch.Menu,
+        Ch.Zoom_Out,
+        Ch.Reset_Zoom,
+        Ch.Zoom_In,
+        Ch.Minimize,
+        Ch.Maximize,
+        Ch.Close
+    ];
+    regions: [32]Ch.Rect;
+    region_count: s32;
+    for i: 0..9 {
+        rect := controls[i];
+        if rect.width == 0 || rect.height == 0 continue;
+        hit_region(&g, rect, actions[i]);
+        regions[region_count] = rect;
+        region_count += 1;
     }
     // Essential window/navigation actions remain usable at the minimum width.
-    check(g.brand.width>0 && g.new_tab.width>0 && g.menu.width>0 &&
-        g.minimize.width>0 && g.maximize.width>0 && g.close.width>0,
-        "small windows retain navigation and window controls");
-    for index:cast(s32)0..count {
-        rect:=Ch.tab_rect(&g,index);
-        if index<g.first || index>=g.first+g.visible {
-            check(rect.width==0 || rect.height==0,"hidden tabs do not leave clickable rectangles");
+    check(
+        g.brand.width > 0 && g.new_tab.width > 0 && g.menu.width > 0 && g.minimize.width > 0 && g.maximize.width > 0 && g.close.width > 0,
+        "small windows retain navigation and window controls"
+    );
+    for index: cast(s32) 0..count {
+        rect := Ch.tab_rect(&g, index);
+        if index < g.first || index >= g.first + g.visible {
+            check(
+                rect.width == 0 || rect.height == 0,
+                "hidden tabs do not leave clickable rectangles"
+            );
             continue;
         }
-        check(inside(.{0,0,width,height},rect),"every visible tab stays inside the title rail");
-        check(rect.width<=Ch.pixels(190,dpi),"few tabs are capped rather than stretching across the window");
-        check(rect.width>=Ch.pixels(32,dpi),"overflow preserves a useful target for the focused tab");
-        close:=Ch.close_rect(&g,index);
-        if close.width>0 && close.height>0 {
-            check(inside(rect,close),"the tab close target stays inside its own tab");
-            hit_region(&g,close,Ch.Tab_Close,index);
+        check(
+            inside(.{ 0, 0, width, height }, rect),
+            "every visible tab stays inside the title rail"
+        );
+        check(
+            rect.width <= Ch.pixels(190, dpi),
+            "few tabs are capped rather than stretching across the window"
+        );
+        check(
+            rect.width >= Ch.pixels(32, dpi),
+            "overflow preserves a useful target for the focused tab"
+        );
+        close := Ch.close_rect(&g, index);
+        if close.width > 0 && close.height > 0 {
+            check(inside(rect, close), "the tab close target stays inside its own tab");
+            hit_region(&g, close, Ch.Tab_Close, index);
         }
-        xs:[3]s32=.[rect.x,rect.x+rect.width/2,rect.x+rect.width-1];
-        ys:[3]s32=.[rect.y,rect.y+rect.height/2,rect.y+rect.height-1];
-        for x:xs for y:ys {
-            target:=Ch.hit(&g,x,y);
-            expected:s32=Ch.Tab;
-            if Ch.contains(close,x,y) expected=Ch.Tab_Close;
-            check(target.kind==expected && target.index==index,
-                "visible tab pixels focus or close that tab rather than a neighbouring control");
+        xs: [3]s32 = .[rect.x, rect.x + rect.width / 2, rect.x + rect.width - 1];
+        ys: [3]s32 = .[rect.y, rect.y + rect.height / 2, rect.y + rect.height - 1];
+        for x: xs for y: ys {
+            target := Ch.hit(&g, x, y);
+            expected: s32 = Ch.Tab;
+            if Ch.contains(close, x, y) expected = Ch.Tab_Close;
+            check(
+                target.kind == expected && target.index == index,
+                "visible tab pixels focus or close that tab rather than a neighbouring control"
+            );
         }
-        regions[region_count]=rect; region_count+=1;
+        regions[region_count] = rect;
+        region_count += 1;
     }
     // Close targets intentionally nest inside a tab; top-level control/tab
     // rectangles must be disjoint so hit-order cannot hide an action.
-    for a:0..region_count for b:a+1..region_count
-        check(!overlaps(regions[a],regions[b]),"window controls, navigation and tabs never overlap");
-    check(Ch.hit(&g,-1,0).kind==0 && Ch.hit(&g,width,0).kind==0 &&
-        Ch.hit(&g,0,-1).kind==0 && Ch.hit(&g,0,height).kind==0,
-        "pixels outside the title rail cannot trigger chrome actions");
+    for a: 0..region_count for b: a + 1..region_count
+        check(
+            !overlaps(regions[a], regions[b]),
+            "window controls, navigation and tabs never overlap"
+        );
+    check(
+        Ch.hit(&g, -1, 0).kind == 0 && Ch.hit(&g, width, 0).kind == 0 && Ch.hit(&g, 0, -1).kind == 0 && Ch.hit(
+            &g,
+            0,
+            height
+        ).kind == 0,
+        "pixels outside the title rail cannot trigger chrome actions"
+    );
 }
 
-menu_state :: (g:*const Ch.Geometry,height:s32,rows:s32,state:*const Ch.State) {
-    rect:=Ch.menu_rect(g,height,rows);
-    check(inside(.{0,g.height,g.width,height-g.height},rect),"the workspace popup fits inside the client below the rail");
-    visible:=Ch.visible_rows(g,height,rows);
-    check(visible>0 && visible<=rows,"the popup displays a bounded nonempty row viewport");
-    check(state.selected>=0 && state.selected<rows,"menu selection wraps into the available actions");
-    check(state.menu_scroll>=0 && state.menu_scroll+visible<=rows,
-        "menu scrolling never exposes nonexistent actions");
-    check(state.selected>=state.menu_scroll && state.selected<state.menu_scroll+visible,
-        "keyboard selection always remains visible after scrolling or resize");
+menu_state :: (g: *const Ch.Geometry, height: s32, rows: s32, state: *const Ch.State) {
+    rect := Ch.menu_rect(g, height, rows);
+    check(
+        inside(.{ 0, g.height, g.width, height - g.height }, rect),
+        "the workspace popup fits inside the client below the rail"
+    );
+    visible := Ch.visible_rows(g, height, rows);
+    check(visible > 0 && visible <= rows, "the popup displays a bounded nonempty row viewport");
+    check(
+        state.selected >= 0 && state.selected < rows,
+        "menu selection wraps into the available actions"
+    );
+    check(
+        state.menu_scroll >= 0 && state.menu_scroll + visible <= rows,
+        "menu scrolling never exposes nonexistent actions"
+    );
+    check(
+        state.selected >= state.menu_scroll && state.selected < state.menu_scroll + visible,
+        "keyboard selection always remains visible after scrolling or resize"
+    );
 
-    hits:[64]s32;
-    x:=rect.x+rect.width/2;
-    for y:rect.y..rect.y+rect.height {
-        item:=Ch.menu_hit(g,state,height,rows,x,y);
-        if item<0 continue;
-        check(item>=state.menu_scroll && item<state.menu_scroll+visible && item<rows,
-            "popup hit testing stays inside the visible action interval");
-        hits[item]+=1;
-        check(Ch.menu_hit(g,state,height,rows,rect.x+1,y)==item &&
-            Ch.menu_hit(g,state,height,rows,rect.x+rect.width-2,y)==item,
-            "menu rows stay clickable across the popup width");
+    hits: [64]s32;
+    x := rect.x + rect.width / 2;
+    for y: rect.y..rect.y + rect.height {
+        item := Ch.menu_hit(g, state, height, rows, x, y);
+        if item < 0 continue;
+        check(
+            item >= state.menu_scroll && item < state.menu_scroll + visible && item < rows,
+            "popup hit testing stays inside the visible action interval"
+        );
+        hits[item] += 1;
+        check(
+            Ch.menu_hit(g, state, height, rows, rect.x + 1, y) == item && Ch.menu_hit(
+                g,
+                state,
+                height,
+                rows,
+                rect.x + rect.width - 2,
+                y
+            ) == item,
+            "menu rows stay clickable across the popup width"
+        );
     }
-    for item:state.menu_scroll..state.menu_scroll+visible
-        check(hits[item]>=Ch.pixels(20,g.dpi),"every displayed action retains a full-height clickable row");
-    check(Ch.menu_hit(g,state,height,rows,rect.x-1,rect.y+rect.height/2)== -1 &&
-        Ch.menu_hit(g,state,height,rows,rect.x+rect.width,rect.y+rect.height/2)== -1 &&
-        Ch.menu_hit(g,state,height,rows,x,rect.y-1)== -1 &&
-        Ch.menu_hit(g,state,height,rows,x,rect.y+rect.height)== -1,
-        "clicking outside the popup cannot select a menu action");
+    for item: state.menu_scroll..state.menu_scroll + visible
+        check(
+            hits[item] >= Ch.pixels(20, g.dpi),
+            "every displayed action retains a full-height clickable row"
+        );
+    check(
+        Ch.menu_hit(g, state, height, rows, rect.x - 1, rect.y + rect.height / 2) == -1 && Ch.menu_hit(
+            g,
+            state,
+            height,
+            rows,
+            rect.x + rect.width,
+            rect.y + rect.height / 2
+        ) == -1 && Ch.menu_hit(g, state, height, rows, x, rect.y - 1) == -1 && Ch.menu_hit(
+            g,
+            state,
+            height,
+            rows,
+            x,
+            rect.y + rect.height
+        ) == -1,
+        "clicking outside the popup cannot select a menu action"
+    );
 }
 
-menu_case :: (width:s32,height:s32,dpi:s32,profiles:s32) {
-    case_width=width; case_height=height; case_dpi=dpi; case_count=profiles; case_active=0;
-    g:=Ch.geometry(width,Ch.pixels(36,dpi),dpi,1,0);
+menu_case :: (width: s32, height: s32, dpi: s32, profiles: s32) {
+    case_width = width;
+    case_height = height;
+    case_dpi = dpi;
+    case_count = profiles;
+    case_active = 0;
+    g := Ch.geometry(width, Ch.pixels(36, dpi), dpi, 1, 0);
     // The workspace menu has seven existing actions plus one row per profile.
-    rows:=profiles+7;
-    state:Ch.State; state.menu_open=true;
-    for step:cast(s32)0..rows*2+1 {
-        requested:=step%rows;
-        state.selected=requested;
-        Ch.keep_selected(&state,&g,height,rows);
-        check(state.selected==requested,"scrolling preserves a valid requested menu action");
-        menu_state(&g,height,rows,&state);
+    rows := profiles + 7;
+    state: Ch.State;
+    state.menu_open = true;
+    for step: cast(s32) 0..rows * 2 + 1 {
+        requested := step % rows;
+        state.selected = requested;
+        Ch.keep_selected(&state, &g, height, rows);
+        check(state.selected == requested, "scrolling preserves a valid requested menu action");
+        menu_state(&g, height, rows, &state);
     }
-    state.selected= -1;
-    Ch.keep_selected(&state,&g,height,rows);
-    check(state.selected==rows-1,"Up from the first menu action wraps to the last");
-    menu_state(&g,height,rows,&state);
-    state.selected+=1;
-    Ch.keep_selected(&state,&g,height,rows);
-    check(state.selected==0,"Down from the last menu action wraps to the first");
-    menu_state(&g,height,rows,&state);
+    state.selected = -1;
+    Ch.keep_selected(&state, &g, height, rows);
+    check(state.selected == rows - 1, "Up from the first menu action wraps to the last");
+    menu_state(&g, height, rows, &state);
+    state.selected += 1;
+    Ch.keep_selected(&state, &g, height, rows);
+    check(state.selected == 0, "Down from the last menu action wraps to the first");
+    menu_state(&g, height, rows, &state);
 
     // A saved scroll offset may become obsolete when a tall window shrinks
     // or a Lua reload removes profiles while the menu is open.
-    state.selected=rows-1; state.menu_scroll=rows*2;
-    Ch.keep_selected(&state,&g,height,rows);
-    menu_state(&g,height,rows,&state);
-    state.selected=rows+1;
-    Ch.keep_selected(&state,&g,height,7);
-    menu_state(&g,height,7,&state);
+    state.selected = rows - 1;
+    state.menu_scroll = rows * 2;
+    Ch.keep_selected(&state, &g, height, rows);
+    menu_state(&g, height, rows, &state);
+    state.selected = rows + 1;
+    Ch.keep_selected(&state, &g, height, 7);
+    menu_state(&g, height, 7, &state);
 }
 
-Profile_Label :: struct { id:str; name:str; }
+Profile_Label :: struct {
+    id: str;
+    name: str;
+}
 
-ordering_case :: (labels:[]const Profile_Label,order:[]const s32,expected:[]const str) {
-    cfg:=C.defaults(); defer C.release(&cfg);
-    cfg.profile_count=cast(s32)order.count;
-    cfg.keybindings.count=cfg.profile_count;
-    if expected.count>0 {
-        cfg.default_profile.free(); cfg.default_profile=expected[0].clone();
+ordering_case :: (labels: []const Profile_Label, order: []const s32, expected: []const str) {
+    cfg := C.defaults();
+    defer C.release(&cfg);
+    cfg.profile_count = cast(s32) order.count;
+    cfg.keybindings.count = cfg.profile_count;
+    if expected.count > 0 {
+        cfg.default_profile.free();
+        cfg.default_profile = expected[0].clone();
     }
-    for i:0..order.count {
-        label:=labels[order[i]];
-        cfg.profiles[i]=.{.id=label.id.clone(),.name=label.name.clone(),.shell="cmd".clone(),
-            .command=label.id.clone(),.starting_directory=label.name.clone()};
-        cfg.keybindings.items[i]=.{cast(s32)(112+i),0,cast(s32)K.Action.New_Tab};
-        cfg.keybindings.profile_ids[i]=cast(s32)i+1;
+    for i: 0..order.count {
+        label := labels[order[i]];
+        cfg.profiles[i] = .{
+            .id = label.id.clone(),
+            .name = label.name.clone(),
+            .shell = "cmd".clone(),
+            .command = label.id.clone(),
+            .starting_directory = label.name.clone()
+        };
+        cfg.keybindings.items[i] = .{ cast(s32)(112 + i), 0, cast(s32) K.Action.New_Tab };
+        cfg.keybindings.profile_ids[i] = cast(s32) i + 1;
     }
     // Keep independent content plus original ownership pointers: presentation
     // sorting must neither reorder config storage nor transfer its strings.
-    baseline:=C.clone(&cfg); defer C.release(&baseline);
-    original:=cfg;
-    for position:cast(s32)0..cfg.profile_count {
-        storage:=Ch.profile_at(&cfg,position);
-        check(storage>=0 && storage<cfg.profile_count,"each sorted profile row maps to a stored profile");
-        check(cfg.profiles[storage].id==expected[position],
-            "profile labels have stable name order and duplicate names use their id as a tie-break");
+    baseline := C.clone(&cfg);
+    defer C.release(&baseline);
+    original := cfg;
+    for position: cast(s32) 0..cfg.profile_count {
+        storage := Ch.profile_at(&cfg, position);
+        check(
+            storage >= 0 && storage < cfg.profile_count,
+            "each sorted profile row maps to a stored profile"
+        );
+        check(
+            cfg.profiles[storage].id == expected[position],
+            "profile labels have stable name order and duplicate names use their id as a tie-break"
+        );
     }
-    check(Ch.profile_at(&cfg,-1)== -1 && Ch.profile_at(&cfg,cfg.profile_count)== -1 &&
-        Ch.profile_at(&cfg,cfg.profile_count+1)== -1,
-        "negative and past-the-end profile menu positions have no target");
-    if cfg.profile_count==0 check(Ch.profile_at(&cfg,0)== -1,"an empty profile list has no first row");
-    else check(Ch.profile_at(&cfg,0)>=0,"the first profile menu position is zero-based and reachable");
-    check(cfg.profile_count==baseline.profile_count && cfg.default_profile==baseline.default_profile &&
-        cfg.keybindings.count==baseline.keybindings.count,"sorting leaves profile/default/binding metadata unchanged");
-    for i:0..cfg.profile_count {
-        actual:=&cfg.profiles[i]; saved:=&baseline.profiles[i]; pointers:=&original.profiles[i];
-        check(actual.id==saved.id && actual.name==saved.name && actual.shell==saved.shell &&
-            actual.command==saved.command && actual.starting_directory==saved.starting_directory,
-            "menu presentation does not mutate or reorder stored profile launch data");
-        check(actual.id.data==pointers.id.data && actual.name.data==pointers.name.data &&
-            actual.shell.data==pointers.shell.data && actual.command.data==pointers.command.data &&
-            actual.starting_directory.data==pointers.starting_directory.data,
-            "menu presentation retains the configuration's string ownership");
-        check(K.profile_for(&cfg.keybindings,cast(s32)(112+i),0)==cast(s32)i+1 &&
-            cfg.keybindings.items[i].key==baseline.keybindings.items[i].key &&
-            cfg.keybindings.items[i].mods==baseline.keybindings.items[i].mods &&
-            cfg.keybindings.items[i].action==baseline.keybindings.items[i].action,
-            "keyboard profile targets still refer to the original storage indices");
+    check(
+        Ch.profile_at(&cfg, -1) == -1 && Ch.profile_at(&cfg, cfg.profile_count) == -1 && Ch.profile_at(
+            &cfg,
+            cfg.profile_count + 1
+        ) == -1,
+        "negative and past-the-end profile menu positions have no target"
+    );
+    if cfg.profile_count == 0
+        check(Ch.profile_at(&cfg, 0) == -1, "an empty profile list has no first row");
+    else
+        check(
+            Ch.profile_at(&cfg, 0) >= 0,
+            "the first profile menu position is zero-based and reachable"
+        );
+    check(
+        cfg.profile_count == baseline.profile_count && cfg.default_profile == baseline.default_profile && cfg.keybindings.count == baseline.keybindings.count,
+        "sorting leaves profile/default/binding metadata unchanged"
+    );
+    for i: 0..cfg.profile_count {
+        actual := &cfg.profiles[i];
+        saved := &baseline.profiles[i];
+        pointers := &original.profiles[i];
+        check(
+            actual.id == saved.id && actual.name == saved.name && actual.shell == saved.shell && actual.command == saved.command && actual.starting_directory == saved.starting_directory,
+            "menu presentation does not mutate or reorder stored profile launch data"
+        );
+        check(
+            actual.id.data == pointers.id.data && actual.name.data == pointers.name.data && actual.shell.data == pointers.shell.data && actual.command.data == pointers.command.data && actual.starting_directory.data == pointers.starting_directory.data,
+            "menu presentation retains the configuration's string ownership"
+        );
+        check(
+            K.profile_for(&cfg.keybindings, cast(s32)(112 + i), 0) == cast(s32) i + 1 && cfg.keybindings.items[i].key == baseline.keybindings.items[i].key && cfg.keybindings.items[i].mods == baseline.keybindings.items[i].mods && cfg.keybindings.items[i].action == baseline.keybindings.items[i].action,
+            "keyboard profile targets still refer to the original storage indices"
+        );
     }
 }
 
 profile_ordering :: () {
-    labels:[8]Profile_Label=.[.{"cmd","Command Prompt"},.{"dev","Developer"},.{"dev_z","Developer"},
-        .{"tools","Developer tools"},.{"nu","Nushell"},.{"ps","PowerShell"},
-        .{"lower","powershell"},.{"ko","한글"}];
-    expected:[8]str=.["cmd","dev","dev_z","tools","nu","ps","lower","ko"];
-    empty:[0]s32;
-    ordering_case(labels[..],empty[..],expected[0..0]);
-    one:[1]s32=.[4]; one_expected:[1]str=.["nu"];
-    ordering_case(labels[..],one[..],one_expected[..]);
+    labels: [8]Profile_Label = .[
+        .{ "cmd", "Command Prompt" },
+        .{ "dev", "Developer" },
+        .{ "dev_z", "Developer" },
+        .{ "tools", "Developer tools" },
+        .{ "nu", "Nushell" },
+        .{ "ps", "PowerShell" },
+        .{ "lower", "powershell" },
+        .{ "ko", "한글" }
+    ];
+    expected: [8]str = .["cmd", "dev", "dev_z", "tools", "nu", "ps", "lower", "ko"];
+    empty: [0]s32;
+    ordering_case(labels[..], empty[..], expected[0..0]);
+    one: [1]s32 = .[4];
+    one_expected: [1]str = .["nu"];
+    ordering_case(labels[..], one[..], one_expected[..]);
     // Every insertion order of a small list includes duplicate display names,
     // which reproduces arbitrary Lua table traversal without depending on Lua.
-    small_labels:[4]Profile_Label=.[labels[4],labels[0],labels[2],labels[1]];
-    small_expected:[4]str=.["cmd","dev","dev_z","nu"];
-    for a:cast(s32)0..4 for b:cast(s32)0..4 for c:cast(s32)0..4 for d:cast(s32)0..4 {
-        if a==b || a==c || a==d || b==c || b==d || c==d continue;
-        permutation:[4]s32=.[a,b,c,d];
-        ordering_case(small_labels[..],permutation[..],small_expected[..]);
+    small_labels: [4]Profile_Label = .[labels[4], labels[0], labels[2], labels[1]];
+    small_expected: [4]str = .["cmd", "dev", "dev_z", "nu"];
+    for a: cast(s32) 0..4 for b: cast(s32) 0..4 for c: cast(s32) 0..4 for d: cast(s32) 0..4 {
+        if a == b || a == c || a == d || b == c || b == d || c == d continue;
+        permutation: [4]s32 = .[a, b, c, d];
+        ordering_case(small_labels[..], permutation[..], small_expected[..]);
     }
     // Prefixes, case differences and UTF-8 remain deterministic as profiles
     // grow beyond the simple ASCII names used by the default configuration.
-    for rotation:cast(s32)0..8 {
-        order:[8]s32;
-        for i:cast(s32)0..8 order[i]=(7-i+rotation)%8;
-        ordering_case(labels[..],order[..],expected[..]);
+    for rotation: cast(s32) 0..8 {
+        order: [8]s32;
+        for i: cast(s32) 0..8 order[i] = (7 - i + rotation) % 8;
+        ordering_case(labels[..], order[..], expected[..]);
     }
 }
 
 main :: () {
     profile_ordering();
-    for dpi_value:.[96,120,144,192,240] {
-        dpi:=cast(s32)dpi_value;
-        for width_value:.[304,305,320,480,659,660,661,900,1440,2560] {
-            width:=Ch.pixels(cast(s32)width_value,dpi);
-            for count:cast(s32)1..17 for active:cast(s32)0..count {
-                rail_case(width,dpi,count,active);
+    for dpi_value: .[96, 120, 144, 192, 240] {
+        dpi := cast(s32) dpi_value;
+        for width_value: .[304, 305, 320, 480, 659, 660, 661, 900, 1440, 2560] {
+            width := Ch.pixels(cast(s32) width_value, dpi);
+            for count: cast(s32) 1..17 for active: cast(s32) 0..count {
+                rail_case(width, dpi, count, active);
                 // Physical sizes need not be a whole number of logical pixels.
-                rail_case(width+1,dpi,count,active);
+                rail_case(width + 1, dpi, count, active);
             }
         }
-        for width_value:.[304,480,900] for height_value:.[184,200,400,1000] for profiles_value:.[0,3,32]
-            menu_case(Ch.pixels(cast(s32)width_value,dpi),Ch.pixels(cast(s32)height_value,dpi),dpi,cast(s32)profiles_value);
+        for width_value: .[304, 480, 900] for height_value: .[184, 200, 400, 1000] for profiles_value: .[
+            0,
+            3,
+            32
+        ]
+            menu_case(
+                Ch.pixels(cast(s32) width_value, dpi),
+                Ch.pixels(cast(s32) height_value, dpi),
+                dpi,
+                cast(s32) profiles_value
+            );
     }
-    print("Chrome tests passed: DPI-scaled controls, tab accessibility/overflow, scrollable menus and stable profile presentation.\n");
+    print(
+        "Chrome tests passed: DPI-scaled controls, tab accessibility/overflow, scrollable menus and stable profile presentation.\n"
+    );
 }

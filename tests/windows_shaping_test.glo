@@ -2,49 +2,73 @@ F :: #import "../src/windows_fonts.glo";
 S :: #import "../src/windows_shaping.glo";
 #import "Io";
 
-check :: (ok:bool,message:str) { if !ok { print("FAIL: {}\n",message); exit(1); } }
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
+}
 
-test_face :: (family:str,bold:s32)->bool {
-    data:F.Font_Data; face:usize;
-    check(F.native_font(family,bold,&data,&face)!=0,"read installed font and retain exact face");
+test_face :: (family: str, bold: s32) -> bool {
+    data: F.Font_Data;
+    face: usize;
+    check(
+        F.native_font(family, bold, &data, &face) != 0,
+        "read installed font and retain exact face"
+    );
     defer F.native_free(&data);
-    shaper:S.Shaper;
-    check(S.open(face,&shaper),"create DirectWrite text analyzer");
+    shaper: S.Shaper;
+    check(S.open(face, &shaper), "create DirectWrite text analyzer");
     F.native_release_face(face);
     defer S.close(&shaper);
-    run:S.Run; defer S.free_run(&run);
-    check(S.shape(&shaper,"ABC123",20,&run),"shape ordinary ASCII");
-    check(!run.changed && run.glyphs.count==6 && run.clusters.count==6,"ordinary text keeps nominal glyphs");
-    for advance:run.advances check(advance>0,"ordinary glyphs have positive advances");
-    changed:bool;
-    for text:.["->","=>","!=","===","<=","ffi","www"] {
-        check(S.shape(&shaper,text,20,&run),"shape OpenType substitutions");
-        check(run.clusters.count==text.count && run.glyphs.count>0 &&
-            run.glyphs.count==run.advances.count && run.glyphs.count==run.offsets.count,
-            "shaping preserves source-cell mapping and per-glyph placement");
-        for cluster:run.clusters check(cast(ssize)cluster<run.glyphs.count,"cluster points inside the glyph run");
-        if run.changed changed=true;
+    run: S.Run;
+    defer S.free_run(&run);
+    check(S.shape(&shaper, "ABC123", 20, &run), "shape ordinary ASCII");
+    check(
+        !run.changed && run.glyphs.count == 6 && run.clusters.count == 6,
+        "ordinary text keeps nominal glyphs"
+    );
+    for advance: run.advances check(advance > 0, "ordinary glyphs have positive advances");
+    changed: bool;
+    for text: .["->", "=>", "!=", "===", "<=", "ffi", "www"] {
+        check(S.shape(&shaper, text, 20, &run), "shape OpenType substitutions");
+        check(
+            run.clusters.count == text.count && run.glyphs.count > 0 && run.glyphs.count == run.advances.count && run.glyphs.count == run.offsets.count,
+            "shaping preserves source-cell mapping and per-glyph placement"
+        );
+        for cluster: run.clusters check(
+            cast(ssize) cluster < run.glyphs.count,
+            "cluster points inside the glyph run"
+        );
+        if run.changed changed = true;
     }
-    if data.matched_family && family=="D2KodingLigature Nerd Font Mono"
-        check(changed,"installed programming-ligature font applies OpenType substitutions");
-    long_text:[512]u8;
-    for i:0..512 long_text[i]=65;
-    long_string:=cast(str)long_text[..];
-    check(S.shape(&shaper,long_string,20,&run) && !run.changed && run.glyphs.count==512,
-        "a complete terminal-width run retains every source cell");
-    check(!S.shape(&shaper,"",20,&run) && run.glyphs.count==0 && !run.changed,"empty run clears previous shaping");
-    check(!S.shape(&shaper,"a\nb",20,&run),"control characters use the ordinary renderer");
-    check(!S.shape(&shaper,"\xc3\xa9",20,&run),"Unicode uses the ordinary fallback renderer");
-    check(!S.shape(&shaper,"abc",0,&run),"reject invalid font size");
-    print("Shaping {} (bold {}): substitutions {}\n",family,bold,changed);
+    if data.matched_family && family == "D2KodingLigature Nerd Font Mono"
+        check(changed, "installed programming-ligature font applies OpenType substitutions");
+    long_text: [512]u8;
+    for i: 0..512 long_text[i] = 65;
+    long_string := cast(str) long_text[..];
+    check(
+        S.shape(&shaper, long_string, 20, &run) && !run.changed && run.glyphs.count == 512,
+        "a complete terminal-width run retains every source cell"
+    );
+    check(
+        !S.shape(&shaper, "", 20, &run) && run.glyphs.count == 0 && !run.changed,
+        "empty run clears previous shaping"
+    );
+    check(!S.shape(&shaper, "a\nb", 20, &run), "control characters use the ordinary renderer");
+    check(!S.shape(&shaper, "\xc3\xa9", 20, &run), "Unicode uses the ordinary fallback renderer");
+    check(!S.shape(&shaper, "abc", 0, &run), "reject invalid font size");
+    print("Shaping {} (bold {}): substitutions {}\n", family, bold, changed);
     return changed;
 }
 
 main :: () {
-    _:=test_face("Consolas",0);
-    regular:=test_face("D2KodingLigature Nerd Font Mono",0);
-    bold:=test_face("D2KodingLigature Nerd Font Mono",1);
-    if !regular || !bold print("Optional programming-ligature font is unavailable; ordinary shaping passed.\n");
-    empty:S.Shaper; S.close(&empty);
+    _ := test_face("Consolas", 0);
+    regular := test_face("D2KodingLigature Nerd Font Mono", 0);
+    bold := test_face("D2KodingLigature Nerd Font Mono", 1);
+    if !regular || !bold
+        print("Optional programming-ligature font is unavailable; ordinary shaping passed.\n");
+    empty: S.Shaper;
+    S.close(&empty);
     print("Windows shaping tests passed.\n");
 }

@@ -29,6 +29,7 @@ return {
   font_family = "D2KodingLigature Nerd Font Mono", -- hot reloads on save
   font_size = 16, -- shared by all panes; logical pixels (scales with monitor DPI), 8..72
   font_ligatures = true, -- OpenType ligatures when supported by the selected font; hot reloads
+  window_opacity = 1.0, -- 0.1..1.0; e.g. 0.9 makes the entire window translucent, including text/header
   columns = 100, -- 20..400; changes resize this window's width
   rows = 30, -- 5..200; changes resize this window's height
   scrollback = 5000, -- per pane, 0..10000 lines; shrinking keeps newest, zero clears

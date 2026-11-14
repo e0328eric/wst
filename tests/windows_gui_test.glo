@@ -3,54 +3,69 @@ G :: #import "Gui";
 N :: #import "../src/windows_gui.glo";
 #import "Io";
 user32 :: #library,system "user32";
-SendMessageW :: (window:usize,message:u32,detail:usize,parameter:ssize)->ssize #foreign user32 "SendMessageW";
+SendMessageW :: (window: usize, message: u32, detail: usize, parameter: ssize) -> ssize #foreign user32 "SendMessageW";
 
-check :: (ok:bool,message:str="Windows service check") { if !ok { print("FAIL: {}\n",message); exit(1); } }
+check :: (ok: bool, message: str = "Windows service check") {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
+}
 main :: () {
-    window:=G.create_window(400,300,"wst Glosso window services",G.Window_Flags.Hidden|.High_Dpi);
-    check(G.window_valid(window)); defer G.destroy_window(window);
-    check(N.gui_bind()!=0); defer N.gui_unbind();
-    handle:=N.gui_window_handle(); check(handle!=0);
-    check(N.gui_bind()!=0,"binding the same window is idempotent");
-    width,height:s32;
-    check(N.window_minimum(&width,&height)!=0 && width>0 && height>0);
-    check(N.window_dpi()>=96);
-    check(N.resize_client(600,400)!=0);
+    window := G.create_window(
+        400,
+        300,
+        "wst Glosso window services",
+        G.Window_Flags.Hidden | .High_Dpi
+    );
+    check(G.window_valid(window));
+    defer G.destroy_window(window);
+    check(N.gui_bind() != 0);
+    defer N.gui_unbind();
+    handle := N.gui_window_handle();
+    check(handle != 0);
+    check(N.gui_bind() != 0, "binding the same window is idempotent");
+    width, height: s32;
+    check(N.window_minimum(&width, &height) != 0 && width > 0 && height > 0);
+    check(N.window_dpi() >= 96);
+    check(N.resize_client(600, 400) != 0);
     check(G.update_window_events(window));
-    dimensions:=G.render_dimensions(window);
-    check(dimensions.x==600 && dimensions.y==400,"resize uses physical client pixels");
-    check(N.resize_client(0,0)!=0);
-    check(N.resize_client(0,420)!=0);
+    dimensions := G.render_dimensions(window);
+    check(dimensions.x == 600 && dimensions.y == 400, "resize uses physical client pixels");
+    check(N.resize_client(0, 0) != 0);
+    check(N.resize_client(0, 420) != 0);
     check(G.update_window_events(window));
-    dimensions=G.render_dimensions(window);
-    check(dimensions.x==600 && dimensions.y==420,"zero preserves the other axis");
-    check(N.resize_client(-1,0)==0 && N.resize_client(16385,500)==0);
-    check(N.grid_client_pixels(0,19,10,0,192)==0);
-    check(N.grid_client_pixels(80,19,10,0,192)==1560);
-    check(N.scroll_lines()>= -1);
+    dimensions = G.render_dimensions(window);
+    check(dimensions.x == 600 && dimensions.y == 420, "zero preserves the other axis");
+    check(N.resize_client(-1, 0) == 0 && N.resize_client(16385, 500) == 0);
+    check(N.grid_client_pixels(0, 19, 10, 0, 192) == 0);
+    check(N.grid_client_pixels(80, 19, 10, 0, 192) == 1560);
+    check(N.scroll_lines() >= -1);
 
     // Gui receives the messages. The observer only records why a release occurs.
-    _:=SendMessageW(handle,16#201,1,0);
-    _:=SendMessageW(handle,16#202,0,0);
-    check(N.pointer_release(0)==1,"real button release remains normal");
-    _:=SendMessageW(handle,16#201,1,0);
-    _:=SendMessageW(handle,16#1f,0,0);
-    check(N.pointer_release(0)==2,"capture cancellation is distinct");
-    _:=SendMessageW(handle,16#204,2,0);
-    _:=SendMessageW(handle,16#1f,0,0);
-    check(N.pointer_release(1)==2,"right-button cancellation cannot paste");
-    check(N.pointer_release(-1)==2);
+    _ := SendMessageW(handle, 16#201, 1, 0);
+    _ := SendMessageW(handle, 16#202, 0, 0);
+    check(N.pointer_release(0) == 1, "real button release remains normal");
+    _ := SendMessageW(handle, 16#201, 1, 0);
+    _ := SendMessageW(handle, 16#1f, 0, 0);
+    check(N.pointer_release(0) == 2, "capture cancellation is distinct");
+    _ := SendMessageW(handle, 16#204, 2, 0);
+    _ := SendMessageW(handle, 16#1f, 0, 0);
+    check(N.pointer_release(1) == 2, "right-button cancellation cannot paste");
+    check(N.pointer_release(-1) == 2);
 
-    text:[16]u32;
-    check(N.key_text(0,0,0,cast([*]u32)&text,16)==0);
-    check(N.key_text(65,0,0,cast([*]u32)&text,16)>0);
-    check(text[0]==65 || text[0]==97);
-    check(N.key_text(65,0,1,cast([*]u32)&text,16)>0);
-    check(text[0]==65 || text[0]==97);
-    N.pointer_cursor(0); N.cancel_pointer();
-    N.gui_unbind(); check(N.gui_bind()!=0);
-    check(N.pointer_release(0)==1,"rebind clears stale cancellation state");
-    print("Glosso Windows services passed: sizing, DPI, keyboard prediction and capture cancellation.\n");
+    text: [16]u32;
+    check(N.key_text(0, 0, 0, cast([*]u32) &text, 16) == 0);
+    check(N.key_text(65, 0, 0, cast([*]u32) &text, 16) > 0);
+    check(text[0] == 65 || text[0] == 97);
+    check(N.key_text(65, 0, 1, cast([*]u32) &text, 16) > 0);
+    check(text[0] == 65 || text[0] == 97);
+    N.pointer_cursor(0);
+    N.cancel_pointer();
+    N.gui_unbind();
+    check(N.gui_bind() != 0);
+    check(N.pointer_release(0) == 1, "rebind clears stale cancellation state");
+    print(
+        "Glosso Windows services passed: sizing, DPI, keyboard prediction and capture cancellation.\n"
+    );
 }
-
-

@@ -2,74 +2,84 @@
 P :: #import "../src/platform.glo";
 #import "Io";
 kernel32 :: #library,system "kernel32";
-Sleep :: (milliseconds:u32) #foreign kernel32;
+Sleep :: (milliseconds: u32) #foreign kernel32;
 
-contains :: (text:str,needle:str)->bool {
-    if text.count<needle.count return false;
-    for i:0..text.count-needle.count+1 if text[i..i+needle.count]==needle return true;
+contains :: (text: str, needle: str) -> bool {
+    if text.count < needle.count return false;
+    for i: 0..text.count - needle.count + 1 if text[i..i + needle.count] == needle return true;
     return false;
 }
 pump :: () {
-    event:P.Event;
-    while P.next_event(&event)!=0 {}
+    event: P.Event;
+    while P.next_event(&event) != 0 {}
 }
 // Establish a quiet queue without depending on the event being tested.
 quiet :: () {
-    data:[65536]u8;
-    start:=P.ticks(); last:=start;
-    while P.ticks()-last<250 {
+    data: [65536]u8;
+    start := P.ticks();
+    last := start;
+    while P.ticks() - last < 250 {
         pump();
-        while P.pty_read(cast([*]u8)&data,65536)>0 last=P.ticks();
-        #assert P.ticks()-start<5000,"shell output should settle";
+        while P.pty_read(cast([*]u8) &data, 65536) > 0 last = P.ticks();
+        #assert P.ticks() - start < 5000, "shell output should settle";
         Sleep(5);
     }
 }
 main :: () {
-    #assert P.open("Consolas",16,100,30,12,1)!=0;
+    #assert P.open("Consolas", 16, 100, 30, 12, 1) != 0;
     defer P.close();
-    #assert P.pty_start("cmd.exe /d /q",100,30)!=0;
+    #assert P.pty_start("cmd.exe /d /q", 100, 30) != 0;
     quiet();
 
     // The full expected marker never occurs in the typed command. Seeing it
     // proves cmd processed the command, rather than matching input echo/startup.
-    command: str="set ST_WIN_WAIT_TEST_TOKEN=GLOSSO_WAIT_\recho %ST_WIN_WAIT_TEST_TOKEN%EVENT_OK_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789\r";
-    marker: str="GLOSSO_WAIT_EVENT_OK_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789";
-    #assert !contains(command,marker);
+    command: str = "set ST_WIN_WAIT_TEST_TOKEN=GLOSSO_WAIT_\recho %ST_WIN_WAIT_TEST_TOKEN%EVENT_OK_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789\r";
+    marker: str = "GLOSSO_WAIT_EVENT_OK_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789";
+    #assert !contains(command, marker);
     pump();
-    #assert P.pty_send(command.data,cast(s32)command.count)!=0;
-    start:=P.ticks();
+    #assert P.pty_send(command.data, cast(s32) command.count) != 0;
+    start := P.ticks();
     P.wait(1000);
-    first_wait:=P.ticks()-start;
-    data:[65536]u8;
-    first:=P.pty_read(cast([*]u8)&data,1);
-    #assert first==1,"output readiness wakes the UI with readable bytes";
-    #assert first_wait<750,"ConPTY output wakes a long UI wait before its timeout";
-    output:[..]u8;
+    first_wait := P.ticks() - start;
+    data: [65536]u8;
+    first := P.pty_read(cast([*]u8) &data, 1);
+    #assert first == 1, "output readiness wakes the UI with readable bytes";
+    #assert first_wait < 750, "ConPTY output wakes a long UI wait before its timeout";
+    output: [..]u8;
     defer output.free();
     output.push(data[0]);
 
     // A partial read leaves the output event signaled while bytes remain.
     pump();
-    before:=P.ticks();
+    before := P.ticks();
     P.wait(1000);
-    #assert P.ticks()-before<250,"queued output remains ready after a partial read";
-    while !contains(cast(str)output.view(),marker) {
-        n:=P.pty_read(cast([*]u8)&data,65536);
-        for i:0..n output.push(data[i]);
-        #assert P.ticks()-start<3000,"actual shell marker arrives";
-        if n==0 { pump(); P.wait(100); }
+    #assert P.ticks() - before < 250, "queued output remains ready after a partial read";
+    while !contains(cast(str) output.view(), marker) {
+        n := P.pty_read(cast([*]u8) &data, 65536);
+        for i: 0..n output.push(data[i]);
+        #assert P.ticks() - start < 3000, "actual shell marker arrives";
+        if n == 0 {
+            pump();
+            P.wait(100);
+        }
     }
 
     quiet();
     // After draining, the event must stop waking waits. Retry only when an
     // incidental window message legitimately wakes the hidden window.
-    slept:=false;
+    slept := false;
     for 0..10 {
         pump();
-        before=P.ticks();
+        before = P.ticks();
         P.wait(150);
-        if P.ticks()-before>=100 { slept=true; break; }
+        if P.ticks() - before >= 100 {
+            slept = true;
+            break;
+        }
     }
-    #assert slept,"draining output resets readiness instead of spinning the UI";
-    print("Wait tests passed: real shell output wake, partial read readiness, drained event reset (first wake {}ms).\n",first_wait);
+    #assert slept, "draining output resets readiness instead of spinning the UI";
+    print(
+        "Wait tests passed: real shell output wake, partial read readiness, drained event reset (first wake {}ms).\n",
+        first_wait
+    );
 }

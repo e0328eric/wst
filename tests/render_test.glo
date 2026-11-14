@@ -7,129 +7,219 @@ background: u32 :: 16#11151c;
 cell_width: s32;
 cell_height: s32;
 
-draw :: (cols: s32,rows: s32,cursor_x: s32,cursor_y: s32,visible: s32) {
+draw :: (cols: s32, rows: s32, cursor_x: s32, cursor_y: s32, visible: s32) {
     P.frame_begin(background);
-    P.grid(12,48,cols,rows,cell_width,cell_height,cast([*]const P.Render_Cell)&cells,cursor_x,cursor_y,visible,16#e5c07b);
+    P.grid(
+        12,
+        48,
+        cols,
+        rows,
+        cell_width,
+        cell_height,
+        cast([*]const P.Render_Cell) &cells,
+        cursor_x,
+        cursor_y,
+        visible,
+        16#e5c07b
+    );
 }
 pixels :: (path: str) -> str {
-    if read_file(path,64*1024*1024) == {
-    case .Ok(data); return data;
-    case .Err(error); print("snapshot read failed: {}\n",error.kind); exit(1);
+    if read_file(path, 64 * 1024 * 1024) == {
+    case .Ok(data);
+        return data;
+    case .Err(error);
+        print("snapshot read failed: {}\n", error.kind);
+        exit(1);
     }
 }
 same_as_legacy :: () {
     P.frame_begin(0);
-    draw(40,8,0,0,0);
-    #assert P.snapshot("build/render_batched.bmp")!=0;
-    batched:=pixels("build/render_batched.bmp");
+    draw(40, 8, 0, 0, 0);
+    #assert P.snapshot("build/render_batched.bmp") != 0;
+    batched := pixels("build/render_batched.bmp");
     defer batched.free();
-    P.frame_begin(0); P.frame_begin(background);
+    P.frame_begin(0);
+    P.frame_begin(background);
     for yi: 0..8 {
-        y:=cast(s32)yi;
+        y := cast(s32) yi;
         for xi: 0..40 {
-            x:=cast(s32)xi;
-            c:=cells[y*40+x];
-            if (c.flags&16)!=0 && x>0 && (cells[y*40+x-1].flags&8)!=0 continue;
-            width:=cell_width;
-            if (c.flags&8)!=0 width*=2;
-            selected: s32=0;
-            if (c.flags&16#80000000)!=0 selected=1;
-            P.cell(12+x*cell_width,48+y*cell_height,width,cell_height,c.codepoint,c.fg,c.bg,c.flags,selected);
+            x := cast(s32) xi;
+            c := cells[y * 40 + x];
+            if (c.flags & 16) != 0 && x > 0 && (cells[y * 40 + x - 1].flags & 8) != 0 continue;
+            width := cell_width;
+            if (c.flags & 8) != 0 width *= 2;
+            selected: s32 = 0;
+            if (c.flags & 16#80000000) != 0 selected = 1;
+            P.cell(
+                12 + x * cell_width,
+                48 + y * cell_height,
+                width,
+                cell_height,
+                c.codepoint,
+                c.fg,
+                c.bg,
+                c.flags,
+                selected
+            );
         }
     }
-    #assert P.snapshot("build/render_legacy.bmp")!=0;
-    legacy:=pixels("build/render_legacy.bmp");
+    #assert P.snapshot("build/render_legacy.bmp") != 0;
+    legacy := pixels("build/render_legacy.bmp");
     defer legacy.free();
-    #assert batched==legacy,"batched fixed-cell glyphs match original renderer";
+    #assert batched == legacy, "batched fixed-cell glyphs match original renderer";
 }
-same_as_full :: (cols: s32,rows: s32,cursor_x: s32,cursor_y: s32,visible: s32) {
-    #assert P.snapshot("build/render_incremental.bmp")!=0;
-    incremental:=pixels("build/render_incremental.bmp");
+same_as_full :: (cols: s32, rows: s32, cursor_x: s32, cursor_y: s32, visible: s32) {
+    #assert P.snapshot("build/render_incremental.bmp") != 0;
+    incremental := pixels("build/render_incremental.bmp");
     defer incremental.free();
     // A background change invalidates the native cache and clears the bitmap.
     P.frame_begin(0);
-    draw(cols,rows,cursor_x,cursor_y,visible);
-    #assert P.snapshot("build/render_full.bmp")!=0;
-    full:=pixels("build/render_full.bmp");
+    draw(cols, rows, cursor_x, cursor_y, visible);
+    #assert P.snapshot("build/render_full.bmp") != 0;
+    full := pixels("build/render_full.bmp");
     defer full.free();
-    #assert incremental==full,"incremental rows and cursor match a fresh full render";
+    #assert incremental == full, "incremental rows and cursor match a fresh full render";
 }
 main :: () {
-    #assert P.open("Consolas",16,40,8,12,1)!=0;
+    #assert P.open("Consolas", 16, 40, 8, 12, 1) != 0;
     defer P.close();
-    width,height: s32;
-    P.metrics(&width,&height,&cell_width,&cell_height);
-    for i: 0..320 cells[i]=.{ .codepoint=cast(u32)(65+i%26),.fg=16#d8dee9,.bg=background };
-    draw(40,8,0,0,1);
-    same_as_full(40,8,0,0,1);
-    cells[83].codepoint=90; cells[83].fg=16#c0ffee;
-    cells[120]=.{ .codepoint=16#d55c,.fg=16#f0e0d0,.bg=16#203040,.flags=8|1|2|16#80000000 };
-    cells[121]=.{ .codepoint=0,.fg=16#f0e0d0,.bg=16#203040,.flags=16|16#80000000 };
-    cells[122]=.{ .codepoint=16#1f600,.fg=16#d8dee9,.bg=16#102030,.flags=8 };
-    cells[123]=.{ .codepoint=0,.fg=16#d8dee9,.bg=16#102030,.flags=16 };
-    cells[130].flags=4|2;
-    draw(40,8,3,2,1);
-    same_as_full(40,8,3,2,1);
+    width, height: s32;
+    P.metrics(&width, &height, &cell_width, &cell_height);
+    for i: 0..320 cells[i] = .{
+        .codepoint = cast(u32)(65 + i % 26),
+        .fg = 16#d8dee9,
+        .bg = background
+    };
+    draw(40, 8, 0, 0, 1);
+    same_as_full(40, 8, 0, 0, 1);
+    cells[83].codepoint = 90;
+    cells[83].fg = 16#c0ffee;
+    cells[120] = .{
+        .codepoint = 16#d55c,
+        .fg = 16#f0e0d0,
+        .bg = 16#203040,
+        .flags = 8 | 1 | 2 | 16#80000000
+    };
+    cells[121] = .{ .codepoint = 0, .fg = 16#f0e0d0, .bg = 16#203040, .flags = 16 | 16#80000000 };
+    cells[122] = .{ .codepoint = 16#1f600, .fg = 16#d8dee9, .bg = 16#102030, .flags = 8 };
+    cells[123] = .{ .codepoint = 0, .fg = 16#d8dee9, .bg = 16#102030, .flags = 16 };
+    cells[130].flags = 4 | 2;
+    draw(40, 8, 3, 2, 1);
+    same_as_full(40, 8, 3, 2, 1);
     // A highly zoomed terminal can have cells larger than its viewport. Keep
     // hidden cells out of the surrounding UI, including after cache updates.
-    P.frame_begin(0); P.frame_begin(background);
-    P.grid_clipped(12,48,40,8,cell_width,cell_height,cast([*]const P.Render_Cell)&cells,
-        0,0,0,16#e5c07b,cell_width,cell_height);
-    #assert P.snapshot("build/render_clip_before.bmp")!=0;
-    clipped:=pixels("build/render_clip_before.bmp");
+    P.frame_begin(0);
+    P.frame_begin(background);
+    P.grid_clipped(
+        12,
+        48,
+        40,
+        8,
+        cell_width,
+        cell_height,
+        cast([*]const P.Render_Cell) &cells,
+        0,
+        0,
+        0,
+        16#e5c07b,
+        cell_width,
+        cell_height
+    );
+    #assert P.snapshot("build/render_clip_before.bmp") != 0;
+    clipped := pixels("build/render_clip_before.bmp");
     defer clipped.free();
-    cells[1].codepoint=90; cells[40].codepoint=90;
-    P.grid_clipped(12,48,40,8,cell_width,cell_height,cast([*]const P.Render_Cell)&cells,
-        0,0,0,16#e5c07b,cell_width,cell_height);
-    #assert P.snapshot("build/render_clip_after.bmp")!=0;
-    updated:=pixels("build/render_clip_after.bmp");
+    cells[1].codepoint = 90;
+    cells[40].codepoint = 90;
+    P.grid_clipped(
+        12,
+        48,
+        40,
+        8,
+        cell_width,
+        cell_height,
+        cast([*]const P.Render_Cell) &cells,
+        0,
+        0,
+        0,
+        16#e5c07b,
+        cell_width,
+        cell_height
+    );
+    #assert P.snapshot("build/render_clip_after.bmp") != 0;
+    updated := pixels("build/render_clip_after.bmp");
     defer updated.free();
-    #assert clipped==updated,"cells outside the viewport cannot overwrite UI pixels";
-    P.grid_clipped(12,48,40,8,cell_width,cell_height,cast([*]const P.Render_Cell)&cells,
-        0,0,0,16#e5c07b,2*cell_width,2*cell_height);
-    #assert P.snapshot("build/render_clip_expanded.bmp")!=0;
-    expanded:=pixels("build/render_clip_expanded.bmp");
+    #assert clipped == updated, "cells outside the viewport cannot overwrite UI pixels";
+    P.grid_clipped(
+        12,
+        48,
+        40,
+        8,
+        cell_width,
+        cell_height,
+        cast([*]const P.Render_Cell) &cells,
+        0,
+        0,
+        0,
+        16#e5c07b,
+        2 * cell_width,
+        2 * cell_height
+    );
+    #assert P.snapshot("build/render_clip_expanded.bmp") != 0;
+    expanded := pixels("build/render_clip_expanded.bmp");
     defer expanded.free();
-    #assert clipped!=expanded,"expanding the viewport invalidates clipped cached pixels";
-    P.frame_begin(0); draw(40,8,3,2,1);
+    #assert clipped != expanded, "expanding the viewport invalidates clipped cached pixels";
+    P.frame_begin(0);
+    draw(40, 8, 3, 2, 1);
     // Three-row wheel movement reuses an overlapping bitmap region. Include
     // colors, inverse and selected cells so pixel reuse cannot flatten styles.
-    for y: 0..5 for x: 0..40 cells[y*40+x]=cells[(y+3)*40+x];
-    for y: 5..8 for x: 0..40 cells[y*40+x]=.{ .codepoint=cast(u32)(75+y),.fg=16#c0ffee,.bg=background,.flags=cast(u32)(y%2)*4 };
-    draw(40,8,3,2,1);
-    same_as_full(40,8,3,2,1);
+    for y: 0..5 for x: 0..40 cells[y * 40 + x] = cells[(y + 3) * 40 + x];
+    for y: 5..8 for x: 0..40 cells[y * 40 + x] = .{
+        .codepoint = cast(u32)(75 + y),
+        .fg = 16#c0ffee,
+        .bg = background,
+        .flags = cast(u32)(y % 2) * 4
+    };
+    draw(40, 8, 3, 2, 1);
+    same_as_full(40, 8, 3, 2, 1);
     // Scroll down in reverse order and ensure the old cursor was not copied.
-    y: s32=7;
-    while y>=2 {
-        for x: 0..40 cells[cast(ssize)(y*40)+x]=cells[cast(ssize)((y-2)*40)+x];
-        y-=1;
+    y: s32 = 7;
+    while y >= 2 {
+        for x: 0..40 cells[cast(ssize)(y * 40) + x] = cells[cast(ssize)((y - 2) * 40) + x];
+        y -= 1;
     }
-    for row: 0..2 for x: 0..40 cells[row*40+x]=.{ .codepoint=cast(u32)(80+row),.fg=16#c0ffee,.bg=background,.flags=16#80000000 };
-    draw(40,8,5,5,1);
-    same_as_full(40,8,5,5,1);
+    for row: 0..2 for x: 0..40 cells[row * 40 + x] = .{
+        .codepoint = cast(u32)(80 + row),
+        .fg = 16#c0ffee,
+        .bg = background,
+        .flags = 16#80000000
+    };
+    draw(40, 8, 5, 5, 1);
+    same_as_full(40, 8, 5, 5, 1);
     same_as_legacy();
     // Force a fresh grid after the direct legacy renderer changed its bitmap.
     P.frame_begin(0);
-    draw(40,8,3,2,1);
+    draw(40, 8, 3, 2, 1);
     // Removing a wide glyph must repaint its former continuation cell.
-    cells[120]=.{ .codepoint=88,.fg=16#d8dee9,.bg=background };
-    cells[121]=.{ .codepoint=89,.fg=16#d8dee9,.bg=background };
-    draw(40,8,3,2,1);
-    same_as_full(40,8,3,2,1);
+    cells[120] = .{ .codepoint = 88, .fg = 16#d8dee9, .bg = background };
+    cells[121] = .{ .codepoint = 89, .fg = 16#d8dee9, .bg = background };
+    draw(40, 8, 3, 2, 1);
+    same_as_full(40, 8, 3, 2, 1);
     // And a new wide glyph must cover both previously narrow cells.
-    cells[160]=.{ .codepoint=16#1f600,.fg=16#d8dee9,.bg=background,.flags=8 };
-    cells[161]=.{ .codepoint=0,.fg=16#d8dee9,.bg=background,.flags=16 };
-    draw(40,8,3,2,1);
-    same_as_full(40,8,3,2,1);
+    cells[160] = .{ .codepoint = 16#1f600, .fg = 16#d8dee9, .bg = background, .flags = 8 };
+    cells[161] = .{ .codepoint = 0, .fg = 16#d8dee9, .bg = background, .flags = 16 };
+    draw(40, 8, 3, 2, 1);
+    same_as_full(40, 8, 3, 2, 1);
     // Moving and hiding the cursor must erase its old border and underline.
-    draw(40,8,15,5,1);
-    same_as_full(40,8,15,5,1);
-    draw(40,8,15,5,0);
-    same_as_full(40,8,15,5,0);
+    draw(40, 8, 15, 5, 1);
+    same_as_full(40, 8, 15, 5, 1);
+    draw(40, 8, 15, 5, 0);
+    same_as_full(40, 8, 15, 5, 0);
     // Changing grid dimensions must clear the now unused rows and columns.
-    draw(20,4,3,2,1);
-    same_as_full(20,4,3,2,1);
-    draw(40,8,3,2,1);
-    same_as_full(40,8,3,2,1);
-    print("render tests passed: frame composition, colors, Unicode, selection, cursor and dimensions.\n");
+    draw(20, 4, 3, 2, 1);
+    same_as_full(20, 4, 3, 2, 1);
+    draw(40, 8, 3, 2, 1);
+    same_as_full(40, 8, 3, 2, 1);
+    print(
+        "render tests passed: frame composition, colors, Unicode, selection, cursor and dimensions.\n"
+    );
 }

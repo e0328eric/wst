@@ -26,7 +26,13 @@ Chrome :: #import "chrome.glo";
 }
 
 Selection :: U.Selection;
-Divider_Drag :: struct { active: bool; node: s32 = -1; axis: s32; grab: s32; pending: bool; }
+Divider_Drag :: struct {
+    active: bool;
+    node: s32 = -1;
+    axis: s32;
+    grab: s32;
+    pending: bool;
+}
 divider_drag: Divider_Drag;
 chrome: Chrome.State;
 // Keep the clipboard buffer off Windows' default one-megabyte thread stack.
@@ -71,11 +77,17 @@ scrollbar_geometry :: (t: *const T.Terminal, layout: L.Layout) -> S.Scrollbar {
     );
 }
 zoom_action_at :: (layout: L.Layout, x: s32, y: s32) -> s32 {
-    g:=Chrome.geometry(cast(s32)layout.header_width,cast(s32)layout.header_height,P.dpi(),1,0);
-    h:=Chrome.hit(&g,x,y);
-    if h.kind==Chrome.Zoom_Out return -1;
-    if h.kind==Chrome.Reset_Zoom return 2;
-    if h.kind==Chrome.Zoom_In return 1;
+    g := Chrome.geometry(
+        cast(s32) layout.header_width,
+        cast(s32) layout.header_height,
+        P.dpi(),
+        1,
+        0
+    );
+    h := Chrome.hit(&g, x, y);
+    if h.kind == Chrome.Zoom_Out   return -1;
+    if h.kind == Chrome.Reset_Zoom return 2;
+    if h.kind == Chrome.Zoom_In    return 1;
     return 0;
 }
 set_zoom :: (cfg: *C.Config, size: s32) {
@@ -100,8 +112,14 @@ set_reload_notice :: (message: str, failed: bool) {
     reload_notice_error = failed;
 }
 notice_hit :: (layout: L.Layout, x: s32, y: s32) -> bool {
-    g:=Chrome.geometry(cast(s32)layout.header_width,cast(s32)layout.header_height,P.dpi(),1,0);
-    return reload_notice_error && reload_notice_count>0 && Chrome.contains(g.reset_zoom,x,y);
+    g := Chrome.geometry(
+        cast(s32) layout.header_width,
+        cast(s32) layout.header_height,
+        P.dpi(),
+        1,
+        0
+    );
+    return reload_notice_error && reload_notice_count > 0 && Chrome.contains(g.reset_zoom, x, y);
 }
 utf8_append :: (bytes: *[..]u8, cp: u32) {
     if cp < 128 bytes.push(cast(u8) cp);
@@ -172,7 +190,9 @@ paste_clipboard :: (t: *T.Terminal, s: *Selection, exited: bool) -> bool {
 help :: () {
     print("wst: Windows terminal written in Glosso\n");
     print("Usage: wst [--shell powershell|cmd|nushell] [--config PATH]\n");
-    print("              [--profile ID] [--command COMMAND] [--hold] [--smoke-test [--capture BMP]] [--help]\n");
+    print(
+        "              [--profile ID] [--command COMMAND] [--hold] [--smoke-test [--capture BMP]] [--help]\n"
+    );
     print("Configuration: ./config.lua, then %APPDATA%/wst/config.lua.\n");
     P.help_dialog(
         "wst: Glosso Windows terminal\n\n--shell powershell|cmd|nushell\n--profile ID\n--config PATH\n--command COMMAND\n--hold\n--smoke-test [--capture BMP]\n\nConfiguration: .\\config.lua, then\n%APPDATA%\\wst\\config.lua"
@@ -180,7 +200,15 @@ help :: () {
 }
 
 smoke_test :: (cfg: *C.Config, capture_path: str) {
-    #assert P.open(cfg.font_family.c_string(), cfg.font_size, 80, 24, cfg.padding, 1) != 0;
+    #assert P.open(
+        cfg.font_family.c_string(),
+        cfg.font_size,
+        80,
+        24,
+        cfg.padding,
+        1,
+        cfg.window_opacity
+    ) != 0;
     defer P.close();
     #assert install_keybindings(cfg), "install Lua keyboard shortcuts";
     P.set_colors(cfg.selection_fg, cfg.selection_bg, cfg.cursor_text);
@@ -290,10 +318,15 @@ publish_dividers :: (workspace: *const M.Workspace, base: L.Layout) {
     regions: [31]P.Divider_Hit;
     count: s32;
     for node: 0..63 {
-        divider := M.divider_geometry(workspace, cast(s32) node, U.body_rect(base), 6 * P.dpi() / 96);
+        divider := M.divider_geometry(
+            workspace,
+            cast(s32) node,
+            U.body_rect(base),
+            6 * P.dpi() / 96
+        );
         if divider.node >= 0 && divider.rect.width > 0 && divider.rect.height > 0 {
             rect := divider.rect;
-            regions[count] = .{rect.x, rect.y, rect.width, rect.height, divider.axis};
+            regions[count] = .{ rect.x, rect.y, rect.width, rect.height, divider.axis };
             count += 1;
         }
     }
@@ -312,8 +345,16 @@ cancel_divider :: () -> bool {
 move_divider :: (workspace: *M.Workspace, base: L.Layout, cw: s32, ch: s32, x: s32, y: s32) {
     position := x;
     if divider_drag.axis == M.Axis_Horizontal position = y;
-    if M.drag_divider(workspace, divider_drag.node, U.body_rect(base), 6 * P.dpi() / 96,
-        position - divider_drag.grab, 2 * cw + 12 * P.dpi() / 96, ch) divider_drag.pending = true;
+    if M.drag_divider(
+        workspace,
+        divider_drag.node,
+        U.body_rect(base),
+        6 * P.dpi() / 96,
+        position - divider_drag.grab,
+        2 * cw + 12 * P.dpi() / 96,
+        ch
+    )
+        divider_drag.pending = true;
 }
 
 apply_divider :: (book: *U.Book, workspace: *M.Workspace, base: L.Layout, cw: s32, ch: s32) {
@@ -361,14 +402,18 @@ open_surface :: (
     layout := U.pane_layout(base, rects[id - 1]);
     profile_id := cfg.default_profile;
     if profile_target > 0 {
-        if profile_target > cfg.profile_count { set_reload_notice("The selected profile is unavailable", true); return false; }
+        if profile_target > cfg.profile_count {
+            set_reload_notice("The selected profile is unavailable", true);
+            return false;
+        }
         profile_id = cfg.profiles[profile_target - 1].id;
     } else if axis != 0 && M.focused(workspace) > 0
         profile_id = book.panes[M.focused(workspace) - 1].launch.profile_id;
     launch: H.Launch;
     defer H.release(&launch);
     if !H.resolve(cfg, profile_id, &launch) {
-        set_reload_notice(tprint("Unknown profile: {}", profile_id), true); return false;
+        set_reload_notice(tprint("Unknown profile: {}", profile_id), true);
+        return false;
     }
     if !U.open_launch(book, id, cfg, &launch, U.columns(layout, cw), U.rows(layout, ch)) {
         set_reload_notice(tprint("Could not open a shell: {}", P.error().to_string()), true);
@@ -445,39 +490,91 @@ workspace_action :: (
     P.invalidate_frame();
 }
 
-menu_action :: (row:s32,book:*U.Book,workspace:*M.Workspace,cfg:*C.Config,base:*L.Layout,
-    cw:*s32,ch:*s32,width:*s32,height:*s32,base_size:s32) {
-    chrome.menu_open=false;
+menu_action :: (
+    row: s32,
+    book: *U.Book,
+    workspace: *M.Workspace,
+    cfg: *C.Config,
+    base: *L.Layout,
+    cw: *s32,
+    ch: *s32,
+    width: *s32,
+    height: *s32,
+    base_size: s32
+) {
+    chrome.menu_open = false;
     U.end_drag(book);
-    if row==0 _:=open_surface(book,workspace,cfg,base.*,cw.*,ch.*,0);
-    else if row<=cfg.profile_count _:=open_surface(book,workspace,cfg,base.*,cw.*,ch.*,0,Chrome.profile_at(cfg,row-1)+1);
-    else if row==cfg.profile_count+1 workspace_action(.Split_Vertical,book,workspace,cfg,base.*,cw.*,ch.*,0);
-    else if row==cfg.profile_count+2 workspace_action(.Split_Horizontal,book,workspace,cfg,base.*,cw.*,ch.*,0);
-    else if row==cfg.profile_count+3 close_tab(book,workspace,workspace.active,base.*);
+    if row == 0 _ := open_surface(book, workspace, cfg, base.*, cw.*, ch.*, 0);
+    else if row <= cfg.profile_count _ := open_surface(
+        book,
+        workspace,
+        cfg,
+        base.*,
+        cw.*,
+        ch.*,
+        0,
+        Chrome.profile_at(cfg, row - 1) + 1
+    );
+    else if row == cfg.profile_count + 1 workspace_action(
+        .Split_Vertical,
+        book,
+        workspace,
+        cfg,
+        base.*,
+        cw.*,
+        ch.*,
+        0
+    );
+    else if row == cfg.profile_count + 2 workspace_action(
+        .Split_Horizontal,
+        book,
+        workspace,
+        cfg,
+        base.*,
+        cw.*,
+        ch.*,
+        0
+    );
+    else if row == cfg.profile_count + 3 close_tab(book, workspace, workspace.active, base.*);
     else {
-        zoom:s32=1;
-        if row==cfg.profile_count+4 zoom= -1;
-        if row==cfg.profile_count+5 zoom=2;
-        set_zoom(cfg,V.font_size(cfg.font_size,base_size,zoom));
-        refresh_layout(book,workspace,cfg,base,width,height,cw,ch);
+        zoom: s32 = 1;
+        if row == cfg.profile_count + 4 zoom = -1;
+        if row == cfg.profile_count + 5 zoom = 2;
+        set_zoom(cfg, V.font_size(cfg.font_size, base_size, zoom));
+        refresh_layout(book, workspace, cfg, base, width, height, cw, ch);
     }
     P.invalidate_frame();
 }
 
-hover_signature :: (book:*const U.Book,workspace:*const M.Workspace,base:L.Layout,height:s32,profiles:s32,x:s32,y:s32)->s32 {
-    header:=Chrome.geometry(cast(s32)base.header_width,cast(s32)base.header_height,P.dpi(),workspace.count,workspace.active);
-    h:=Chrome.hit(&header,x,y);
-    if h.kind!=0 && h.kind!=Chrome.Drag return h.kind*32+h.index+1;
+hover_signature :: (
+    book: *const U.Book,
+    workspace: *const M.Workspace,
+    base: L.Layout,
+    height: s32,
+    profiles: s32,
+    x: s32,
+    y: s32
+) -> s32 {
+    header := Chrome.geometry(
+        cast(s32) base.header_width,
+        cast(s32) base.header_height,
+        P.dpi(),
+        workspace.count,
+        workspace.active
+    );
+    h := Chrome.hit(&header, x, y);
+    if h.kind != 0 && h.kind != Chrome.Drag return h.kind * 32 + h.index + 1;
     if chrome.menu_open {
-        row:=Chrome.menu_hit(&header,&chrome,height,profiles+7,x,y);
-        if row>=0 return 1000+row;
-        if Chrome.contains(Chrome.menu_rect(&header,height,profiles+7),x,y) return 1100;
+        row := Chrome.menu_hit(&header, &chrome, height, profiles + 7, x, y);
+        if row >= 0                                                               return 1000 + row;
+        if Chrome.contains(Chrome.menu_rect(&header, height, profiles + 7), x, y) return 1100;
     }
-    divider:=M.divider_at(workspace,U.body_rect(base),6*P.dpi()/96,x,y);
-    if divider.node>=0 return 2000+divider.node;
-    for i:0..32 if book.panes[i].used && M.pane_tab(workspace,cast(s32)i+1)==workspace.active {
-        bar:=scrollbar_geometry(&book.panes[i].terminal,book.panes[i].layout);
-        if x>=bar.x && x<bar.x+bar.width && y>=bar.y && y<bar.y+bar.height return 3000+cast(s32)i;
+    divider := M.divider_at(workspace, U.body_rect(base), 6 * P.dpi() / 96, x, y);
+    if divider.node >= 0 return 2000 + divider.node;
+    for i: 0..32 if book.panes[i].used && M.pane_tab(workspace, cast(s32) i + 1) == workspace.active {
+        bar := scrollbar_geometry(&book.panes[i].terminal, book.panes[i].layout);
+        if x >= bar.x && x < bar.x + bar.width && y >= bar.y && y < bar.y + bar.height
+            return 3000 + cast(s32) i;
     }
     return 0;
 }
@@ -521,13 +618,21 @@ draw_terminal :: (p: *U.Pane, cfg: *C.Config, cw: s32, ch: s32, focused: bool) {
     bar := scrollbar_geometry(t, layout);
     P.rect(bar.x, bar.y, bar.width, bar.height, cfg.background);
     if t.history_count > 0 && !t.alternate {
-        thumb_width:=clamp(3*P.dpi()/96,2,bar.width);
-        color:=Chrome.mix(cfg.background,cfg.foreground,25);
-        if t.view_offset>0 color=Chrome.mix(cfg.background,cfg.accent,65);
-        if chrome.x>=bar.x && chrome.x<bar.x+bar.width && chrome.y>=bar.y && chrome.y<bar.y+bar.height {
-            thumb_width=clamp(5*P.dpi()/96,2,bar.width); color=cfg.accent;
+        thumb_width := clamp(3 * P.dpi() / 96, 2, bar.width);
+        color := Chrome.mix(cfg.background, cfg.foreground, 25);
+        if t.view_offset > 0 color = Chrome.mix(cfg.background, cfg.accent, 65);
+        if chrome.x >= bar.x && chrome.x < bar.x + bar.width && chrome.y >= bar.y && chrome.y < bar.y + bar.height {
+            thumb_width = clamp(5 * P.dpi() / 96, 2, bar.width);
+            color = cfg.accent;
         }
-        P.rounded_rect(bar.x+(bar.width-thumb_width)/2,bar.thumb_y,thumb_width,bar.thumb_height,thumb_width/2,color);
+        P.rounded_rect(
+            bar.x + (bar.width - thumb_width) / 2,
+            bar.thumb_y,
+            thumb_width,
+            bar.thumb_height,
+            thumb_width / 2,
+            color
+        );
     }
 }
 
@@ -541,30 +646,62 @@ render_workspace :: (
     base_size: s32
 ) {
     P.frame_begin(cfg.background);
-    unit:=P.dpi();
-    header:=Chrome.geometry(cast(s32)base.header_width,cast(s32)base.header_height,unit,workspace.count,workspace.active);
-    Chrome.draw_header(&header,&chrome,book,workspace,cfg,base_size,reload_notice_error && reload_notice_count>0);
+    unit := P.dpi();
+    header := Chrome.geometry(
+        cast(s32) base.header_width,
+        cast(s32) base.header_height,
+        unit,
+        workspace.count,
+        workspace.active
+    );
+    Chrome.draw_header(
+        &header,
+        &chrome,
+        book,
+        workspace,
+        cfg,
+        base_size,
+        reload_notice_error && reload_notice_count > 0
+    );
     focused := M.focused(workspace);
-    ids:[32]s32;
-    visible:=M.pane_order(workspace,workspace.active,&ids);
+    ids: [32]s32;
+    visible := M.pane_order(workspace, workspace.active, &ids);
     for i: 0..32 if book.panes[i].used && M.pane_tab(workspace, cast(s32) i + 1) == workspace.active {
         rect := book.rects[i];
         draw_terminal(&book.panes[i], cfg, cw, ch, cast(s32) i + 1 == focused);
-        if cast(s32)i+1==focused && visible>1
-            P.rounded_rect(rect.x,rect.y-clamp(2*unit/96,1,4),24*unit/96,clamp(unit/96,1,3),clamp(unit/96,1,3),cfg.accent);
+        if cast(s32) i + 1 == focused && visible > 1
+            P.rounded_rect(
+                rect.x,
+                rect.y - clamp(2 * unit / 96, 1, 4),
+                24 * unit / 96,
+                clamp(unit / 96, 1, 3),
+                clamp(unit / 96, 1, 3),
+                cfg.accent
+            );
     }
-    for node:0..63 {
-        divider := M.divider_geometry(workspace,cast(s32)node,U.body_rect(base),6*unit/96);
+    for node: 0..63 {
+        divider := M.divider_geometry(workspace, cast(s32) node, U.body_rect(base), 6 * unit / 96);
         if divider.node >= 0 {
             rect := divider.rect;
-            hot:=Chrome.contains(.{rect.x,rect.y,rect.width,rect.height},chrome.x,chrome.y) || (divider_drag.active && divider_drag.node==cast(s32)node);
-            ink:=Chrome.mix(cfg.background,cfg.foreground,16); if hot ink=cfg.accent;
-            stroke:=clamp(unit/96,1,3);
-            if divider.axis==M.Axis_Vertical P.rect(rect.x+(rect.width-stroke)/2,rect.y,stroke,rect.height,ink);
-            else P.rect(rect.x,rect.y+(rect.height-stroke)/2,rect.width,stroke,ink);
+            hot := Chrome.contains(.{ rect.x, rect.y, rect.width, rect.height }, chrome.x, chrome.y) || (
+                divider_drag.active && divider_drag.node == cast(s32) node
+            );
+            ink := Chrome.mix(cfg.background, cfg.foreground, 16);
+            if hot ink = cfg.accent;
+            stroke := clamp(unit / 96, 1, 3);
+            if divider.axis == M.Axis_Vertical
+                P.rect(rect.x + (rect.width - stroke) / 2, rect.y, stroke, rect.height, ink);
+            else
+                P.rect(rect.x, rect.y + (rect.height - stroke) / 2, rect.width, stroke, ink);
         }
     }
-    Chrome.draw_menu(&header,&chrome,cfg,cast(s32)(base.viewport_y+base.viewport_height)+cfg.padding*unit/96,reload_notice_error && reload_notice_count>0);
+    Chrome.draw_menu(
+        &header,
+        &chrome,
+        cfg,
+        cast(s32)(base.viewport_y + base.viewport_height) + cfg.padding * unit / 96,
+        reload_notice_error && reload_notice_count > 0
+    );
     P.frame_end();
 }
 
@@ -587,11 +724,25 @@ workspace_smoke :: (
     bounds := U.body_rect(base);
     gap := 6 * P.dpi() / 96;
     root := workspace.tabs[0].root;
-    #assert M.drag_divider(&workspace, root, bounds, gap,
-        bounds.x + bounds.width * 3 / 5, 2 * cw + 12 * P.dpi() / 96, ch);
+    #assert M.drag_divider(
+        &workspace,
+        root,
+        bounds,
+        gap,
+        bounds.x + bounds.width * 3 / 5,
+        2 * cw + 12 * P.dpi() / 96,
+        ch
+    );
     nested := workspace.tabs[0].nodes[root].second;
-    #assert M.drag_divider(&workspace, nested, bounds, gap,
-        bounds.y + bounds.height * 3 / 5, 2 * cw + 12 * P.dpi() / 96, ch);
+    #assert M.drag_divider(
+        &workspace,
+        nested,
+        bounds,
+        gap,
+        bounds.y + bounds.height * 3 / 5,
+        2 * cw + 12 * P.dpi() / 96,
+        ch
+    );
     rects: [32]M.Rect;
     U.geometry(&workspace, base, &rects);
     for i: 1..5 {
@@ -673,7 +824,7 @@ main :: () {
         return;
     }
     if explicit_config config_path = config_path.clone();
-    else config_path = Config_Paths.select_path();
+    else               config_path = Config_Paths.select_path();
     defer config_path.free();
     config_watch: W.Watch;
     W.start(&config_watch, config_path, P.ticks());
@@ -701,15 +852,18 @@ main :: () {
             cfg.shell = args[i].clone();
             cfg.command.free();
             cfg.command = "".clone();
-            cfg.default_profile.free(); cfg.default_profile = "".clone();
+            cfg.default_profile.free();
+            cfg.default_profile = "".clone();
         } else if a == "--command" {
             i += 1;
             cfg.command.free();
             cfg.command = args[i].clone();
-            cfg.default_profile.free(); cfg.default_profile = "".clone();
+            cfg.default_profile.free();
+            cfg.default_profile = "".clone();
         } else if a == "--profile" {
             i += 1;
-            cfg.default_profile.free(); cfg.default_profile = args[i].clone();
+            cfg.default_profile.free();
+            cfg.default_profile = args[i].clone();
         } else if a == "--hold" cfg.close_on_exit = false;
         else if a == "--config" || a == "--capture" i += 1;
         i += 1;
@@ -733,7 +887,15 @@ main :: () {
         P.error_dialog("--capture requires --smoke-test");
         exit(2);
     }
-    if P.open(cfg.font_family.c_string(), cfg.font_size, cfg.columns, cfg.rows, cfg.padding, 0) == 0 {
+    if P.open(
+        cfg.font_family.c_string(),
+        cfg.font_size,
+        cfg.columns,
+        cfg.rows,
+        cfg.padding,
+        0,
+        cfg.window_opacity
+    ) == 0 {
         P.error_dialog(P.error());
         exit(1);
     }
@@ -783,33 +945,57 @@ main :: () {
                 _ := cancel_divider();
                 dirty = true;
                 if (event.kind == 1 && event.a == 27) ||
-                    (event.kind == 2 && event.length == 1 && event.text[0] == 27) continue;
+                   (event.kind == 2 && event.length == 1 && event.text[0] == 27)
+                    continue;
             }
             focused := M.focused(&workspace);
             p := &book.panes[focused - 1];
             _ := P.pty_select(p.handle);
             t := &p.terminal;
             selection := &p.selection;
-            if chrome.menu_open && (event.kind==1 || event.kind==2) {
-                header:=Chrome.geometry(width,cast(s32)layout.header_height,P.dpi(),workspace.count,workspace.active);
-                if event.kind==1 && (event.a==38 || event.a==40) {
-                    if event.a==38 chrome.selected-=1; else chrome.selected+=1;
-                    Chrome.keep_selected(&chrome,&header,height,cfg.profile_count+7);
-                    dirty=true; continue;
+            if chrome.menu_open && (event.kind == 1 || event.kind == 2) {
+                header := Chrome.geometry(
+                    width,
+                    cast(s32) layout.header_height,
+                    P.dpi(),
+                    workspace.count,
+                    workspace.active
+                );
+                if event.kind == 1 && (event.a == 38 || event.a == 40) {
+                    if event.a == 38 chrome.selected -= 1;
+                    else             chrome.selected += 1;
+                    Chrome.keep_selected(&chrome, &header, height, cfg.profile_count + 7);
+                    dirty = true;
+                    continue;
                 }
-                if event.kind==2 {
-                    if event.length==1 && event.text[0]==13
-                        menu_action(chrome.selected,&book,&workspace,&cfg,&layout,&cw,&ch,&width,&height,base_font_size);
-                    else if event.length==1 && event.text[0]==27 chrome.menu_open=false;
-                    dirty=true; continue;
+                if event.kind == 2 {
+                    if event.length == 1 && event.text[0] == 13
+                        menu_action(
+                            chrome.selected,
+                            &book,
+                            &workspace,
+                            &cfg,
+                            &layout,
+                            &cw,
+                            &ch,
+                            &width,
+                            &height,
+                            base_font_size
+                        );
+                    else if event.length == 1 && event.text[0] == 27
+                        chrome.menu_open = false;
+                    dirty = true;
+                    continue;
                 }
-                chrome.menu_open=false; dirty=true;
+                chrome.menu_open = false;
+                dirty = true;
             }
             if event.kind == 4 {
                 running = false;
                 break;
             } else if event.kind == 3 {
-                chrome.menu_open=false; chrome.pressed=0;
+                chrome.menu_open = false;
+                chrome.pressed = 0;
                 refresh_layout(&book, &workspace, &cfg, &layout, &width, &height, &cw, &ch);
                 U.end_drag(&book);
                 P.invalidate_frame();
@@ -821,12 +1007,22 @@ main :: () {
                 selection.active = false;
             } else if event.kind == 1 {
                 action := K.lookup(&cfg.keybindings, event.a, event.b);
-                if event.a==32 && event.b==4 && action==.None {
-                    _:=P.window_menu(0,cast(s32)layout.header_height); dirty=true; continue;
+                if event.a == 32 && event.b == 4 && action == .None {
+                    _ := P.window_menu(0, cast(s32) layout.header_height);
+                    dirty = true;
+                    continue;
                 }
                 if cast(s32) action >= cast(s32) K.Action.New_Tab {
-                    workspace_action(action, &book, &workspace, &cfg, layout, cw, ch,
-                        K.profile_for(&cfg.keybindings, event.a, event.b));
+                    workspace_action(
+                        action,
+                        &book,
+                        &workspace,
+                        &cfg,
+                        layout,
+                        cw,
+                        ch,
+                        K.profile_for(&cfg.keybindings, event.a, event.b)
+                    );
                     if workspace.count == 0 {
                         running = false;
                         break;
@@ -872,19 +1068,34 @@ main :: () {
                     dirty = true;
                 }
             } else if event.kind == 5 {
-                wheel_x,wheel_y:s32;
-                if P.pointer_position(&wheel_x,&wheel_y) { chrome.x=wheel_x; chrome.y=wheel_y; }
-                if chrome.menu_open {
-                    header:=Chrome.geometry(width,cast(s32)layout.header_height,P.dpi(),workspace.count,workspace.active);
-                    chrome.selected+=3; if event.a>0 chrome.selected-=6;
-                    chrome.selected=clamp(chrome.selected,0,cfg.profile_count+6);
-                    Chrome.keep_selected(&chrome,&header,height,cfg.profile_count+7);
-                    dirty=true; continue;
+                wheel_x, wheel_y: s32;
+                if P.pointer_position(&wheel_x, &wheel_y) {
+                    chrome.x = wheel_x;
+                    chrome.y = wheel_y;
                 }
-                if chrome.y>=0 && chrome.y<cast(s32)layout.header_height && (event.b&2)==0 {
-                    direction:s32=1; if event.a>0 direction= -1;
-                    _:=M.cycle_tab(&workspace,direction); publish_dividers(&workspace,layout);
-                    U.end_drag(&book); dirty=true; continue;
+                if chrome.menu_open {
+                    header := Chrome.geometry(
+                        width,
+                        cast(s32) layout.header_height,
+                        P.dpi(),
+                        workspace.count,
+                        workspace.active
+                    );
+                    chrome.selected += 3;
+                    if event.a > 0 chrome.selected -= 6;
+                    chrome.selected = clamp(chrome.selected, 0, cfg.profile_count + 6);
+                    Chrome.keep_selected(&chrome, &header, height, cfg.profile_count + 7);
+                    dirty = true;
+                    continue;
+                }
+                if chrome.y >= 0 && chrome.y < cast(s32) layout.header_height && (event.b & 2) == 0 {
+                    direction: s32 = 1;
+                    if event.a > 0 direction = -1;
+                    _ := M.cycle_tab(&workspace, direction);
+                    publish_dividers(&workspace, layout);
+                    U.end_drag(&book);
+                    dirty = true;
+                    continue;
                 }
                 wheel := V.wheel(&p.wheel, event.a, event.b, event.c, t.rows - 1);
                 if wheel.zoom_steps != 0 {
@@ -897,63 +1108,117 @@ main :: () {
                 p.scroll_dragging = false;
                 dirty = true;
             } else if event.kind == 6 {
-                chrome.x=event.a; chrome.y=event.b;
-                header:=Chrome.geometry(width,cast(s32)layout.header_height,P.dpi(),workspace.count,workspace.active);
-                h:=Chrome.hit(&header,event.a,event.b);
+                chrome.x = event.a;
+                chrome.y = event.b;
+                header := Chrome.geometry(
+                    width,
+                    cast(s32) layout.header_height,
+                    P.dpi(),
+                    workspace.count,
+                    workspace.active
+                );
+                h := Chrome.hit(&header, event.a, event.b);
                 if chrome.menu_open {
-                    row:=Chrome.menu_hit(&header,&chrome,height,cfg.profile_count+7,event.a,event.b);
-                    if row>=0 {
-                        menu_action(row,&book,&workspace,&cfg,&layout,&cw,&ch,&width,&height,base_font_size);
-                        dirty=true; continue;
+                    row := Chrome.menu_hit(
+                        &header,
+                        &chrome,
+                        height,
+                        cfg.profile_count + 7,
+                        event.a,
+                        event.b
+                    );
+                    if row >= 0 {
+                        menu_action(
+                            row,
+                            &book,
+                            &workspace,
+                            &cfg,
+                            &layout,
+                            &cw,
+                            &ch,
+                            &width,
+                            &height,
+                            base_font_size
+                        );
+                        dirty = true;
+                        continue;
                     }
-                    popup:=Chrome.menu_rect(&header,height,cfg.profile_count+7);
-                    if Chrome.contains(popup,event.a,event.b) {
-                        if reload_notice_error && reload_notice_count>0 && event.b<popup.y+Chrome.pixels(26,P.dpi())
+                    popup := Chrome.menu_rect(&header, height, cfg.profile_count + 7);
+                    if Chrome.contains(popup, event.a, event.b) {
+                        if reload_notice_error && reload_notice_count > 0 &&
+                           event.b < popup.y + Chrome.pixels(26, P.dpi())
                             P.error_dialog(reload_notice().c_string());
                         continue;
                     }
-                    chrome.menu_open=false; dirty=true;
-                    if event.b>=header.height || h.kind==Chrome.Menu continue;
+                    chrome.menu_open = false;
+                    dirty = true;
+                    if event.b >= header.height || h.kind == Chrome.Menu continue;
                 }
-                if h.kind==Chrome.Tab || h.kind==Chrome.Tab_Close {
-                    if h.kind==Chrome.Tab_Close close_tab(&book,&workspace,h.index,layout);
-                    else _:=M.activate(&workspace,h.index);
-                    publish_dividers(&workspace,layout); U.end_drag(&book);
-                    P.invalidate_frame(); dirty=true; continue;
+                if h.kind == Chrome.Tab || h.kind == Chrome.Tab_Close {
+                    if h.kind == Chrome.Tab_Close close_tab(&book, &workspace, h.index, layout);
+                    else                          _ := M.activate(&workspace, h.index);
+                    publish_dividers(&workspace, layout);
+                    U.end_drag(&book);
+                    P.invalidate_frame();
+                    dirty = true;
+                    continue;
                 }
-                if h.kind==Chrome.New_Tab {
-                    _:=open_surface(&book,&workspace,&cfg,layout,cw,ch,0);
-                    dirty=true; continue;
+                if h.kind == Chrome.New_Tab {
+                    _ := open_surface(&book, &workspace, &cfg, layout, cw, ch, 0);
+                    dirty = true;
+                    continue;
                 }
-                if h.kind==Chrome.Menu {
-                    U.end_drag(&book); chrome.menu_open=true; chrome.menu_scroll=0; chrome.selected=0;
-                    dirty=true; continue;
+                if h.kind == Chrome.Menu {
+                    U.end_drag(&book);
+                    chrome.menu_open = true;
+                    chrome.menu_scroll = 0;
+                    chrome.selected = 0;
+                    dirty = true;
+                    continue;
                 }
-                if h.kind==Chrome.Brand {
-                    U.end_drag(&book); _:=P.window_menu(0,header.height); dirty=true; continue;
+                if h.kind == Chrome.Brand {
+                    U.end_drag(&book);
+                    _ := P.window_menu(0, header.height);
+                    dirty = true;
+                    continue;
                 }
-                if h.kind>=Chrome.Minimize && h.kind<=Chrome.Close {
-                    U.end_drag(&book); chrome.pressed=h.kind; dirty=true; continue;
+                if h.kind >= Chrome.Minimize && h.kind <= Chrome.Close {
+                    U.end_drag(&book);
+                    chrome.pressed = h.kind;
+                    dirty = true;
+                    continue;
                 }
-                zoom:=zoom_action_at(layout,event.a,event.b);
-                notice_click=notice_hit(layout,event.a,event.b);
-                if notice_click { U.end_drag(&book); continue; }
-                if zoom!=0 {
-                    set_zoom(&cfg,V.font_size(cfg.font_size,base_font_size,zoom));
-                    refresh_layout(&book,&workspace,&cfg,&layout,&width,&height,&cw,&ch);
-                    dirty=true; continue;
+                zoom := zoom_action_at(layout, event.a, event.b);
+                notice_click = notice_hit(layout, event.a, event.b);
+                if notice_click {
+                    U.end_drag(&book);
+                    continue;
                 }
-                if h.kind==Chrome.Drag {
-                    U.end_drag(&book); _:=P.window_drag(event.a,event.b); continue;
+                if zoom != 0 {
+                    set_zoom(&cfg, V.font_size(cfg.font_size, base_font_size, zoom));
+                    refresh_layout(&book, &workspace, &cfg, &layout, &width, &height, &cw, &ch);
+                    dirty = true;
+                    continue;
                 }
-                divider := M.divider_at(&workspace, U.body_rect(layout), 6 * P.dpi() / 96, event.a, event.b);
+                if h.kind == Chrome.Drag {
+                    U.end_drag(&book);
+                    _ := P.window_drag(event.a, event.b);
+                    continue;
+                }
+                divider := M.divider_at(
+                    &workspace,
+                    U.body_rect(layout),
+                    6 * P.dpi() / 96,
+                    event.a,
+                    event.b
+                );
                 if divider.node >= 0 {
                     U.end_drag(&book);
                     divider_drag.active = true;
                     divider_drag.node = divider.node;
                     divider_drag.axis = divider.axis;
                     if divider.axis == M.Axis_Vertical divider_drag.grab = event.a - divider.rect.x;
-                    else divider_drag.grab = event.b - divider.rect.y;
+                    else                               divider_drag.grab = event.b - divider.rect.y;
                     P.invalidate_frame();
                     dirty = true;
                     continue;
@@ -988,15 +1253,24 @@ main :: () {
                 }
                 dirty = true;
             } else if event.kind == 7 || event.kind == 8 {
-                chrome.x=event.a; chrome.y=event.b;
-                if chrome.pressed!=0 {
-                    if event.kind==8 {
-                        header:=Chrome.geometry(width,cast(s32)layout.header_height,P.dpi(),workspace.count,workspace.active);
-                        h:=Chrome.hit(&header,event.a,event.b);
-                        pressed:=chrome.pressed; chrome.pressed=0;
-                        if h.kind==pressed _:=P.window_action(h.kind-Chrome.Minimize+1);
+                chrome.x = event.a;
+                chrome.y = event.b;
+                if chrome.pressed != 0 {
+                    if event.kind == 8 {
+                        header := Chrome.geometry(
+                            width,
+                            cast(s32) layout.header_height,
+                            P.dpi(),
+                            workspace.count,
+                            workspace.active
+                        );
+                        h := Chrome.hit(&header, event.a, event.b);
+                        pressed := chrome.pressed;
+                        chrome.pressed = 0;
+                        if h.kind == pressed _ := P.window_action(h.kind - Chrome.Minimize + 1);
                     }
-                    dirty=true; continue;
+                    dirty = true;
+                    continue;
                 }
                 if divider_drag.active {
                     move_divider(&workspace, layout, cw, ch, event.a, event.b);
@@ -1031,13 +1305,20 @@ main :: () {
             } else if event.kind == 11 {
                 U.end_drag(&book);
                 notice_click = false;
-                chrome.pressed=0;
+                chrome.pressed = 0;
             } else if event.kind == 9 copy_selection(t, selection);
             else if event.kind == 10 {
-                if chrome.menu_open { chrome.menu_open=false; dirty=true; continue; }
-                if event.b<cast(s32)layout.header_height {
-                    U.end_drag(&book); chrome.menu_open=false;
-                    _:=P.window_menu(event.a,event.b); dirty=true; continue;
+                if chrome.menu_open {
+                    chrome.menu_open = false;
+                    dirty = true;
+                    continue;
+                }
+                if event.b < cast(s32) layout.header_height {
+                    U.end_drag(&book);
+                    chrome.menu_open = false;
+                    _ := P.window_menu(event.a, event.b);
+                    dirty = true;
+                    continue;
                 }
                 hit := M.pane_at(&workspace, &book.rects, event.a, event.b);
                 if hit > 0 {
@@ -1053,24 +1334,65 @@ main :: () {
             }
         }
         if !running || workspace.count == 0 break;
-        hover_x,hover_y:s32;
-        if P.pointer_position(&hover_x,&hover_y) && (hover_x!=chrome.x || hover_y!=chrome.y) {
-            before:=hover_signature(&book,&workspace,layout,height,cfg.profile_count,chrome.x,chrome.y);
-            chrome.x=hover_x; chrome.y=hover_y;
-            header:=Chrome.geometry(width,cast(s32)layout.header_height,P.dpi(),workspace.count,workspace.active);
-            row:=Chrome.menu_hit(&header,&chrome,height,cfg.profile_count+7,hover_x,hover_y);
-            if chrome.menu_open && row>=0 chrome.selected=row;
-            if before!=hover_signature(&book,&workspace,layout,height,cfg.profile_count,hover_x,hover_y) dirty=true;
+        hover_x, hover_y: s32;
+        if P.pointer_position(&hover_x, &hover_y) && (hover_x != chrome.x || hover_y != chrome.y) {
+            before := hover_signature(
+                &book,
+                &workspace,
+                layout,
+                height,
+                cfg.profile_count,
+                chrome.x,
+                chrome.y
+            );
+            chrome.x = hover_x;
+            chrome.y = hover_y;
+            header := Chrome.geometry(
+                width,
+                cast(s32) layout.header_height,
+                P.dpi(),
+                workspace.count,
+                workspace.active
+            );
+            row := Chrome.menu_hit(
+                &header,
+                &chrome,
+                height,
+                cfg.profile_count + 7,
+                hover_x,
+                hover_y
+            );
+            if chrome.menu_open && row >= 0 chrome.selected = row;
+            if before != hover_signature(
+                &book,
+                &workspace,
+                layout,
+                height,
+                cfg.profile_count,
+                hover_x,
+                hover_y
+            )
+                dirty = true;
         }
-        header:=Chrome.geometry(width,cast(s32)layout.header_height,P.dpi(),workspace.count,workspace.active);
-        in_menu:=chrome.menu_open && Chrome.contains(Chrome.menu_rect(&header,height,cfg.profile_count+7),chrome.x,chrome.y);
-        P.pointer_ui((chrome.y>=0 && chrome.y<header.height) || in_menu);
+        header := Chrome.geometry(
+            width,
+            cast(s32) layout.header_height,
+            P.dpi(),
+            workspace.count,
+            workspace.active
+        );
+        in_menu := chrome.menu_open && Chrome.contains(
+            Chrome.menu_rect(&header, height, cfg.profile_count + 7),
+            chrome.x,
+            chrome.y
+        );
+        P.pointer_ui((chrome.y >= 0 && chrome.y < header.height) || in_menu);
         if divider_drag.pending {
             apply_divider(&book, &workspace, layout, cw, ch);
             dirty = true;
         }
         if W.poll(&config_watch, P.ticks()) {
-            chrome.menu_open=false;
+            chrome.menu_open = false;
             _ := cancel_divider();
             if R.reload_workspace(config_watch.path, &cfg, &book, &workspace, &reload_state) {
                 base_font_size = reload_state.configured_font_size;
@@ -1128,8 +1450,10 @@ main :: () {
         _ := P.pty_select(p.handle);
         caption: str = p.launch.name;
         if p.terminal.title.count > 0 {
-            if p.launch.profile_id.count == 0 caption = cast(str) p.terminal.title.view();
-            else caption = tprint("{}: {}", p.launch.name, cast(str) p.terminal.title.view());
+            if p.launch.profile_id.count == 0
+                caption = cast(str) p.terminal.title.view();
+            else
+                caption = tprint("{}: {}", p.launch.name, cast(str) p.terminal.title.view());
         }
         title := tprint("{} | wst [{}/{}]", caption, workspace.active + 1, workspace.count);
         if title != previous_title {

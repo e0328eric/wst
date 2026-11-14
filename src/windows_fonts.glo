@@ -11,253 +11,445 @@ kernel :: #library,system "kernel32";
 dwrite :: #library,system "dwrite";
 ole :: #library,system "ole32";
 
-Guid :: struct #c_call { a:u32; b:u16; c:u16; d:[8]u8; }
-Metrics :: struct #c_call {
-    units:u16; ascent:u16; descent:u16; gap:s16;
-    cap:u16; xheight:u16; underline:s16; underline_width:u16;
-    strike:s16; strike_width:u16;
+Guid :: struct #c_call {
+    a: u32;
+    b: u16;
+    c: u16;
+    d: [8]u8;
 }
-Release :: #fn_ptr(object:usize)->u32 #c_call;
-Add_Ref :: #fn_ptr(object:usize)->u32 #c_call;
-Collection :: #fn_ptr(object:usize,result:*usize,check:s32)->s32 #c_call;
-Find_Family :: #fn_ptr(object:usize,name:cstring16,index:*u32,exists:*s32)->s32 #c_call;
-Get_Object :: #fn_ptr(object:usize,index:u32,result:*usize)->s32 #c_call;
-Match_Font :: #fn_ptr(object:usize,weight:s32,stretch:s32,style:s32,result:*usize)->s32 #c_call;
-Create_Object :: #fn_ptr(object:usize,result:*usize)->s32 #c_call;
-Get_Files :: #fn_ptr(object:usize,count:*u32,result:*usize)->s32 #c_call;
-Get_Index :: #fn_ptr(object:usize)->u32 #c_call;
-Get_Key :: #fn_ptr(object:usize,key:*usize,bytes:*u32)->s32 #c_call;
-Create_Stream :: #fn_ptr(object:usize,key:usize,bytes:u32,result:*usize)->s32 #c_call;
-File_Size :: #fn_ptr(object:usize,result:*u64)->s32 #c_call;
-Read_Fragment :: #fn_ptr(object:usize,result:*usize,offset:u64,bytes:u64,fragment_context:*usize)->s32 #c_call;
-Release_Fragment :: #fn_ptr(object:usize,fragment_context:usize) #c_call;
-Get_Metrics :: #fn_ptr(object:usize,result:*Metrics) #c_call;
-Decode_File :: #fn_ptr(object:usize,name:cstring16,vendor:usize,access:u32,options:s32,result:*usize)->s32 #c_call;
-Image_Size :: #fn_ptr(object:usize,width:*u32,height:*u32)->s32 #c_call;
-Initialize_Converter :: #fn_ptr(object:usize,source:usize,format:*const Guid,dither:s32,palette:usize,alpha:f64,palette_type:s32)->s32 #c_call;
-Copy_Pixels :: #fn_ptr(object:usize,rectangle:usize,stride:u32,bytes:u32,pixels:[*]u8)->s32 #c_call;
+Metrics :: struct #c_call {
+    units: u16;
+    ascent: u16;
+    descent: u16;
+    gap: s16;
+    cap: u16;
+    xheight: u16;
+    underline: s16;
+    underline_width: u16;
+    strike: s16;
+    strike_width: u16;
+}
+Release :: #fn_ptr(object: usize) -> u32 #c_call;
+Add_Ref :: #fn_ptr(object: usize) -> u32 #c_call;
+Collection :: #fn_ptr(object: usize, result: *usize, check: s32) -> s32 #c_call;
+Find_Family :: #fn_ptr(object: usize, name: cstring16, index: *u32, exists: *s32) -> s32 #c_call;
+Get_Object :: #fn_ptr(object: usize, index: u32, result: *usize) -> s32 #c_call;
+Match_Font :: #fn_ptr(object: usize, weight: s32, stretch: s32, style: s32, result: *usize) -> s32 #c_call;
+Create_Object :: #fn_ptr(object: usize, result: *usize) -> s32 #c_call;
+Get_Files :: #fn_ptr(object: usize, count: *u32, result: *usize) -> s32 #c_call;
+Get_Index :: #fn_ptr(object: usize) -> u32 #c_call;
+Get_Key :: #fn_ptr(object: usize, key: *usize, bytes: *u32) -> s32 #c_call;
+Create_Stream :: #fn_ptr(object: usize, key: usize, bytes: u32, result: *usize) -> s32 #c_call;
+File_Size :: #fn_ptr(object: usize, result: *u64) -> s32 #c_call;
+Read_Fragment :: #fn_ptr(
+    object: usize,
+    result: *usize,
+    offset: u64,
+    bytes: u64,
+    fragment_context: *usize
+) -> s32 #c_call;
+Release_Fragment :: #fn_ptr(object: usize, fragment_context: usize) #c_call;
+Get_Metrics :: #fn_ptr(object: usize, result: *Metrics) #c_call;
+Decode_File :: #fn_ptr(
+    object: usize,
+    name: cstring16,
+    vendor: usize,
+    access: u32,
+    options: s32,
+    result: *usize
+) -> s32 #c_call;
+Image_Size :: #fn_ptr(object: usize, width: *u32, height: *u32) -> s32 #c_call;
+Initialize_Converter :: #fn_ptr(
+    object: usize,
+    source: usize,
+    format: *const Guid,
+    dither: s32,
+    palette: usize,
+    alpha: f64,
+    palette_type: s32
+) -> s32 #c_call;
+Copy_Pixels :: #fn_ptr(object: usize, rectangle: usize, stride: u32, bytes: u32, pixels: [*]u8) -> s32 #c_call;
 
-create_factory :: (kind:s32,id:*const Guid,result:*usize)->s32 #foreign dwrite "DWriteCreateFactory";
-co_initialize :: (reserved:usize,mode:u32)->s32 #foreign ole "CoInitializeEx";
+create_factory :: (kind: s32, id: *const Guid, result: *usize) -> s32 #foreign dwrite "DWriteCreateFactory";
+co_initialize :: (reserved: usize, mode: u32) -> s32 #foreign ole "CoInitializeEx";
 co_uninitialize :: () #foreign ole "CoUninitialize";
-co_create :: (class_id:*const Guid,outer:usize,creation_context:u32,interface_id:*const Guid,result:*usize)->s32 #foreign ole "CoCreateInstance";
-create_file :: (name:cstring16,access:u32,sharing:u32,security:usize,disposition:u32,flags:u32,template_file:usize)->usize #foreign kernel "CreateFileW";
-write_file :: (file:usize,data:*const void,bytes:u32,written:*u32,overlapped:usize)->s32 #foreign kernel "WriteFile";
-close_handle :: (file:usize)->s32 #foreign kernel "CloseHandle";
-delete_file :: (name:cstring16)->s32 #foreign kernel "DeleteFileW";
-last_error :: ()->u32 #foreign kernel "GetLastError";
+co_create :: (
+    class_id: *const Guid,
+    outer: usize,
+    creation_context: u32,
+    interface_id: *const Guid,
+    result: *usize
+) -> s32 #foreign ole "CoCreateInstance";
+create_file :: (
+    name: cstring16,
+    access: u32,
+    sharing: u32,
+    security: usize,
+    disposition: u32,
+    flags: u32,
+    template_file: usize
+) -> usize #foreign kernel "CreateFileW";
+write_file :: (file: usize, data: *const void, bytes: u32, written: *u32, overlapped: usize) -> s32 #foreign kernel "WriteFile";
+close_handle :: (file: usize) -> s32 #foreign kernel "CloseHandle";
+delete_file :: (name: cstring16) -> s32 #foreign kernel "DeleteFileW";
+last_error :: () -> u32 #foreign kernel "GetLastError";
 
-error_storage:[1024]u8;
-error_count:ssize;
+error_storage: [1024]u8;
+error_count: ssize;
 E_FAIL :: -2147467259;
 E_INVALIDARG :: -2147024809;
 E_OUTOFMEMORY :: -2147024882;
 RPC_E_CHANGED_MODE :: -2147417850;
 
-factory_id:Guid=.{16#b859ee5a,16#d838,16#4b5b,.[16#a2,16#e8,16#1a,16#dc,16#7d,16#93,16#db,16#48]};
-wic_class:Guid=.{16#cacaf262,16#9370,16#4615,.[16#a1,16#3b,16#9f,16#55,16#39,16#da,16#4c,16#0a]};
-wic_interface:Guid=.{16#ec5ec8a9,16#c395,16#4314,.[16#9c,16#77,16#54,16#d7,16#a9,16#35,16#ff,16#70]};
-bgra_format:Guid=.{16#6fddc324,16#4e03,16#4bfe,.[16#b1,16#85,16#3d,16#77,16#76,16#8d,16#c9,16#0f]};
+factory_id: Guid = .{
+    16#b859ee5a,
+    16#d838,
+    16#4b5b,
+    .[16#a2, 16#e8, 16#1a, 16#dc, 16#7d, 16#93, 16#db, 16#48]
+};
+wic_class: Guid = .{
+    16#cacaf262,
+    16#9370,
+    16#4615,
+    .[16#a1, 16#3b, 16#9f, 16#55, 16#39, 16#da, 16#4c, 16#0a]
+};
+wic_interface: Guid = .{
+    16#ec5ec8a9,
+    16#c395,
+    16#4314,
+    .[16#9c, 16#77, 16#54, 16#d7, 16#a9, 16#35, 16#ff, 16#70]
+};
+bgra_format: Guid = .{
+    16#6fddc324,
+    16#4e03,
+    16#4bfe,
+    .[16#b1, 16#85, 16#3d, 16#77, 16#76, 16#8d, 16#c9, 16#0f]
+};
 
-method :: (T:type,object:usize,index:ssize)->T {
-    table:=cast([*]usize)object;
-    slots:=cast([*]usize)table[0];
-    return cast(T)slots[index];
+method :: (T: type, object: usize, index: ssize) -> T {
+    table := cast([*]usize) object;
+    slots := cast([*]usize) table[0];
+    return cast(T) slots[index];
 }
-release :: (object:usize) { if object!=0 _:=method(Release,object,2)(object); }
-failed :: (operation:str,code:s32)->s32 {
-    message:=tprint("{} (Windows status {})",operation,cast(u32)code);
-    error_count=message.count; if error_count>1023 error_count=1023;
-    for i:0..error_count error_storage[i]=message[i];
-    error_storage[error_count]=0;
+release :: (object: usize) {
+    if object != 0 _ := method(Release, object, 2)(object);
+}
+failed :: (operation: str, code: s32) -> s32 {
+    message := tprint("{} (Windows status {})", operation, cast(u32) code);
+    error_count = message.count;
+    if error_count > 1023 error_count = 1023;
+    for i: 0..error_count error_storage[i] = message[i];
+    error_storage[error_count] = 0;
     return 0;
 }
-be16 :: (p:[*]const u8)->u16 { return (cast(u16)p[0]<<8)|cast(u16)p[1]; }
-be32 :: (p:[*]const u8)->u32 { return (cast(u32)p[0]<<24)|(cast(u32)p[1]<<16)|(cast(u32)p[2]<<8)|cast(u32)p[3]; }
-put16 :: (p:[*]u8,n:u16) { p[0]=cast(u8)(n>>8); p[1]=cast(u8)n; }
-put32 :: (p:[*]u8,n:u32) { p[0]=cast(u8)(n>>24); p[1]=cast(u8)(n>>16); p[2]=cast(u8)(n>>8); p[3]=cast(u8)n; }
-put_le32 :: (p:[*]u8,n:u32) { p[0]=cast(u8)n; p[1]=cast(u8)(n>>8); p[2]=cast(u8)(n>>16); p[3]=cast(u8)(n>>24); }
-tag :: (p:[*]const u8,text:str)->bool { return p[0]==text[0] && p[1]==text[1] && p[2]==text[2] && p[3]==text[3]; }
+be16 :: (p: [*]const u8) -> u16 {
+    return (cast(u16) p[0] << 8) | cast(u16) p[1];
+}
+be32 :: (p: [*]const u8) -> u32 {
+    return (cast(u32) p[0] << 24) | (cast(u32) p[1] << 16) | (cast(u32) p[2] << 8) | cast(u32) p[3];
+}
+put16 :: (p: [*]u8, n: u16) {
+    p[0] = cast(u8)(n >> 8);
+    p[1] = cast(u8) n;
+}
+put32 :: (p: [*]u8, n: u32) {
+    p[0] = cast(u8)(n >> 24);
+    p[1] = cast(u8)(n >> 16);
+    p[2] = cast(u8)(n >> 8);
+    p[3] = cast(u8) n;
+}
+put_le32 :: (p: [*]u8, n: u32) {
+    p[0] = cast(u8) n;
+    p[1] = cast(u8)(n >> 8);
+    p[2] = cast(u8)(n >> 16);
+    p[3] = cast(u8)(n >> 24);
+}
+tag :: (p: [*]const u8, text: str) -> bool {
+    return p[0] == text[0] && p[1] == text[1] && p[2] == text[2] && p[3] == text[3];
+}
 
-sfnt_copy :: (source:[*]const u8,bytes:u64,index:u32,result:*Font_Data)->s32 {
-    offset:ssize;
-    file_size:=cast(ssize)bytes;
-    if bytes<12 return failed("Font file is truncated",E_FAIL);
-    if tag(source,"ttcf") {
-        count:=be32(source+8);
-        if index>=count || 12+4*cast(u64)count>bytes return failed("Font collection index is invalid",E_FAIL);
-        offset=cast(ssize)be32(source+12+4*cast(ssize)index);
+sfnt_copy :: (source: [*]const u8, bytes: u64, index: u32, result: *Font_Data) -> s32 {
+    offset: ssize;
+    file_size := cast(ssize) bytes;
+    if bytes < 12 return failed("Font file is truncated", E_FAIL);
+    if tag(source, "ttcf") {
+        count := be32(source + 8);
+        if index >= count || 12 + 4 * cast(u64) count > bytes
+            return failed("Font collection index is invalid", E_FAIL);
+        offset = cast(ssize) be32(source + 12 + 4 * cast(ssize) index);
     }
-    if offset+12>file_size return failed("Font directory is truncated",E_FAIL);
-    tables:=cast(ssize)be16(source+offset+4);
-    directory:=12+16*tables; total:=directory;
-    if tables==0 || offset+directory>file_size return failed("Font table directory is invalid",E_FAIL);
-    for i:0..tables {
-        table:=source+offset+12+16*i;
-        start:=cast(ssize)be32(table+8); length:=cast(ssize)be32(table+12);
-        if start+length>file_size return failed("Font table is outside the file",E_FAIL);
-        total+=(length+3)& ~cast(ssize)3;
+    if offset + 12 > file_size return failed("Font directory is truncated", E_FAIL);
+    tables := cast(ssize) be16(source + offset + 4);
+    directory := 12 + 16 * tables;
+    total := directory;
+    if tables == 0 || offset + directory > file_size
+        return failed("Font table directory is invalid", E_FAIL);
+    for i: 0..tables {
+        table := source + offset + 12 + 16 * i;
+        start := cast(ssize) be32(table + 8);
+        length := cast(ssize) be32(table + 12);
+        if start + length > file_size return failed("Font table is outside the file", E_FAIL);
+        total += (length + 3) & ~cast(ssize) 3;
     }
-    if total>32*1024*1024 return failed("Font exceeds the Gui font limit",E_FAIL);
-    #pattern ?allocation := mem_alloc_raw(Layout.bytes(cast(ssize)total)) else { return failed("Allocating font bytes",E_OUTOFMEMORY); }
-    output:=cast([*]u8)allocation;
-    _:=mem_fill(allocation,cast(ssize)total,0);
-    _:=mem_copy_nonoverlapping(allocation,cast(*const void)(source+offset),cast(ssize)directory);
-    at:=directory; head_at:ssize; hhea_at:ssize;
-    for i:0..tables {
-        table:=source+offset+12+16*i;
-        start:=cast(ssize)be32(table+8); length:=cast(ssize)be32(table+12);
-        _:=mem_copy_nonoverlapping(cast(*void)(output+at),cast(*const void)(source+start),cast(ssize)length);
-        if tag(table,"head") && length>=20 head_at=at;
-        if tag(table,"hhea") && length>=10 hhea_at=at;
-        put32(output+12+16*i+8,cast(u32)at); at+=(length+3)& ~cast(ssize)3;
+    if total > 32 * 1024 * 1024 return failed("Font exceeds the Gui font limit", E_FAIL);
+    #pattern ?allocation := mem_alloc_raw(Layout.bytes(cast(ssize) total)) else {
+        return failed("Allocating font bytes", E_OUTOFMEMORY);
+    }
+    output := cast([*]u8) allocation;
+    _ := mem_fill(allocation, cast(ssize) total, 0);
+    _ := mem_copy_nonoverlapping(
+        allocation,
+        cast(*const void)(source + offset),
+        cast(ssize) directory
+    );
+    at := directory;
+    head_at: ssize;
+    hhea_at: ssize;
+    for i: 0..tables {
+        table := source + offset + 12 + 16 * i;
+        start := cast(ssize) be32(table + 8);
+        length := cast(ssize) be32(table + 12);
+        _ := mem_copy_nonoverlapping(
+            cast(*void)(output + at),
+            cast(*const void)(source + start),
+            cast(ssize) length
+        );
+        if tag(table, "head") && length >= 20 head_at = at;
+        if tag(table, "hhea") && length >= 10 hhea_at = at;
+        put32(output + 12 + 16 * i + 8, cast(u32) at);
+        at += (length + 3) & ~cast(ssize) 3;
     }
     // Gui/stb uses hhea metrics; DirectWrite may prefer OS/2 typographic metrics.
-    if head_at!=0 && hhea_at!=0 && be16(output+head_at+18)>0 {
-        result.units=be16(output+head_at+18);
-        result.ascent=cast(s16)be16(output+hhea_at+4);
-        result.descent= -cast(s32)cast(s16)be16(output+hhea_at+6);
-        result.line_gap=cast(s16)be16(output+hhea_at+8);
+    if head_at != 0 && hhea_at != 0 && be16(output + head_at + 18) > 0 {
+        result.units = be16(output + head_at + 18);
+        result.ascent = cast(s16) be16(output + hhea_at + 4);
+        result.descent = -cast(s32) cast(s16) be16(output + hhea_at + 6);
+        result.line_gap = cast(s16) be16(output + hhea_at + 8);
     }
-    result.data=output; result.bytes=cast(s64)total;
+    result.data = output;
+    result.bytes = cast(s64) total;
     return 1;
 }
 
 #public {
+
 Font_Data :: struct {
-    data:[*]u8; bytes:s64;
-    units:s32; ascent:s32; descent:s32; line_gap:s32; simulated_bold:s32;
-    matched_family:bool;
+    data: [*]u8;
+    bytes: s64;
+    units: s32;
+    ascent: s32;
+    descent: s32;
+    line_gap: s32;
+    simulated_bold: s32;
+    matched_family: bool;
 }
-native_error :: ()->cstr { return cast(cstr)error_storage.data; }
+native_error :: () -> cstr {
+    return cast(cstr) error_storage.data;
+}
 // DirectWrite shaping borrows the exact installed face used for these bytes.
-native_retain_face :: (face:usize) { if face!=0 _:=method(Add_Ref,face,1)(face); }
-native_release_face :: (face:usize) { release(face); }
-native_free :: (data:*Font_Data) {
-    if data.bytes>0 mem_free_raw(cast(*void)data.data,Layout.bytes(cast(ssize)data.bytes));
-    empty:Font_Data; data.*=empty;
+native_retain_face :: (face: usize) {
+    if face != 0 _ := method(Add_Ref, face, 1)(face);
+}
+native_release_face :: (face: usize) {
+    release(face);
+}
+native_free :: (data: *Font_Data) {
+    if data.bytes > 0 mem_free_raw(cast(*void) data.data, Layout.bytes(cast(ssize) data.bytes));
+    empty: Font_Data;
+    data.* = empty;
 }
 // Some emoji fonts place outlines above their hhea ascent. Gui positions text
 // from that ascent, so include the face's complete vertical ink in its copy.
 // The caller computes Gui's font height from these same metrics, preserving em size.
-include_vertical_ink :: (data:*Font_Data) {
-    if data.bytes<12 return;
-    source:=data.data; head_at:ssize; hhea_at:ssize;
-    tables:=cast(ssize)be16(source+4);
-    for i:0..tables {
-        table:=source+12+16*i; offset:=cast(ssize)be32(table+8); length:=be32(table+12);
-        if tag(table,"head") && length>=44 head_at=offset;
-        if tag(table,"hhea") && length>=10 hhea_at=offset;
+include_vertical_ink :: (data: *Font_Data) {
+    if data.bytes < 12 return;
+    source := data.data;
+    head_at: ssize;
+    hhea_at: ssize;
+    tables := cast(ssize) be16(source + 4);
+    for i: 0..tables {
+        table := source + 12 + 16 * i;
+        offset := cast(ssize) be32(table + 8);
+        length := be32(table + 12);
+        if tag(table, "head") && length >= 44 head_at = offset;
+        if tag(table, "hhea") && length >= 10 hhea_at = offset;
     }
-    if head_at==0 || hhea_at==0 return;
-    ascent:=cast(s32)cast(s16)be16(source+head_at+42);
-    descent:= -cast(s32)cast(s16)be16(source+head_at+38);
-    if ascent>data.ascent data.ascent=ascent;
-    if descent>data.descent data.descent=descent;
-    put16(source+hhea_at+4,cast(u16)cast(s16)data.ascent);
-    put16(source+hhea_at+6,cast(u16)cast(s16)(-data.descent));
+    if head_at == 0 || hhea_at == 0 return;
+    ascent := cast(s32) cast(s16) be16(source + head_at + 42);
+    descent := -cast(s32) cast(s16) be16(source + head_at + 38);
+    if ascent > data.ascent   data.ascent = ascent;
+    if descent > data.descent data.descent = descent;
+    put16(source + hhea_at + 4, cast(u16) cast(s16) data.ascent);
+    put16(source + hhea_at + 6, cast(u16) cast(s16)(-data.descent));
 }
-native_font :: (family:str,bold:s32,result:*Font_Data,face_result:?*usize=null)->s32 {
-    empty:Font_Data; result.*=empty; error_count=0; error_storage[0]=0;
-    if #pattern ?destination=face_result destination.*=0;
-    if family.count==0 || !family.string_is_valid() || family.contains("\0") return failed("Invalid font family",E_INVALIDARG);
-    name:=family.cstring16_from_string(); defer name.free();
-    if name.count>=128 return failed("Invalid font family",E_INVALIDARG);
-    factory:usize; collection:usize; font_family:usize; font:usize; face:usize; file:usize; loader:usize; stream:usize;
-    fragment:usize; key:usize; fragment_context:usize; key_bytes:u32; index:u32; bytes:u64;
+native_font :: (family: str, bold: s32, result: *Font_Data, face_result: ?*usize = null) -> s32 {
+    empty: Font_Data;
+    result.* = empty;
+    error_count = 0;
+    error_storage[0] = 0;
+    if #pattern ?destination = face_result destination.* = 0;
+    if family.count == 0 || !family.string_is_valid() || family.contains("\0")
+        return failed("Invalid font family", E_INVALIDARG);
+    name := family.cstring16_from_string();
+    defer name.free();
+    if name.count >= 128 return failed("Invalid font family", E_INVALIDARG);
+    factory: usize;
+    collection: usize;
+    font_family: usize;
+    font: usize;
+    face: usize;
+    file: usize;
+    loader: usize;
+    stream: usize;
+    fragment: usize;
+    key: usize;
+    fragment_context: usize;
+    key_bytes: u32;
+    index: u32;
+    bytes: u64;
     defer {
-        if fragment_context!=0 method(Release_Fragment,stream,4)(stream,fragment_context);
-        release(stream); release(loader); release(file); release(face); release(font); release(font_family); release(collection); release(factory);
+        if fragment_context != 0 method(Release_Fragment, stream, 4)(stream, fragment_context);
+        release(stream);
+        release(loader);
+        release(file);
+        release(face);
+        release(font);
+        release(font_family);
+        release(collection);
+        release(factory);
     }
-    hr:=create_factory(0,&factory_id,&factory);
-    if hr<0 return failed("Creating installed-font services",hr);
-    hr=method(Collection,factory,3)(factory,&collection,0);
-    if hr<0 return failed("Reading installed-font collection",hr);
-    exists:s32;
-    hr=method(Find_Family,collection,5)(collection,name,&index,&exists);
-    if hr<0 return failed("Finding installed font",hr);
-    result.matched_family=exists!=0;
-    if exists==0 {
-        fallback:="Consolas".cstring16_from_string(); defer fallback.free();
-        hr=method(Find_Family,collection,5)(collection,fallback,&index,&exists);
-        if hr<0 return failed("Finding fallback font",hr);
-        if exists==0 return failed("Fallback font is unavailable",E_FAIL);
+    hr := create_factory(0, &factory_id, &factory);
+    if hr < 0 return failed("Creating installed-font services", hr);
+    hr = method(Collection, factory, 3)(factory, &collection, 0);
+    if hr < 0 return failed("Reading installed-font collection", hr);
+    exists: s32;
+    hr = method(Find_Family, collection, 5)(collection, name, &index, &exists);
+    if hr < 0 return failed("Finding installed font", hr);
+    result.matched_family = exists != 0;
+    if exists == 0 {
+        fallback := "Consolas".cstring16_from_string();
+        defer fallback.free();
+        hr = method(Find_Family, collection, 5)(collection, fallback, &index, &exists);
+        if hr < 0      return failed("Finding fallback font", hr);
+        if exists == 0 return failed("Fallback font is unavailable", E_FAIL);
     }
-    hr=method(Get_Object,collection,4)(collection,index,&font_family);
-    if hr<0 return failed("Reading installed font family",hr);
-    weight:s32=400; if bold!=0 weight=700;
-    hr=method(Match_Font,font_family,7)(font_family,weight,5,0,&font);
-    if hr<0 return failed("Matching installed font",hr);
-    hr=method(Create_Object,font,13)(font,&face);
-    if hr<0 return failed("Reading installed font face",hr);
-    metrics:Metrics; method(Get_Metrics,face,8)(face,&metrics);
-    result.units=metrics.units; result.ascent=metrics.ascent; result.descent=metrics.descent; result.line_gap=metrics.gap;
-    if (method(Get_Index,face,6)(face)&1)!=0 result.simulated_bold=1;
-    files:u32=1;
-    hr=method(Get_Files,face,4)(face,&files,&file);
-    if hr<0 return failed("Reading installed font file",hr);
-    if files!=1 return failed("Installed font uses multiple files",E_FAIL);
-    hr=method(Get_Key,file,3)(file,&key,&key_bytes);
-    if hr<0 return failed("Reading installed font file key",hr);
-    hr=method(Create_Object,file,4)(file,&loader);
-    if hr<0 return failed("Reading installed font loader",hr);
-    hr=method(Create_Stream,loader,3)(loader,key,key_bytes,&stream);
-    if hr<0 return failed("Opening installed font stream",hr);
-    hr=method(File_Size,stream,5)(stream,&bytes);
-    if hr<0 return failed("Reading installed font size",hr);
-    if bytes>128*1024*1024 return failed("Installed font file is too large",E_FAIL);
-    hr=method(Read_Fragment,stream,3)(stream,&fragment,0,bytes,&fragment_context);
-    if hr<0 return failed("Reading installed font bytes",hr);
-    success:=sfnt_copy(cast([*]const u8)fragment,bytes,method(Get_Index,face,5)(face),result);
-    if success!=0 if #pattern ?destination=face_result {
-        native_retain_face(face); destination.*=face;
+    hr = method(Get_Object, collection, 4)(collection, index, &font_family);
+    if hr < 0 return failed("Reading installed font family", hr);
+    weight: s32 = 400;
+    if bold != 0 weight = 700;
+    hr = method(Match_Font, font_family, 7)(font_family, weight, 5, 0, &font);
+    if hr < 0 return failed("Matching installed font", hr);
+    hr = method(Create_Object, font, 13)(font, &face);
+    if hr < 0 return failed("Reading installed font face", hr);
+    metrics: Metrics;
+    method(Get_Metrics, face, 8)(face, &metrics);
+    result.units = metrics.units;
+    result.ascent = metrics.ascent;
+    result.descent = metrics.descent;
+    result.line_gap = metrics.gap;
+    if (method(Get_Index, face, 6)(face) & 1) != 0 result.simulated_bold = 1;
+    files: u32 = 1;
+    hr = method(Get_Files, face, 4)(face, &files, &file);
+    if hr < 0     return failed("Reading installed font file", hr);
+    if files != 1 return failed("Installed font uses multiple files", E_FAIL);
+    hr = method(Get_Key, file, 3)(file, &key, &key_bytes);
+    if hr < 0 return failed("Reading installed font file key", hr);
+    hr = method(Create_Object, file, 4)(file, &loader);
+    if hr < 0 return failed("Reading installed font loader", hr);
+    hr = method(Create_Stream, loader, 3)(loader, key, key_bytes, &stream);
+    if hr < 0 return failed("Opening installed font stream", hr);
+    hr = method(File_Size, stream, 5)(stream, &bytes);
+    if hr < 0                    return failed("Reading installed font size", hr);
+    if bytes > 128 * 1024 * 1024 return failed("Installed font file is too large", E_FAIL);
+    hr = method(Read_Fragment, stream, 3)(stream, &fragment, 0, bytes, &fragment_context);
+    if hr < 0 return failed("Reading installed font bytes", hr);
+    success := sfnt_copy(
+        cast([*]const u8) fragment,
+        bytes,
+        method(Get_Index, face, 5)(face),
+        result
+    );
+    if success != 0 if #pattern ?destination = face_result {
+        native_retain_face(face);
+        destination.* = face;
     }
     return success;
 }
 
 // std/Gui captures PNG. Existing --capture output also supports top-down BGRA BMP.
-native_bmp :: (source:str,destination:str)->s32 {
-    if source.count==0 || destination.count==0 || !source.string_is_valid() || !destination.string_is_valid() ||
-        source.contains("\0") || destination.contains("\0") return failed("Invalid screenshot path",E_INVALIDARG);
-    input:=source.cstring16_from_string(); defer input.free();
-    output:=destination.cstring16_from_string(); defer output.free();
-    hr:=co_initialize(0,0); owned:=hr>=0;
-    if hr<0 && hr!=RPC_E_CHANGED_MODE return failed("Initializing screenshot codecs",hr);
-    factory:usize; decoder:usize; frame:usize; converter:usize;
+native_bmp :: (source: str, destination: str) -> s32 {
+    if source.count == 0 || destination.count == 0 || !source.string_is_valid() ||
+       !destination.string_is_valid() ||
+       source.contains("\0") || destination.contains("\0")
+        return failed("Invalid screenshot path", E_INVALIDARG);
+    input := source.cstring16_from_string();
+    defer input.free();
+    output := destination.cstring16_from_string();
+    defer output.free();
+    hr := co_initialize(0, 0);
+    owned := hr >= 0;
+    if hr < 0 && hr != RPC_E_CHANGED_MODE return failed("Initializing screenshot codecs", hr);
+    factory: usize;
+    decoder: usize;
+    frame: usize;
+    converter: usize;
     defer {
-        release(converter); release(frame); release(decoder); release(factory);
+        release(converter);
+        release(frame);
+        release(decoder);
+        release(factory);
         if owned co_uninitialize();
-        _:=delete_file(input);
+        _ := delete_file(input);
     }
-    hr=co_create(&wic_class,0,1,&wic_interface,&factory);
-    if hr<0 return failed("Creating screenshot decoder",hr);
-    hr=method(Decode_File,factory,3)(factory,input,0,16#80000000,1,&decoder);
-    if hr<0 return failed("Decoding screenshot",hr);
-    hr=method(Get_Object,decoder,13)(decoder,0,&frame);
-    if hr<0 return failed("Reading screenshot frame",hr);
-    width:u32; height:u32;
-    hr=method(Image_Size,frame,3)(frame,&width,&height);
-    if hr<0 return failed("Reading screenshot dimensions",hr);
-    if width==0 || height==0 || cast(u64)width*cast(u64)height*4>16#ffffffc9 return failed("Invalid screenshot dimensions",E_FAIL);
-    hr=method(Create_Object,factory,10)(factory,&converter);
-    if hr<0 return failed("Creating screenshot converter",hr);
-    hr=method(Initialize_Converter,converter,8)(converter,frame,&bgra_format,0,0,0,0);
-    if hr<0 return failed("Converting screenshot pixels",hr);
-    size:=width*height*4;
-    #pattern ?allocation := mem_alloc_raw(Layout.bytes(cast(ssize)size)) else { return failed("Allocating screenshot pixels",E_OUTOFMEMORY); }
-    defer mem_free_raw(allocation,Layout.bytes(cast(ssize)size));
-    hr=method(Copy_Pixels,converter,7)(converter,0,width*4,size,cast([*]u8)allocation);
-    if hr<0 return failed("Copying screenshot pixels",hr);
-    file:=create_file(output,16#40000000,0,0,2,16#80,0);
-    if file== ~cast(usize)0 return failed("Opening screenshot bitmap",cast(s32)(16#80070000|(last_error()&16#ffff)));
-    defer _:=close_handle(file);
-    header:[54]u8; header[0]=#char "B"; header[1]=#char "M";
-    put_le32(header.data+2,54+size); put_le32(header.data+10,54);
-    put_le32(header.data+14,40); put_le32(header.data+18,width); put_le32(header.data+22,cast(u32)(-cast(s32)height));
-    header[26]=1; header[28]=32; put_le32(header.data+34,size);
-    written:u32;
-    if write_file(file,cast(*const void)&header,54,&written,0)==0 || written!=54 ||
-        write_file(file,allocation,size,&written,0)==0 || written!=size return failed("Writing screenshot bitmap",cast(s32)(16#80070000|(last_error()&16#ffff)));
+    hr = co_create(&wic_class, 0, 1, &wic_interface, &factory);
+    if hr < 0 return failed("Creating screenshot decoder", hr);
+    hr = method(Decode_File, factory, 3)(factory, input, 0, 16#80000000, 1, &decoder);
+    if hr < 0 return failed("Decoding screenshot", hr);
+    hr = method(Get_Object, decoder, 13)(decoder, 0, &frame);
+    if hr < 0 return failed("Reading screenshot frame", hr);
+    width: u32;
+    height: u32;
+    hr = method(Image_Size, frame, 3)(frame, &width, &height);
+    if hr < 0 return failed("Reading screenshot dimensions", hr);
+    if width == 0 || height == 0 || cast(u64) width * cast(u64) height * 4 > 16#ffffffc9
+        return failed("Invalid screenshot dimensions", E_FAIL);
+    hr = method(Create_Object, factory, 10)(factory, &converter);
+    if hr < 0 return failed("Creating screenshot converter", hr);
+    hr = method(Initialize_Converter, converter, 8)(converter, frame, &bgra_format, 0, 0, 0, 0);
+    if hr < 0 return failed("Converting screenshot pixels", hr);
+    size := width * height * 4;
+    #pattern ?allocation := mem_alloc_raw(Layout.bytes(cast(ssize) size)) else {
+        return failed("Allocating screenshot pixels", E_OUTOFMEMORY);
+    }
+    defer mem_free_raw(allocation, Layout.bytes(cast(ssize) size));
+    hr = method(Copy_Pixels, converter, 7)(converter, 0, width * 4, size, cast([*]u8) allocation);
+    if hr < 0 return failed("Copying screenshot pixels", hr);
+    file := create_file(output, 16#40000000, 0, 0, 2, 16#80, 0);
+    if file == ~cast(usize) 0
+        return failed(
+            "Opening screenshot bitmap",
+            cast(s32)(16#80070000 | (last_error() & 16#ffff))
+        );
+    defer _ := close_handle(file);
+    header: [54]u8;
+    header[0] = #char "B";
+    header[1] = #char "M";
+    put_le32(header.data + 2, 54 + size);
+    put_le32(header.data + 10, 54);
+    put_le32(header.data + 14, 40);
+    put_le32(header.data + 18, width);
+    put_le32(header.data + 22, cast(u32)(-cast(s32) height));
+    header[26] = 1;
+    header[28] = 32;
+    put_le32(header.data + 34, size);
+    written: u32;
+    if write_file(file, cast(*const void) &header, 54, &written, 0) == 0 || written != 54 ||
+       write_file(file, allocation, size, &written, 0) == 0 || written != size
+        return failed(
+            "Writing screenshot bitmap",
+            cast(s32)(16#80070000 | (last_error() & 16#ffff))
+        );
     return 1;
 }
+
 }

@@ -4,76 +4,117 @@ P :: #import "../src/windows_pty.glo";
 #import "Format";
 #import "Strings/Utf8";
 kernel32 :: #library,system "kernel32";
-Sleep :: (milliseconds:u32) #foreign kernel32;
+Sleep :: (milliseconds: u32) #foreign kernel32;
 
-contains :: (text:str,needle:str)->bool {
-    if text.count<needle.count return false;
-    for i:0..text.count-needle.count+1 if text[i..i+needle.count]==needle return true;
+contains :: (text: str, needle: str) -> bool {
+    if text.count < needle.count return false;
+    for i: 0..text.count - needle.count + 1 if text[i..i + needle.count] == needle return true;
     return false;
 }
-check :: (ok:bool,message:str) {
-    if !ok { print("FAIL: {}: {}\n",message,P.error().to_string()); exit(1); }
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}: {}\n", message, P.error().to_string());
+        exit(1);
+    }
 }
-send :: (text:str) {
-    check(P.pty_send(text.data,cast(s32)text.count)!=0,"queue shell input without blocking");
+send :: (text: str) {
+    check(P.pty_send(text.data, cast(s32) text.count) != 0, "queue shell input without blocking");
 }
-until :: (expected:str,rejected:str="") {
-    output:[..]u8; defer output.free(); data:[16384]u8; start:=P.ticks();
-    while P.ticks()-start<5000 {
-        count:=P.pty_read(cast([*]u8)&data,16384);
-        for i:0..count output.push(data[i]);
-        text:=cast(str)output.view();
-        check(rejected.count==0 || !contains(text,rejected),"independent session output queues");
-        if contains(text,expected) return;
+until :: (expected: str, rejected: str = "") {
+    output: [..]u8;
+    defer output.free();
+    data: [16384]u8;
+    start := P.ticks();
+    while P.ticks() - start < 5000 {
+        count := P.pty_read(cast([*]u8) &data, 16384);
+        for i: 0..count output.push(data[i]);
+        text := cast(str) output.view();
+        check(rejected.count == 0 || !contains(text, rejected), "independent session output queues");
+        if contains(text, expected) return;
         P.wait(10);
     }
-    print("Expected {} in:\n{}\n",expected,cast(str)output.view());
-    check(false,"shell produces actual environment-derived marker");
+    print("Expected {} in:\n{}\n", expected, cast(str) output.view());
+    check(false, "shell produces actual environment-derived marker");
 }
 quiet :: () {
-    data:[16384]u8; start:=P.ticks(); last:=start;
-    while P.ticks()-last<80 {
-        if P.pty_read(cast([*]u8)&data,16384)>0 last=P.ticks();
-        check(P.ticks()-start<5000,"shell output settles");
+    data: [16384]u8;
+    start := P.ticks();
+    last := start;
+    while P.ticks() - last < 80 {
+        if P.pty_read(cast([*]u8) &data, 16384) > 0 last = P.ticks();
+        check(P.ticks() - start < 5000, "shell output settles");
         Sleep(2);
     }
 }
 main :: () {
     defer P.close_sessions();
-    first:=P.pty_create("cmd.exe /d /q /k set WST_GLOSSO_PTY_TOKEN=FIRST",80,24);
-    second:=P.pty_create("cmd.exe /d /q /k set WST_GLOSSO_PTY_TOKEN=SECOND",80,24);
-    check(first>0 && second>0 && first!=second && P.pty_selected()==0,"creating sessions preserves selection");
-    check(P.pty_select(second)!=0,"select non-default session before literal assertion");
-    #assert P.pty_select(0)!=0;
-    check(P.pty_selected()==0,"standalone selection assertion executes at runtime");
-    check(P.pty_select(first)!=0,"select first session"); quiet();
-    send("echo %WST_GLOSSO_PTY_TOKEN%_ORIGINAL\r"); until("FIRST_ORIGINAL","SECOND_ORIGINAL");
-    check(P.pty_prepare("cmd.exe /d /q /k set WST_GLOSSO_PTY_TOKEN=REPLACED_FIRST",80,24)!=0,"stage first replacement");
-    check(P.pty_resize_prepared(100,30)!=0,"resize suspended replacement");
-    send("echo %WST_GLOSSO_PTY_TOKEN%_STAGED\r"); until("FIRST_STAGED");
-    check(P.pty_select(second)!=0,"select second session"); quiet();
-    check(P.pty_prepare("cmd.exe /d /q /k set WST_GLOSSO_PTY_TOKEN=REPLACED_SECOND",100,30)!=0,"stage second replacement");
-    send("echo %WST_GLOSSO_PTY_TOKEN%_STAGED\r"); until("SECOND_STAGED");
-    check(P.pty_commit_all()!=0 && P.pty_selected()==second,"bulk commit preserves selected session");
-    quiet(); send("echo %WST_GLOSSO_PTY_TOKEN%_COMMITTED\r"); until("REPLACED_SECOND_COMMITTED");
-    check(P.pty_select(first)!=0,"select independently replaced first session"); quiet();
-    send("echo %WST_GLOSSO_PTY_TOKEN%_COMMITTED\r"); until("REPLACED_FIRST_COMMITTED");
-    check(P.pty_prepare("cmd.exe /d /q /k set WST_GLOSSO_PTY_TOKEN=THIRD_FIRST",80,24)!=0,"stage another replacement");
-    check(P.pty_select(second)!=0,"failure in the other pane has separate staging ownership");
-    check(P.pty_prepare("wst_executable_that_does_not_exist.exe",80,24)==0,"failed preparation leaves old shell running");
+    first := P.pty_create("cmd.exe /d /q /k set WST_GLOSSO_PTY_TOKEN=FIRST", 80, 24);
+    second := P.pty_create("cmd.exe /d /q /k set WST_GLOSSO_PTY_TOKEN=SECOND", 80, 24);
+    check(
+        first > 0 && second > 0 && first != second && P.pty_selected() == 0,
+        "creating sessions preserves selection"
+    );
+    check(P.pty_select(second) != 0, "select non-default session before literal assertion");
+    #assert P.pty_select(0) != 0;
+    check(P.pty_selected() == 0, "standalone selection assertion executes at runtime");
+    check(P.pty_select(first) != 0, "select first session");
+    quiet();
+    send("echo %WST_GLOSSO_PTY_TOKEN%_ORIGINAL\r");
+    until("FIRST_ORIGINAL", "SECOND_ORIGINAL");
+    check(
+        P.pty_prepare("cmd.exe /d /q /k set WST_GLOSSO_PTY_TOKEN=REPLACED_FIRST", 80, 24) != 0,
+        "stage first replacement"
+    );
+    check(P.pty_resize_prepared(100, 30) != 0, "resize suspended replacement");
+    send("echo %WST_GLOSSO_PTY_TOKEN%_STAGED\r");
+    until("FIRST_STAGED");
+    check(P.pty_select(second) != 0, "select second session");
+    quiet();
+    check(
+        P.pty_prepare("cmd.exe /d /q /k set WST_GLOSSO_PTY_TOKEN=REPLACED_SECOND", 100, 30) != 0,
+        "stage second replacement"
+    );
+    send("echo %WST_GLOSSO_PTY_TOKEN%_STAGED\r");
+    until("SECOND_STAGED");
+    check(
+        P.pty_commit_all() != 0 && P.pty_selected() == second,
+        "bulk commit preserves selected session"
+    );
+    quiet();
+    send("echo %WST_GLOSSO_PTY_TOKEN%_COMMITTED\r");
+    until("REPLACED_SECOND_COMMITTED");
+    check(P.pty_select(first) != 0, "select independently replaced first session");
+    quiet();
+    send("echo %WST_GLOSSO_PTY_TOKEN%_COMMITTED\r");
+    until("REPLACED_FIRST_COMMITTED");
+    check(
+        P.pty_prepare("cmd.exe /d /q /k set WST_GLOSSO_PTY_TOKEN=THIRD_FIRST", 80, 24) != 0,
+        "stage another replacement"
+    );
+    check(P.pty_select(second) != 0, "failure in the other pane has separate staging ownership");
+    check(
+        P.pty_prepare("wst_executable_that_does_not_exist.exe", 80, 24) == 0,
+        "failed preparation leaves old shell running"
+    );
     // A simple assertion must still execute the stateful bulk commit at runtime.
-    #assert P.pty_commit_all()!=0;
-    check(P.pty_select(first)!=0,"select candidate retained across other pane failure");
-    send("echo %WST_GLOSSO_PTY_TOKEN%_AFTER_FAILURE\r"); until("THIRD_FIRST_AFTER_FAILURE");
-    check(P.pty_destroy(first)!=0 && P.pty_selected()==0,"destroy selected session resets selection");
-    check(P.pty_select(second)!=0,"other session survives closing first");
-    send("echo %WST_GLOSSO_PTY_TOKEN%_SURVIVES\r"); until("REPLACED_SECOND_SURVIVES");
-    check(P.pty_destroy(second)!=0,"close worker pipes without hanging");
-    for i:0..3 {
-        check(P.pty_start("cmd.exe /d /q",80,24)!=0,"restart legacy session");
-        send(tprint("echo QUICK_CLOSE_{}\r",i));
+    #assert P.pty_commit_all() != 0;
+    check(P.pty_select(first) != 0, "select candidate retained across other pane failure");
+    send("echo %WST_GLOSSO_PTY_TOKEN%_AFTER_FAILURE\r");
+    until("THIRD_FIRST_AFTER_FAILURE");
+    check(
+        P.pty_destroy(first) != 0 && P.pty_selected() == 0,
+        "destroy selected session resets selection"
+    );
+    check(P.pty_select(second) != 0, "other session survives closing first");
+    send("echo %WST_GLOSSO_PTY_TOKEN%_SURVIVES\r");
+    until("REPLACED_SECOND_SURVIVES");
+    check(P.pty_destroy(second) != 0, "close worker pipes without hanging");
+    for i: 0..3 {
+        check(P.pty_start("cmd.exe /d /q", 80, 24) != 0, "restart legacy session");
+        send(tprint("echo QUICK_CLOSE_{}\r", i));
         P.pty_close();
     }
-    print("Glosso ConPTY tests passed: independent queues, suspended replacements, bulk commit, rollback and worker shutdown.\n");
+    print(
+        "Glosso ConPTY tests passed: independent queues, suspended replacements, bulk commit, rollback and worker shutdown.\n"
+    );
 }
-

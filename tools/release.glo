@@ -10,123 +10,202 @@
 #import "Format";
 #import "Io";
 
-MAX_FILE_BYTES :: 128*1024*1024;
-MAX_ARCHIVE_BYTES :: 256*1024*1024;
+MAX_FILE_BYTES :: 128 * 1024 * 1024;
+MAX_ARCHIVE_BYTES :: 256 * 1024 * 1024;
 
 #public {
 
 /// A release version is an archive label, never a path or executable argument.
-valid_version :: (version:str)->bool {
-    if version.count<1 || version.count>64 || !alphanumeric(version[0]) return false;
-    for i:0..version.count {
-        byte:=version[i];
-        if !alphanumeric(byte) && byte!=#char "." && byte!=#char "_" && byte!=#char "-" return false;
+valid_version :: (version: str) -> bool {
+    if version.count < 1 || version.count > 64 || !alphanumeric(version[0]) return false;
+    for i: 0..version.count {
+        byte := version[i];
+        if !alphanumeric(byte) && byte != #char "." && byte != #char "_" && byte != #char "-"
+            return false;
     }
     return true;
 }
 
 /// The caller builds wst.exe and copies the current notice files first.
 /// A failed read/write leaves an existing release archive untouched.
-package :: (root:str,version:str)->bool {
-    if !valid_version(version) return fail("version must contain 1..64 ASCII letters, digits, '.', '_' or '-' and start with a letter or digit");
-    names:[5]str=.["wst.exe","LICENSE","THIRD_PARTY_NOTICES","README.md","config.example.lua"];
-    sources:[5]str=.["build/wst.exe","build/LICENSE","build/THIRD_PARTY_NOTICES","README.md","config.example.lua"];
-    archive:[..]u8; defer archive.free();
-    entries:[5]Entry;
-    for index:0..names.count {
-        path:=path_join(root,sources[index]); defer path.free();
-        if !is_regular_file(path).unwrap_or(false) return fail(tprint("required release file is missing: {}",path));
-        contents:str;
-        if read_file(path,MAX_FILE_BYTES+1)== {
-        case .Ok(data); contents=data;
-        case .Err(error); return fail(tprint("cannot read {}: {}",path,error.kind));
+package :: (root: str, version: str) -> bool {
+    if !valid_version(version)
+        return fail(
+            "version must contain 1..64 ASCII letters, digits, '.', '_' or '-' and start with a letter or digit"
+        );
+    names: [5]str = .[
+        "wst.exe",
+        "LICENSE",
+        "THIRD_PARTY_NOTICES",
+        "README.md",
+        "config.example.lua"
+    ];
+    sources: [5]str = .[
+        "build/wst.exe",
+        "build/LICENSE",
+        "build/THIRD_PARTY_NOTICES",
+        "README.md",
+        "config.example.lua"
+    ];
+    archive: [..]u8;
+    defer archive.free();
+    entries: [5]Entry;
+    for index: 0..names.count {
+        path := path_join(root, sources[index]);
+        defer path.free();
+        if !is_regular_file(path).unwrap_or(false)
+            return fail(tprint("required release file is missing: {}", path));
+        contents: str;
+        if read_file(path, MAX_FILE_BYTES + 1) == {
+        case .Ok(data);
+            contents = data;
+        case .Err(error);
+            return fail(tprint("cannot read {}: {}", path, error.kind));
         }
         defer contents.free();
-        if contents.count>MAX_FILE_BYTES || archive.count+contents.count+1024>MAX_ARCHIVE_BYTES
+        if contents.count > MAX_FILE_BYTES ||
+           archive.count + contents.count + 1024 > MAX_ARCHIVE_BYTES
             return fail("release exceeds supported ZIP32 package limits");
-        entries[index]=.{cast(u32)archive.count,cast(u32)contents.count,checksum(contents)};
-        entry:=entries[index];
-        put32(&archive,16#04034b50); put16(&archive,20);
-        put16(&archive,16#0800); put16(&archive,0); // UTF-8 names, stored bytes.
-        put16(&archive,0); put16(&archive,16#0021); // Deterministic 1980-01-01.
-        put32(&archive,entry.crc); put32(&archive,entry.size); put32(&archive,entry.size);
-        put16(&archive,cast(u16)names[index].count); put16(&archive,0);
-        append(&archive,names[index]); append(&archive,contents);
+        entries[index] = .{ cast(u32) archive.count, cast(u32) contents.count, checksum(contents) };
+        entry := entries[index];
+        put32(&archive, 16#04034b50);
+        put16(&archive, 20);
+        put16(&archive, 16#0800);
+        put16(&archive, 0); // UTF-8 names, stored bytes.
+        put16(&archive, 0);
+        put16(&archive, 16#0021); // Deterministic 1980-01-01.
+        put32(&archive, entry.crc);
+        put32(&archive, entry.size);
+        put32(&archive, entry.size);
+        put16(&archive, cast(u16) names[index].count);
+        put16(&archive, 0);
+        append(&archive, names[index]);
+        append(&archive, contents);
     }
-    directory:=cast(u32)archive.count;
-    for index:0..names.count {
-        entry:=entries[index];
-        put32(&archive,16#02014b50); put16(&archive,20); put16(&archive,20);
-        put16(&archive,16#0800); put16(&archive,0);
-        put16(&archive,0); put16(&archive,16#0021);
-        put32(&archive,entry.crc); put32(&archive,entry.size); put32(&archive,entry.size);
-        put16(&archive,cast(u16)names[index].count); put16(&archive,0); put16(&archive,0);
-        put16(&archive,0); put16(&archive,0); put32(&archive,0); put32(&archive,entry.offset);
-        append(&archive,names[index]);
+    directory := cast(u32) archive.count;
+    for index: 0..names.count {
+        entry := entries[index];
+        put32(&archive, 16#02014b50);
+        put16(&archive, 20);
+        put16(&archive, 20);
+        put16(&archive, 16#0800);
+        put16(&archive, 0);
+        put16(&archive, 0);
+        put16(&archive, 16#0021);
+        put32(&archive, entry.crc);
+        put32(&archive, entry.size);
+        put32(&archive, entry.size);
+        put16(&archive, cast(u16) names[index].count);
+        put16(&archive, 0);
+        put16(&archive, 0);
+        put16(&archive, 0);
+        put16(&archive, 0);
+        put32(&archive, 0);
+        put32(&archive, entry.offset);
+        append(&archive, names[index]);
     }
-    directory_size:=cast(u32)archive.count-directory;
-    put32(&archive,16#06054b50); put16(&archive,0); put16(&archive,0);
-    put16(&archive,cast(u16)names.count); put16(&archive,cast(u16)names.count);
-    put32(&archive,directory_size); put32(&archive,directory); put16(&archive,0);
+    directory_size := cast(u32) archive.count - directory;
+    put32(&archive, 16#06054b50);
+    put16(&archive, 0);
+    put16(&archive, 0);
+    put16(&archive, cast(u16) names.count);
+    put16(&archive, cast(u16) names.count);
+    put32(&archive, directory_size);
+    put32(&archive, directory);
+    put16(&archive, 0);
 
-    destination_directory:=path_join(root,"build/releases"); defer destination_directory.free();
-    if create_directory(destination_directory,.make_parent=true)== {
+    destination_directory := path_join(root, "build/releases");
+    defer destination_directory.free();
+    if create_directory(destination_directory, .make_parent = true) == {
     case .Ok;
-    case .Err(error); return fail(tprint("cannot create {}: {}",destination_directory,error.kind));
+    case .Err(error);
+        return fail(tprint("cannot create {}: {}", destination_directory, error.kind));
     }
-    destination:=path_join(destination_directory,tprint("wst-{}-windows-x64.zip",version)); defer destination.free();
-    temporary:Temporary_File;
-    if Temporary_File.create_temporary_file(destination_directory,.prefix="wst-release-",.suffix=".tmp")== {
-    case .Ok(file); temporary=file;
-    case .Err(error); return fail(tprint("cannot stage release: {}",error.kind));
+    destination := path_join(destination_directory, tprint("wst-{}-windows-x64.zip", version));
+    defer destination.free();
+    temporary: Temporary_File;
+    if Temporary_File.create_temporary_file(
+        destination_directory,
+        .prefix = "wst-release-",
+        .suffix = ".tmp"
+    ) == {
+    case .Ok(file);
+        temporary = file;
+    case .Err(error);
+        return fail(tprint("cannot stage release: {}", error.kind));
     }
     defer temporary.free();
-    offset:ssize;
-    while offset<archive.count {
-        if temporary.file.write_from(archive.view()[offset..])== {
+    offset: ssize;
+    while offset < archive.count {
+        if temporary.file.write_from(archive.view()[offset..]) == {
         case .Ok(count);
-            if count<=0 return fail("cannot write staged archive: no progress");
-            offset+=count;
-        case .Err(error); return fail(tprint("cannot write staged archive: {}",error.kind));
+            if count <= 0 return fail("cannot write staged archive: no progress");
+            offset += count;
+        case .Err(error);
+            return fail(tprint("cannot write staged archive: {}", error.kind));
         }
     }
-    if temporary.file.close()== {
+    if temporary.file.close() == {
     case .Ok;
-    case .Err(error); return fail(tprint("cannot close staged archive: {}",error.kind));
+    case .Err(error);
+        return fail(tprint("cannot close staged archive: {}", error.kind));
     }
-    if atomic_replace(temporary.path,destination,.Replace_Existing)== {
+    if atomic_replace(temporary.path, destination, .Replace_Existing) == {
     case .Ok;
-    case .Err(error); return fail(tprint("cannot replace {}: {}",destination,error.kind));
+    case .Err(error);
+        return fail(tprint("cannot replace {}: {}", destination, error.kind));
     }
     // Rename consumed the staging entry; cleanup releases only its owned path.
-    temporary.remove_on_close=false;
-    print("Created {} (ZIP32, stored entries)\n",destination);
+    temporary.remove_on_close = false;
+    print("Created {} (ZIP32, stored entries)\n", destination);
     return true;
 }
+
 }
 
-Entry :: struct { offset:u32; size:u32; crc:u32; }
-alphanumeric :: (byte:u8)->bool {
-    return (byte>=#char "A" && byte<=#char "Z") || (byte>=#char "a" && byte<=#char "z") ||
-        (byte>=#char "0" && byte<=#char "9");
+Entry :: struct {
+    offset: u32;
+    size: u32;
+    crc: u32;
 }
-put16 :: (bytes:*[..]u8,value:u16) { bytes.*.push(cast(u8)value); bytes.*.push(cast(u8)(value>>8)); }
-put32 :: (bytes:*[..]u8,value:u32) { put16(bytes,cast(u16)value); put16(bytes,cast(u16)(value>>16)); }
-append :: (bytes:*[..]u8,text:str) {
-    old:=bytes.*.count; bytes.*.reserve(old+text.count); bytes.*.count=old+text.count;
-    if text.count>0 _:=mem_copy_nonoverlapping(cast(*void)(bytes.*.data+old),cast(*const void)text.data,text.count);
+alphanumeric :: (byte: u8) -> bool {
+    return (byte >= #char "A" && byte <= #char "Z") || (byte >= #char "a" && byte <= #char "z") ||
+        (byte >= #char "0" && byte <= #char "9");
 }
-checksum :: (bytes:str)->u32 {
-    table:[256]u32;
-    for i:0..256 {
-        value:=cast(u32)i;
-        for bit:0..8 {
-            if (value&1)!=0 value=(value>>1)^16#edb88320; else value>>=1;
+put16 :: (bytes: *[..]u8, value: u16) {
+    bytes.*.push(cast(u8) value);
+    bytes.*.push(cast(u8)(value >> 8));
+}
+put32 :: (bytes: *[..]u8, value: u32) {
+    put16(bytes, cast(u16) value);
+    put16(bytes, cast(u16)(value >> 16));
+}
+append :: (bytes: *[..]u8, text: str) {
+    old := bytes.*.count;
+    bytes.*.reserve(old + text.count);
+    bytes.*.count = old + text.count;
+    if text.count > 0
+        _ := mem_copy_nonoverlapping(
+            cast(*void)(bytes.*.data + old),
+            cast(*const void) text.data,
+            text.count
+        );
+}
+checksum :: (bytes: str) -> u32 {
+    table: [256]u32;
+    for i: 0..256 {
+        value := cast(u32) i;
+        for bit: 0..8 {
+            if (value & 1) != 0 value = (value >> 1) ^ 16#edb88320;
+            else                value >>= 1;
         }
-        table[i]=value;
+        table[i] = value;
     }
-    value:u32=16#ffffffff;
-    for i:0..bytes.count value=(value>>8)^table[(value^cast(u32)bytes[i])&255];
+    value: u32 = 16#ffffffff;
+    for i: 0..bytes.count value = (value >> 8) ^ table[(value ^ cast(u32) bytes[i]) & 255];
     return ~value;
 }
-fail :: (message:str)->bool { print("wst release: {}\n",message); return false; }
+fail :: (message: str) -> bool {
+    print("wst release: {}\n", message);
+    return false;
+}

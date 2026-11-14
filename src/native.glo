@@ -1,5 +1,7 @@
 //! Compatibility facade for Windows services implemented directly in Glosso.
 //! std.Gui owns windowing, input and rendering; these modules bind Windows APIs.
-#export "platform_types.glo" { File_Stamp };
+#export "platform_types.glo" {
+    File_Stamp
+};
 #export "windows_pty.glo";
 #export "windows_gui.glo";

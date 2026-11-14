@@ -10,365 +10,628 @@ Glyph_Font :: #import "glyph_font.glo";
 #import "Io";
 #import "Math/Core";
 #import "Strings/Utf8";
-#export "Gui" { Window, Font };
-#export "Gui/Native" { Native_Rect, Native_Color, Native_Vec2 };
-#export "platform_types.glo" { Render_Cell };
+#export "Gui" {
+    Window, Font
+};
+#export "Gui/Native" {
+    Native_Rect, Native_Color, Native_Vec2
+};
+#export "platform_types.glo" {
+    Render_Cell
+};
 
-bytes_view :: (data:[*]const u8,count:ssize)->[]const u8 #magic "slice_from_pointer";
+bytes_view :: (data: [*]const u8, count: ssize) -> []const u8 #magic "slice_from_pointer";
 
-window:G.Window;
-current:Prepared;
-active:bool;
-focused:bool=true;
-ligatures:bool=true;
-background:u32;
-selected_fg:u32=16#ffffff;
-selected_bg:u32=16#3b506e;
-cursor_ink:u32=16#11151c;
-current_context:s32;
-replaying:bool;
-error_storage:[1024]u8;
-error_count:ssize;
+window: G.Window;
+current: Prepared;
+active: bool;
+focused: bool = true;
+ligatures: bool = true;
+background: u32;
+selected_fg: u32 = 16#ffffff;
+selected_bg: u32 = 16#3b506e;
+cursor_ink: u32 = 16#11151c;
+current_context: s32;
+replaying: bool;
+error_storage: [1024]u8;
+error_count: ssize;
 
 Command :: struct {
-    kind:s32; // rectangle, terminal glyph, UI string, rounded rectangle, stroke
-    x:s32; y:s32; width:s32; height:s32;
-    color:u32;
-    cp:u32;
-    font:G.Font;
-    text:str;
-    clipped:bool;
-    clip:GN.Native_Rect;
-    double_ink:bool;
-    geometry:f32;
-    offset_x:f32;
-    offset_y:f32;
+    kind: s32; // rectangle, terminal glyph, UI string, rounded rectangle, stroke
+    x: s32;
+    y: s32;
+    width: s32;
+    height: s32;
+    color: u32;
+    cp: u32;
+    font: G.Font;
+    text: str;
+    clipped: bool;
+    clip: GN.Native_Rect;
+    double_ink: bool;
+    geometry: f32;
+    offset_x: f32;
+    offset_y: f32;
 }
-commands:[..]Command;
+commands: [..]Command;
 
 // Bounded, direct-mapped cache. Entries own their source and shaping buffers;
 // replay commands contain only glyph IDs and positions, never borrowed runs.
-Shape_Cache :: struct { text:str; bold:bool; valid:bool; run:S.Run; }
-shape_cache:[256]Shape_Cache;
+Shape_Cache :: struct {
+    text: str;
+    bold: bool;
+    valid: bool;
+    run: S.Run;
+}
+shape_cache: [256]Shape_Cache;
 
 #public {
+
 Prepared :: struct {
-    changed:bool;
-    family:str;
-    size:s32;
-    scale:f32;
-    cw:s32;
-    ch:s32;
-    regular:G.Font;
-    bold:G.Font;
-    ui:G.Font;
-    ui_small:G.Font;
-    bold_simulated:bool;
-    regular_glyphs:G.Font;
-    bold_glyphs:G.Font;
-    regular_shaper:S.Shaper;
-    bold_shaper:S.Shaper;
-    fallback:[9]G.Font;
-    fallback_count:s32;
+    changed: bool;
+    family: str;
+    size: s32;
+    scale: f32;
+    cw: s32;
+    ch: s32;
+    regular: G.Font;
+    bold: G.Font;
+    ui: G.Font;
+    ui_small: G.Font;
+    bold_simulated: bool;
+    regular_glyphs: G.Font;
+    bold_glyphs: G.Font;
+    regular_shaper: S.Shaper;
+    bold_shaper: S.Shaper;
+    fallback: [9]G.Font;
+    fallback_count: s32;
 }
 
-bind_window :: (value:G.Window) { window=value; }
-frame_active :: ()->bool { return active; }
-font_family :: ()->str { return current.family; }
-font_size :: ()->s32 { return current.size; }
-font_scale :: ()->f32 { return current.scale; }
-ligatures_enabled :: ()->bool { return ligatures; }
-set_ligatures :: (value:bool) {
-    if ligatures==value return;
-    ligatures=value; invalidate_frame();
+bind_window :: (value: G.Window) {
+    window = value;
 }
-error_message :: ()->str { return cast(str)bytes_view(cast([*]const u8)&error_storage,error_count); }
+frame_active :: () -> bool {
+    return active;
+}
+font_family :: () -> str {
+    return current.family;
+}
+font_size :: () -> s32 {
+    return current.size;
+}
+font_scale :: () -> f32 {
+    return current.scale;
+}
+ligatures_enabled :: () -> bool {
+    return ligatures;
+}
+set_ligatures :: (value: bool) {
+    if ligatures == value return;
+    ligatures = value;
+    invalidate_frame();
+}
+error_message :: () -> str {
+    return cast(str) bytes_view(cast([*]const u8) &error_storage, error_count);
+}
 
-prepare :: (family:str,size:s32,scale:f32,result:*Prepared)->bool {
+prepare :: (family: str, size: s32, scale: f32, result: *Prepared) -> bool {
     discard(result);
     remember("");
-    if family.count==0 || !family.string_is_valid() || size<8 || size>72 || scale<=0 || scale>8 {
-        remember("Invalid font family, size, or display scale"); return false;
+    if family.count == 0 || !family.string_is_valid() || size < 8 || size > 72 || scale <= 0 || scale > 8 {
+        remember("Invalid font family, size, or display scale");
+        return false;
     }
-    if current.family==family && current.size==size && current.scale==scale && G.font_valid(current.regular) {
-        result.cw=current.cw; result.ch=current.ch; return true;
+    if current.family == family && current.size == size && current.scale == scale && G.font_valid(
+        current.regular
+    ) {
+        result.cw = current.cw;
+        result.ch = current.ch;
+        return true;
     }
-    next:Prepared;
-    next.changed=true; next.family=family.clone(); next.size=size; next.scale=scale;
-    metrics:Font_Data;
-    next.regular=load_face(family,size,scale,0,&metrics,0,&next.regular_shaper,&next.regular_glyphs);
-    if !G.font_valid(next.regular) { discard(&next); return false; }
-    next.cw=positive_ceil(G.glyph_advance(next.regular,#char "M")*scale);
-    line_units:=metrics.ascent+metrics.descent+metrics.line_gap;
-    if line_units<metrics.ascent+metrics.descent line_units=metrics.ascent+metrics.descent;
-    next.ch=positive_ceil(cast(f32)size*cast(f32)line_units/cast(f32)metrics.units*scale);
-    next.bold=load_face(family,size,scale,1,&metrics,0,&next.bold_shaper,&next.bold_glyphs);
-    next.bold_simulated=metrics.simulated_bold!=0;
-    if !G.font_valid(next.bold) { discard(&next); return false; }
-    next.ui=load_face("Segoe UI",16,scale,0,&metrics);
-    if !G.font_valid(next.ui) { discard(&next); return false; }
-    next.ui_small=load_face("Segoe UI",13,scale,0,&metrics);
-    if !G.font_valid(next.ui_small) { discard(&next); return false; }
-    names: [3]str=.["Malgun Gothic","Yu Gothic","Segoe UI Emoji"];
-    for name:names {
-        limit:s32;
-        if name=="Segoe UI Emoji" limit=2*next.cw;
-        font:=load_face(name,size,scale,0,&metrics,limit);
+    next: Prepared;
+    next.changed = true;
+    next.family = family.clone();
+    next.size = size;
+    next.scale = scale;
+    metrics: Font_Data;
+    next.regular = load_face(
+        family,
+        size,
+        scale,
+        0,
+        &metrics,
+        0,
+        &next.regular_shaper,
+        &next.regular_glyphs
+    );
+    if !G.font_valid(next.regular) {
+        discard(&next);
+        return false;
+    }
+    next.cw = positive_ceil(G.glyph_advance(next.regular, #char "M") * scale);
+    line_units := metrics.ascent + metrics.descent + metrics.line_gap;
+    if line_units < metrics.ascent + metrics.descent line_units = metrics.ascent + metrics.descent;
+    next.ch = positive_ceil(cast(f32) size * cast(f32) line_units / cast(f32) metrics.units * scale);
+    next.bold = load_face(family, size, scale, 1, &metrics, 0, &next.bold_shaper, &next.bold_glyphs);
+    next.bold_simulated = metrics.simulated_bold != 0;
+    if !G.font_valid(next.bold) {
+        discard(&next);
+        return false;
+    }
+    next.ui = load_face("Segoe UI", 16, scale, 0, &metrics);
+    if !G.font_valid(next.ui) {
+        discard(&next);
+        return false;
+    }
+    next.ui_small = load_face("Segoe UI", 13, scale, 0, &metrics);
+    if !G.font_valid(next.ui_small) {
+        discard(&next);
+        return false;
+    }
+    names: [3]str = .["Malgun Gothic", "Yu Gothic", "Segoe UI Emoji"];
+    for name: names {
+        limit: s32;
+        if name == "Segoe UI Emoji" limit = 2 * next.cw;
+        font := load_face(name, size, scale, 0, &metrics, limit);
         if G.font_valid(font) {
-            next.fallback[next.fallback_count]=font; next.fallback_count+=1;
+            next.fallback[next.fallback_count] = font;
+            next.fallback_count += 1;
         }
     }
-    body_count:=next.fallback_count;
-    link_fallback(next.regular,next.bold,&next,0,body_count);
-    if size==16 {
-        if body_count>0 _:=G.set_font_fallback(next.ui,next.fallback[0]);
+    body_count := next.fallback_count;
+    link_fallback(next.regular, next.bold, &next, 0, body_count);
+    if size == 16 {
+        if body_count > 0 _ := G.set_font_fallback(next.ui, next.fallback[0]);
     } else {
-        for name:names {
-            font:=load_face(name,16,scale,0,&metrics);
+        for name: names {
+            font := load_face(name, 16, scale, 0, &metrics);
             if G.font_valid(font) {
-                next.fallback[next.fallback_count]=font; next.fallback_count+=1;
+                next.fallback[next.fallback_count] = font;
+                next.fallback_count += 1;
             }
         }
-        ui_count:=next.fallback_count-body_count;
-        link_fallback(next.ui,.{},&next,body_count,ui_count);
+        ui_count := next.fallback_count - body_count;
+        link_fallback(next.ui, .{}, &next, body_count, ui_count);
     }
-    small_start:=next.fallback_count;
-    for name:names {
-        font:=load_face(name,13,scale,0,&metrics);
+    small_start := next.fallback_count;
+    for name: names {
+        font := load_face(name, 13, scale, 0, &metrics);
         if G.font_valid(font) {
-            next.fallback[next.fallback_count]=font; next.fallback_count+=1;
+            next.fallback[next.fallback_count] = font;
+            next.fallback_count += 1;
         }
     }
-    link_fallback(next.ui_small,.{},&next,small_start,next.fallback_count-small_start);
-    result.*=next;
+    link_fallback(next.ui_small, .{}, &next, small_start, next.fallback_count - small_start);
+    result.* = next;
     return true;
 }
 
-commit :: (prepared:*Prepared) {
+commit :: (prepared: *Prepared) {
     if !prepared.changed return;
     clear_shape_cache();
     discard(&current);
-    current=prepared.*;
-    empty:Prepared; prepared.*=empty;
+    current = prepared.*;
+    empty: Prepared;
+    prepared.* = empty;
     invalidate_frame();
 }
 
-discard :: (prepared:*Prepared) {
-    S.close(&prepared.regular_shaper); S.close(&prepared.bold_shaper);
-    G.release_font(prepared.regular_glyphs); G.release_font(prepared.bold_glyphs);
-    G.release_font(prepared.regular); G.release_font(prepared.bold); G.release_font(prepared.ui);
+discard :: (prepared: *Prepared) {
+    S.close(&prepared.regular_shaper);
+    S.close(&prepared.bold_shaper);
+    G.release_font(prepared.regular_glyphs);
+    G.release_font(prepared.bold_glyphs);
+    G.release_font(prepared.regular);
+    G.release_font(prepared.bold);
+    G.release_font(prepared.ui);
     G.release_font(prepared.ui_small);
-    for i:0..prepared.fallback_count G.release_font(prepared.fallback[i]);
+    for i: 0..prepared.fallback_count G.release_font(prepared.fallback[i]);
     prepared.family.free();
-    empty:Prepared; prepared.*=empty;
+    empty: Prepared;
+    prepared.* = empty;
 }
 
-metrics :: (cw:*s32,ch:*s32) { cw.*=current.cw; ch.*=current.ch; }
-set_focus :: (value:bool) { focused=value; }
-set_colors :: (selection_fg:u32,selection_bg:u32,cursor_text:u32) {
-    selected_fg=selection_fg; selected_bg=selection_bg; cursor_ink=cursor_text;
+metrics :: (cw: *s32, ch: *s32) {
+    cw.* = current.cw;
+    ch.* = current.ch;
+}
+set_focus :: (value: bool) {
+    focused = value;
+}
+set_colors :: (selection_fg: u32, selection_bg: u32, cursor_text: u32) {
+    selected_fg = selection_fg;
+    selected_bg = selection_bg;
+    cursor_ink = cursor_text;
 }
 
-invalidate_frame :: () { clear_commands(); }
-grid_context :: (id:s32)->s32 {
-    if id<0 || id>32 { remember("Invalid terminal render context"); return 0; }
-    current_context=id; return 1;
+invalidate_frame :: () {
+    clear_commands();
 }
-forget_context :: (id:s32) { if id==current_context invalidate_frame(); }
-
-frame_begin :: (color:u32)->bool {
-    if !active {
-        if !G.begin_render_frame(window) { remember(G.last_error()); return false; }
-        active=true;
+grid_context :: (id: s32) -> s32 {
+    if id < 0 || id > 32 {
+        remember("Invalid terminal render context");
+        return 0;
     }
-    clear_commands(); background=color;
-    dimensions:=G.render_dimensions(window);
-    rect(0,0,cast(s32)dimensions.x,cast(s32)dimensions.y,color);
+    current_context = id;
+    return 1;
+}
+forget_context :: (id: s32) {
+    if id == current_context invalidate_frame();
+}
+
+frame_begin :: (color: u32) -> bool {
+    if !active {
+        if !G.begin_render_frame(window) {
+            remember(G.last_error());
+            return false;
+        }
+        active = true;
+    }
+    clear_commands();
+    background = color;
+    dimensions := G.render_dimensions(window);
+    rect(0, 0, cast(s32) dimensions.x, cast(s32) dimensions.y, color);
     return true;
 }
 
 frame_end :: () {
     if !active return;
-    G.present_frame(window); active=false;
+    G.present_frame(window);
+    active = false;
 }
 
 close :: () {
-    frame_end(); clear_commands(); commands.reset(); clear_shape_cache(); discard(&current);
-    ligatures=true;
-    empty:G.Window; window=empty; current_context=0;
+    frame_end();
+    clear_commands();
+    commands.reset();
+    clear_shape_cache();
+    discard(&current);
+    ligatures = true;
+    empty: G.Window;
+    window = empty;
+    current_context = 0;
 }
 
-rect :: (x:s32,y:s32,width:s32,height:s32,color:u32) {
-    if !active || width<=0 || height<=0 return;
-    emit(.{.kind=0,.x=x,.y=y,.width=width,.height=height,.color=color});
+rect :: (x: s32, y: s32, width: s32, height: s32, color: u32) {
+    if !active || width <= 0 || height <= 0 return;
+    emit(.{ .kind = 0, .x = x, .y = y, .width = width, .height = height, .color = color });
 }
 
-rounded_rect :: (x:s32,y:s32,width:s32,height:s32,radius:s32,color:u32) {
-    if !active || width<=0 || height<=0 return;
-    if radius<=0 { rect(x,y,width,height,color); return; }
-    emit(.{.kind=3,.x=x,.y=y,.width=width,.height=height,.geometry=cast(f32)radius,.color=color});
+rounded_rect :: (x: s32, y: s32, width: s32, height: s32, radius: s32, color: u32) {
+    if !active || width <= 0 || height <= 0 return;
+    if radius <= 0 {
+        rect(x, y, width, height, color);
+        return;
+    }
+    emit(
+        .{
+            .kind = 3,
+            .x = x,
+            .y = y,
+            .width = width,
+            .height = height,
+            .geometry = cast(f32) radius,
+            .color = color
+        }
+    );
 }
 
-line :: (x1:s32,y1:s32,x2:s32,y2:s32,thickness:f32,color:u32) {
-    if !active || !is_finite(thickness) || thickness<=0 || thickness>4096 return;
-    emit(.{.kind=4,.x=x1,.y=y1,.width=x2,.height=y2,.geometry=thickness,.color=color});
+line :: (x1: s32, y1: s32, x2: s32, y2: s32, thickness: f32, color: u32) {
+    if !active || !is_finite(thickness) || thickness <= 0 || thickness > 4096 return;
+    emit(
+        .{
+            .kind = 4,
+            .x = x1,
+            .y = y1,
+            .width = x2,
+            .height = y2,
+            .geometry = thickness,
+            .color = color
+        }
+    );
 }
 
-draw_label :: (x:s32,y:s32,width:s32,height:s32,text:str,color:u32) {
-    label_with_font(current.ui,x,y,width,height,text,color,false);
+draw_label :: (x: s32, y: s32, width: s32, height: s32, text: str, color: u32) {
+    label_with_font(current.ui, x, y, width, height, text, color, false);
 }
 
 /// Compact proportional chrome text stays at 13 DIP when the terminal zooms.
-draw_ui_label :: (x:s32,y:s32,width:s32,height:s32,text:str,color:u32) {
-    label_with_font(current.ui_small,x,y,width,height,text,color,true);
+draw_ui_label :: (x: s32, y: s32, width: s32, height: s32, text: str, color: u32) {
+    label_with_font(current.ui_small, x, y, width, height, text, color, true);
 }
 
-measure_ui :: (text:str)->s32 {
-    if text.count==0 return 0;
-    return positive_ceil(G.measure_text(current.ui_small,text)*current.scale);
+measure_ui :: (text: str) -> s32 {
+    if text.count == 0 return 0;
+    return positive_ceil(G.measure_text(current.ui_small, text) * current.scale);
 }
 
 }
 
-label_with_font :: (font:G.Font,x:s32,y:s32,width:s32,height:s32,text:str,color:u32,chrome:bool) {
-    if !active || width<=0 || height<=0 return;
-    shown:str;
-    if chrome shown=fit_ui_label(text,width);
-    else shown=fit_label(font,text,width);
-    logical_height:=G.font_height(font)*current.scale;
-    top:=y+(height-cast(s32)logical_height)/2;
-    emit(.{.kind=2,.x=x,.y=top,.width=width,.height=height,.color=color,.font=font,
-        .text=shown.clone(),.clipped=true,.clip=.{cast(f32)x,cast(f32)y,cast(f32)width,cast(f32)height}});
+label_with_font :: (
+    font: G.Font,
+    x: s32,
+    y: s32,
+    width: s32,
+    height: s32,
+    text: str,
+    color: u32,
+    chrome: bool
+) {
+    if !active || width <= 0 || height <= 0 return;
+    shown: str;
+    if chrome shown = fit_ui_label(text, width);
+    else      shown = fit_label(font, text, width);
+    logical_height := G.font_height(font) * current.scale;
+    top := y + (height - cast(s32) logical_height) / 2;
+    emit(
+        .{
+            .kind = 2,
+            .x = x,
+            .y = top,
+            .width = width,
+            .height = height,
+            .color = color,
+            .font = font,
+            .text = shown.clone(),
+            .clipped = true,
+            .clip = .{ cast(f32) x, cast(f32) y, cast(f32) width, cast(f32) height }
+        }
+    );
 }
 
 #public {
 
-cell :: (x:s32,y:s32,width:s32,height:s32,cp:u32,fg:u32,bg:u32,flags:u32,is_selected:s32) {
-    draw_cell(x,y,width,height,cp,fg,bg,flags,is_selected!=0,false,.{});
+cell :: (
+    x: s32,
+    y: s32,
+    width: s32,
+    height: s32,
+    cp: u32,
+    fg: u32,
+    bg: u32,
+    flags: u32,
+    is_selected: s32
+) {
+    draw_cell(x, y, width, height, cp, fg, bg, flags, is_selected != 0, false, .{});
 }
 
-cursor :: (x:s32,y:s32,width:s32,height:s32,color:u32) {
-    if focused rect(x,y,width,height,color);
+cursor :: (x: s32, y: s32, width: s32, height: s32, color: u32) {
+    if focused rect(x, y, width, height, color);
     else {
-        rect(x,y,width,1,color); rect(x,y+height-1,width,1,color);
-        rect(x,y,1,height,color); rect(x+width-1,y,1,height,color);
+        rect(x, y, width, 1, color);
+        rect(x, y + height - 1, width, 1, color);
+        rect(x, y, 1, height, color);
+        rect(x + width - 1, y, 1, height, color);
     }
 }
 
-grid :: (x:s32,y:s32,cols:s32,rows:s32,cw:s32,ch:s32,cells:[*]const Types.Render_Cell,
-    cursor_x:s32,cursor_y:s32,visible:s32,color:u32) {
-    draw_grid(x,y,cols,rows,cw,ch,cells,cursor_x,cursor_y,visible,color,false,.{});
+grid :: (
+    x: s32,
+    y: s32,
+    cols: s32,
+    rows: s32,
+    cw: s32,
+    ch: s32,
+    cells: [*]const Types.Render_Cell,
+    cursor_x: s32,
+    cursor_y: s32,
+    visible: s32,
+    color: u32
+) {
+    draw_grid(x, y, cols, rows, cw, ch, cells, cursor_x, cursor_y, visible, color, false, .{});
 }
-grid_clipped :: (x:s32,y:s32,cols:s32,rows:s32,cw:s32,ch:s32,cells:[*]const Types.Render_Cell,
-    cursor_x:s32,cursor_y:s32,visible:s32,color:u32,width:s32,height:s32) {
-    draw_grid(x,y,cols,rows,cw,ch,cells,cursor_x,cursor_y,visible,color,true,
-        .{cast(f32)x,cast(f32)y,cast(f32)positive(width),cast(f32)positive(height)});
+grid_clipped :: (
+    x: s32,
+    y: s32,
+    cols: s32,
+    rows: s32,
+    cw: s32,
+    ch: s32,
+    cells: [*]const Types.Render_Cell,
+    cursor_x: s32,
+    cursor_y: s32,
+    visible: s32,
+    color: u32,
+    width: s32,
+    height: s32
+) {
+    draw_grid(
+        x,
+        y,
+        cols,
+        rows,
+        cw,
+        ch,
+        cells,
+        cursor_x,
+        cursor_y,
+        visible,
+        color,
+        true,
+        .{ cast(f32) x, cast(f32) y, cast(f32) positive(width), cast(f32) positive(height) }
+    );
 }
 
 /// The facade ensures a readable input frame before calling this when inactive.
-snapshot :: (path:str)->s32 {
-    opened:=false;
+snapshot :: (path: str) -> s32 {
+    opened := false;
     if !active {
-        if !G.begin_render_frame(window) { remember(G.last_error()); return 0; }
-        active=true; opened=true;
-        replaying=true;
-        for command:commands draw(command);
-        replaying=false;
+        if !G.begin_render_frame(window) {
+            remember(G.last_error());
+            return 0;
+        }
+        active = true;
+        opened = true;
+        replaying = true;
+        for command: commands draw(command);
+        replaying = false;
     }
-    bitmap:=path.count>=4 && (path[path.count-4..path.count]==".bmp" || path[path.count-4..path.count]==".BMP");
-    success:=false;
+    bitmap := path.count >= 4 && (
+        path[path.count - 4..path.count] == ".bmp" || path[path.count - 4..path.count] == ".BMP"
+    );
+    success := false;
     if bitmap {
-        png:=tprint("{}.gui.png",path);
-        if G.save_frame(window,png) {
-            success=native_bmp(png,path)!=0;
+        png := tprint("{}.gui.png", path);
+        if G.save_frame(window, png) {
+            success = native_bmp(png, path) != 0;
             if !success remember(native_error().to_string());
         } else remember(G.last_error());
-    } else success=G.save_frame(window,path);
-    if opened frame_end();
+    } else success = G.save_frame(window, path);
+    if opened              frame_end();
     if !success && !bitmap remember(G.last_error());
-    if success return 1;
+    if success             return 1;
     return 0;
 }
+
 }
 
-positive :: (value:s32)->s32 { if value<0 return 0; return value; }
-positive_ceil :: (value:f32)->s32 { result:=cast(s32)value; if cast(f32)result<value result+=1; if result<1 result=1; return result; }
-remember :: (message:str) {
-    error_count=message.count; if error_count>1023 error_count=1023;
-    for i:0..error_count error_storage[i]=message[i];
+positive :: (value: s32) -> s32 {
+    if value < 0 return 0;
+    return value;
 }
-load_face :: (family:str,size:s32,scale:f32,bold:s32,metrics:*Font_Data,width_limit:s32=0,
-    shaper:?*S.Shaper=null,glyph_font:?*G.Font=null)->G.Font {
-    data:Font_Data;
-    face:usize;
-    if native_font(family,bold,&data,&face)==0 { remember(native_error().to_string()); return .{}; }
+positive_ceil :: (value: f32) -> s32 {
+    result := cast(s32) value;
+    if cast(f32) result < value result += 1;
+    if result < 1               result = 1;
+    return result;
+}
+remember :: (message: str) {
+    error_count = message.count;
+    if error_count > 1023 error_count = 1023;
+    for i: 0..error_count error_storage[i] = message[i];
+}
+load_face :: (
+    family: str,
+    size: s32,
+    scale: f32,
+    bold: s32,
+    metrics: *Font_Data,
+    width_limit: s32 = 0,
+    shaper: ?*S.Shaper = null,
+    glyph_font: ?*G.Font = null
+) -> G.Font {
+    data: Font_Data;
+    face: usize;
+    if native_font(family, bold, &data, &face) == 0 {
+        remember(native_error().to_string());
+        return .{};
+    }
     defer native_release_face(face);
     defer native_free(&data);
-    if family=="Segoe UI Emoji" include_vertical_ink(&data);
-    metrics.*=data; metrics.bytes=0;
-    if data.units<=0 { remember("Installed font has invalid metrics"); return .{}; }
-    height:=cast(f32)size*cast(f32)(data.ascent+data.descent)/cast(f32)data.units;
-    font:=G.font_from_bytes(bytes_view(data.data,cast(ssize)data.bytes),height,scale);
+    if family == "Segoe UI Emoji" include_vertical_ink(&data);
+    metrics.* = data;
+    metrics.bytes = 0;
+    if data.units <= 0 {
+        remember("Installed font has invalid metrics");
+        return .{};
+    }
+    height := cast(f32) size * cast(f32)(data.ascent + data.descent) / cast(f32) data.units;
+    font := G.font_from_bytes(bytes_view(data.data, cast(ssize) data.bytes), height, scale);
     if G.font_valid(font) {
         if #pattern ?target = shaper {
             if #pattern ?glyphs = glyph_font {
-                if S.open(face,target) {
-                    glyphs.*=Glyph_Font.create(&data,height,scale);
+                if S.open(face, target) {
+                    glyphs.* = Glyph_Font.create(&data, height, scale);
                     if !G.font_valid(glyphs.*) S.close(target);
                 }
             }
         }
     }
-    if G.font_valid(font) && width_limit>0 {
+    if G.font_valid(font) && width_limit > 0 {
         // Emoji faces can use wider advances than a terminal's two-cell span.
         // Keep the complete fallback glyph inside that span rather than clipping.
-        advance:=G.glyph_advance(font,#char "😀")*scale;
-        if advance>cast(f32)width_limit {
+        advance := G.glyph_advance(font, #char "😀") * scale;
+        if advance > cast(f32) width_limit {
             G.release_font(font);
-            font=G.font_from_bytes(bytes_view(data.data,cast(ssize)data.bytes),
-                height*cast(f32)width_limit/advance,scale);
+            font = G.font_from_bytes(
+                bytes_view(data.data, cast(ssize) data.bytes),
+                height * cast(f32) width_limit / advance,
+                scale
+            );
         }
     }
     if !G.font_valid(font) remember("Gui could not load the installed font data");
     return font;
 }
-link_fallback :: (first:G.Font,second:G.Font,prepared:*Prepared,start:s32,count:s32) {
-    if count<=0 return;
-    _:=G.set_font_fallback(first,prepared.fallback[start]);
-    if G.font_valid(second) _:=G.set_font_fallback(second,prepared.fallback[start]);
-    for i:0..count-1 _:=G.set_font_fallback(prepared.fallback[start+cast(s32)i],prepared.fallback[start+cast(s32)i+1]);
+link_fallback :: (first: G.Font, second: G.Font, prepared: *Prepared, start: s32, count: s32) {
+    if count <= 0 return;
+    _ := G.set_font_fallback(first, prepared.fallback[start]);
+    if G.font_valid(second) _ := G.set_font_fallback(second, prepared.fallback[start]);
+    for i: 0..count - 1 _ := G.set_font_fallback(
+        prepared.fallback[start + cast(s32) i],
+        prepared.fallback[start + cast(s32) i + 1]
+    );
 }
 clear_commands :: () {
-    for i:0..commands.count commands[i].text.free();
+    for i: 0..commands.count commands[i].text.free();
     commands.clear();
 }
-color :: (rgb:u32)->GN.Native_Color {
-    return .{cast(f32)((rgb>>16)&255)/255.0,cast(f32)((rgb>>8)&255)/255.0,cast(f32)(rgb&255)/255.0,1};
+color :: (rgb: u32) -> GN.Native_Color {
+    return .{
+        cast(f32)((rgb >> 16) & 255) / 255.0,
+        cast(f32)((rgb >> 8) & 255) / 255.0,
+        cast(f32)(rgb & 255) / 255.0,
+        1
+    };
 }
-logical_rect :: (bounds:GN.Native_Rect)->GN.Native_Rect {
-    scale:=current.scale; if scale<=0 scale=1;
-    return .{bounds.x/scale,bounds.y/scale,bounds.width/scale,bounds.height/scale};
+logical_rect :: (bounds: GN.Native_Rect) -> GN.Native_Rect {
+    scale := current.scale;
+    if scale <= 0 scale = 1;
+    return .{ bounds.x / scale, bounds.y / scale, bounds.width / scale, bounds.height / scale };
 }
-emit :: (command:Command) { if !active return; draw(command); if !replaying commands.push(command); }
-draw :: (command:Command) {
-    scale:=current.scale; if scale<=0 scale=1;
+emit :: (command: Command) {
+    if !active return;
+    draw(command);
+    if !replaying commands.push(command);
+}
+draw :: (command: Command) {
+    scale := current.scale;
+    if scale <= 0 scale = 1;
     if command.clipped G.set_clip(logical_rect(command.clip));
-    else G.reset_clip();
-    if command.kind==0 {
-        G.rectangle(.{cast(f32)command.x/scale,cast(f32)command.y/scale,
-            cast(f32)command.width/scale,cast(f32)command.height/scale},color(command.color));
-    } else if command.kind==1 {
-        storage:[4]u8; length:=encode(command.cp,&storage);
-        value:=cast(str)bytes_view(cast([*]const u8)&storage,length);
-        G.text(command.font,value,.{(cast(f32)command.x+command.offset_x)/scale,
-            (cast(f32)command.y+command.offset_y)/scale},color(command.color));
-        if command.double_ink G.text(command.font,value,.{(cast(f32)command.x+command.offset_x+0.6)/scale,
-            (cast(f32)command.y+command.offset_y)/scale},color(command.color));
-    } else if command.kind==2 {
-        G.text(command.font,command.text,.{cast(f32)command.x/scale,cast(f32)command.y/scale},color(command.color));
-    } else if command.kind==3 {
+    else               G.reset_clip();
+    if command.kind == 0 {
+        G.rectangle(
+            .{
+                cast(f32) command.x / scale,
+                cast(f32) command.y / scale,
+                cast(f32) command.width / scale,
+                cast(f32) command.height / scale
+            },
+            color(command.color)
+        );
+    } else if command.kind == 1 {
+        storage: [4]u8;
+        length := encode(command.cp, &storage);
+        value := cast(str) bytes_view(cast([*]const u8) &storage, length);
+        G.text(
+            command.font,
+            value,
+            .{
+                (cast(f32) command.x + command.offset_x) / scale,
+                (cast(f32) command.y + command.offset_y) / scale
+            },
+            color(command.color)
+        );
+        if command.double_ink
+            G.text(
+                command.font,
+                value,
+                .{
+                    (cast(f32) command.x + command.offset_x + 0.6) / scale,
+                    (cast(f32) command.y + command.offset_y) / scale
+                },
+                color(command.color)
+            );
+    } else if command.kind == 2 {
+        G.text(
+            command.font,
+            command.text,
+            .{ cast(f32) command.x / scale, cast(f32) command.y / scale },
+            color(command.color)
+        );
+    } else if command.kind == 3 {
         draw_rounded(command);
-    } else if command.kind==4 {
+    } else if command.kind == 4 {
         draw_stroke(command);
     }
     G.reset_clip();
@@ -376,166 +639,288 @@ draw :: (command:Command) {
 
 // Gui has a rectangle overlay primitive. These small vector shapes use physical
 // pixel coverage for smooth edges, then submit through that same Gui renderer.
-paint_rect :: (x:f32,y:f32,width:f32,height:f32,ink:GN.Native_Color) {
-    if width<=0 || height<=0 || ink.a<=0 return;
-    scale:=current.scale; if scale<=0 scale=1;
-    G.rectangle(.{x/scale,y/scale,width/scale,height/scale},ink);
+paint_rect :: (x: f32, y: f32, width: f32, height: f32, ink: GN.Native_Color) {
+    if width <= 0 || height <= 0 || ink.a <= 0 return;
+    scale := current.scale;
+    if scale <= 0 scale = 1;
+    G.rectangle(.{ x / scale, y / scale, width / scale, height / scale }, ink);
 }
-paint_span :: (left:f32,right:f32,y:s32,ink:GN.Native_Color) {
-    if right<=left return;
-    first:=cast(s32)floor(left); last:=cast(s32)floor(right);
-    if first==last {
-        pixel:=ink; pixel.a*=right-left;
-        paint_rect(cast(f32)first,cast(f32)y,1,1,pixel); return;
-    }
-    edge:=ink; edge.a*=1-(left-cast(f32)first);
-    paint_rect(cast(f32)first,cast(f32)y,1,1,edge);
-    paint_rect(cast(f32)(first+1),cast(f32)y,cast(f32)(last-first-1),1,ink);
-    edge=ink; edge.a*=right-cast(f32)last;
-    paint_rect(cast(f32)last,cast(f32)y,1,1,edge);
-}
-draw_rounded :: (command:Command) {
-    radius:=cast(s32)command.geometry;
-    if radius>command.width/2 radius=command.width/2;
-    if radius>command.height/2 radius=command.height/2;
-    ink:=color(command.color);
-    if radius<=0 {
-        paint_rect(cast(f32)command.x,cast(f32)command.y,cast(f32)command.width,cast(f32)command.height,ink);
+paint_span :: (left: f32, right: f32, y: s32, ink: GN.Native_Color) {
+    if right <= left return;
+    first := cast(s32) floor(left);
+    last := cast(s32) floor(right);
+    if first == last {
+        pixel := ink;
+        pixel.a *= right - left;
+        paint_rect(cast(f32) first, cast(f32) y, 1, 1, pixel);
         return;
     }
-    paint_rect(cast(f32)command.x,cast(f32)(command.y+radius),cast(f32)command.width,cast(f32)(command.height-2*radius),ink);
-    r:=cast(f32)radius;
-    for row:cast(s32)0..radius {
-        vertical:=r-cast(f32)row-0.5;
-        inset:=r-sqrt(r*r-vertical*vertical);
-        left:=cast(f32)command.x+inset; right:=cast(f32)(command.x+command.width)-inset;
-        paint_span(left,right,command.y+row,ink);
-        paint_span(left,right,command.y+command.height-1-row,ink);
+    edge := ink;
+    edge.a *= 1 - (left - cast(f32) first);
+    paint_rect(cast(f32) first, cast(f32) y, 1, 1, edge);
+    paint_rect(cast(f32)(first + 1), cast(f32) y, cast(f32)(last - first - 1), 1, ink);
+    edge = ink;
+    edge.a *= right - cast(f32) last;
+    paint_rect(cast(f32) last, cast(f32) y, 1, 1, edge);
+}
+draw_rounded :: (command: Command) {
+    radius := cast(s32) command.geometry;
+    if radius > command.width / 2  radius = command.width / 2;
+    if radius > command.height / 2 radius = command.height / 2;
+    ink := color(command.color);
+    if radius <= 0 {
+        paint_rect(
+            cast(f32) command.x,
+            cast(f32) command.y,
+            cast(f32) command.width,
+            cast(f32) command.height,
+            ink
+        );
+        return;
+    }
+    paint_rect(
+        cast(f32) command.x,
+        cast(f32)(command.y + radius),
+        cast(f32) command.width,
+        cast(f32)(command.height - 2 * radius),
+        ink
+    );
+    r := cast(f32) radius;
+    for row: cast(s32) 0..radius {
+        vertical := r - cast(f32) row - 0.5;
+        inset := r - sqrt(r * r - vertical * vertical);
+        left := cast(f32) command.x + inset;
+        right := cast(f32)(command.x + command.width) - inset;
+        paint_span(left, right, command.y + row, ink);
+        paint_span(left, right, command.y + command.height - 1 - row, ink);
     }
 }
-draw_stroke :: (command:Command) {
-    ax:=cast(f32)command.x; ay:=cast(f32)command.y;
-    bx:=cast(f32)command.width; by:=cast(f32)command.height;
-    dx:=bx-ax; dy:=by-ay; length_squared:=dx*dx+dy*dy;
-    radius:=command.geometry*0.5; reach:=radius+0.5;
-    vertical_length:=dy; if vertical_length<0 vertical_length= -vertical_length;
-    diagonal_extent:f32;
-    if vertical_length>0 diagonal_extent=reach*sqrt(length_squared)/vertical_length;
-    min_x:=ax; max_x:=bx; if bx<ax { min_x=bx; max_x=ax; }
-    min_y:=ay; max_y:=by; if by<ay { min_y=by; max_y=ay; }
-    start_x:=cast(s32)floor(min_x-reach); end_x:=cast(s32)ceil(max_x+reach);
-    start_y:=cast(s32)floor(min_y-reach); end_y:=cast(s32)ceil(max_y+reach);
-    ink:=color(command.color);
-    for y:start_y..end_y {
-        first:=start_x; last:=end_x;
+draw_stroke :: (command: Command) {
+    ax := cast(f32) command.x;
+    ay := cast(f32) command.y;
+    bx := cast(f32) command.width;
+    by := cast(f32) command.height;
+    dx := bx - ax;
+    dy := by - ay;
+    length_squared := dx * dx + dy * dy;
+    radius := command.geometry * 0.5;
+    reach := radius + 0.5;
+    vertical_length := dy;
+    if vertical_length < 0 vertical_length = -vertical_length;
+    diagonal_extent: f32;
+    if vertical_length > 0 diagonal_extent = reach * sqrt(length_squared) / vertical_length;
+    min_x := ax;
+    max_x := bx;
+    if bx < ax {
+        min_x = bx;
+        max_x = ax;
+    }
+    min_y := ay;
+    max_y := by;
+    if by < ay {
+        min_y = by;
+        max_y = ay;
+    }
+    start_x := cast(s32) floor(min_x - reach);
+    end_x := cast(s32) ceil(max_x + reach);
+    start_y := cast(s32) floor(min_y - reach);
+    end_y := cast(s32) ceil(max_y + reach);
+    ink := color(command.color);
+    for y: start_y..end_y {
+        first := start_x;
+        last := end_x;
         // Follow a thin band around diagonals instead of scanning their full box.
-        if dy!=0 && length_squared>0 {
-            position:=(cast(f32)y+0.5-ay)/dy;
-            if position<0 position=0;
-            if position>1 position=1;
-            middle:=ax+dx*position;
-            band_first:=cast(s32)floor(middle-diagonal_extent); band_last:=cast(s32)ceil(middle+diagonal_extent);
-            if band_first>first first=band_first;
-            if band_last<last last=band_last;
+        if dy != 0 && length_squared > 0 {
+            position := (cast(f32) y + 0.5 - ay) / dy;
+            if position < 0 position = 0;
+            if position > 1 position = 1;
+            middle := ax + dx * position;
+            band_first := cast(s32) floor(middle - diagonal_extent);
+            band_last := cast(s32) ceil(middle + diagonal_extent);
+            if band_first > first first = band_first;
+            if band_last < last   last = band_last;
         }
-        for x:first..last {
-            px:=cast(f32)x+0.5; py:=cast(f32)y+0.5;
-            position:f32;
-            if length_squared>0 position=((px-ax)*dx+(py-ay)*dy)/length_squared;
-            if position<0 position=0;
-            if position>1 position=1;
-            distance_x:=px-(ax+dx*position); distance_y:=py-(ay+dy*position);
-            coverage:=reach-sqrt(distance_x*distance_x+distance_y*distance_y);
-            if coverage>1 coverage=1;
-            if coverage>0 {
-                pixel:=ink; pixel.a=coverage;
-                paint_rect(cast(f32)x,cast(f32)y,1,1,pixel);
+        for x: first..last {
+            px := cast(f32) x + 0.5;
+            py := cast(f32) y + 0.5;
+            position: f32;
+            if length_squared > 0 position = ((px - ax) * dx + (py - ay) * dy) / length_squared;
+            if position < 0       position = 0;
+            if position > 1       position = 1;
+            distance_x := px - (ax + dx * position);
+            distance_y := py - (ay + dy * position);
+            coverage := reach - sqrt(distance_x * distance_x + distance_y * distance_y);
+            if coverage > 1 coverage = 1;
+            if coverage > 0 {
+                pixel := ink;
+                pixel.a = coverage;
+                paint_rect(cast(f32) x, cast(f32) y, 1, 1, pixel);
             }
         }
     }
 }
-encode :: (value:u32,storage:*[4]u8)->ssize {
-    cp:=value;
-    if cp>16#10ffff || (cp>=16#d800 && cp<=16#dfff) cp=16#fffd;
-    if cp<128 { storage.*[0]=cast(u8)cp; return 1; }
-    if cp<2048 {
-        storage.*[0]=cast(u8)(192|(cp>>6)); storage.*[1]=cast(u8)(128|(cp&63)); return 2;
+encode :: (value: u32, storage: *[4]u8) -> ssize {
+    cp := value;
+    if cp > 16#10ffff || (cp >= 16#d800 && cp <= 16#dfff) cp = 16#fffd;
+    if cp < 128 {
+        storage.*[0] = cast(u8) cp;
+        return 1;
     }
-    if cp<65536 {
-        storage.*[0]=cast(u8)(224|(cp>>12)); storage.*[1]=cast(u8)(128|((cp>>6)&63)); storage.*[2]=cast(u8)(128|(cp&63)); return 3;
+    if cp < 2048 {
+        storage.*[0] = cast(u8)(192 | (cp >> 6));
+        storage.*[1] = cast(u8)(128 | (cp & 63));
+        return 2;
     }
-    storage.*[0]=cast(u8)(240|(cp>>18)); storage.*[1]=cast(u8)(128|((cp>>12)&63));
-    storage.*[2]=cast(u8)(128|((cp>>6)&63)); storage.*[3]=cast(u8)(128|(cp&63)); return 4;
+    if cp < 65536 {
+        storage.*[0] = cast(u8)(224 | (cp >> 12));
+        storage.*[1] = cast(u8)(128 | ((cp >> 6) & 63));
+        storage.*[2] = cast(u8)(128 | (cp & 63));
+        return 3;
+    }
+    storage.*[0] = cast(u8)(240 | (cp >> 18));
+    storage.*[1] = cast(u8)(128 | ((cp >> 12) & 63));
+    storage.*[2] = cast(u8)(128 | ((cp >> 6) & 63));
+    storage.*[3] = cast(u8)(128 | (cp & 63));
+    return 4;
 }
-intersect :: (a:GN.Native_Rect,b:GN.Native_Rect)->GN.Native_Rect {
-    x:=a.x; if b.x>x x=b.x;
-    y:=a.y; if b.y>y y=b.y;
-    right:=a.x+a.width; if b.x+b.width<right right=b.x+b.width;
-    bottom:=a.y+a.height; if b.y+b.height<bottom bottom=b.y+b.height;
-    width:=right-x; if width<0 width=0;
-    height:=bottom-y; if height<0 height=0;
-    return .{x,y,width,height};
+intersect :: (a: GN.Native_Rect, b: GN.Native_Rect) -> GN.Native_Rect {
+    x := a.x;
+    if b.x > x x = b.x;
+    y := a.y;
+    if b.y > y y = b.y;
+    right := a.x + a.width;
+    if b.x + b.width < right right = b.x + b.width;
+    bottom := a.y + a.height;
+    if b.y + b.height < bottom bottom = b.y + b.height;
+    width := right - x;
+    if width < 0 width = 0;
+    height := bottom - y;
+    if height < 0 height = 0;
+    return .{ x, y, width, height };
 }
-draw_cell :: (x:s32,y:s32,width:s32,height:s32,cp:u32,foreground:u32,back:u32,flags:u32,
-    is_selected:bool,clipped:bool,clip:GN.Native_Rect,paint_background:bool=true) {
-    if !active || width<=0 || height<=0 return;
-    fg:=foreground; bg:=back;
-    if (flags&4)!=0 { fg=back; bg=foreground; }
-    if is_selected { fg=selected_fg; bg=selected_bg; }
-    bounds:GN.Native_Rect=.{cast(f32)x,cast(f32)y,cast(f32)width,cast(f32)height};
-    if clipped bounds=intersect(bounds,clip);
-    if paint_background emit(.{.kind=0,.x=x,.y=y,.width=width,.height=height,.color=bg,.clipped=clipped,.clip=clip});
-    if cp!=0 && cp!=32 && (flags&16)==0 {
-        font:=current.regular;
-        if (flags&1)!=0 font=current.bold;
-        ink_height:=G.font_height(font)*current.scale;
-        top:=y+(height-cast(s32)ink_height)/2;
-        emit(.{.kind=1,.x=x,.y=top,.width=width,.height=height,.color=fg,.cp=cp,.font=font,
-            .clipped=true,.clip=bounds,.double_ink=(flags&1)!=0&&current.bold_simulated});
+draw_cell :: (
+    x: s32,
+    y: s32,
+    width: s32,
+    height: s32,
+    cp: u32,
+    foreground: u32,
+    back: u32,
+    flags: u32,
+    is_selected: bool,
+    clipped: bool,
+    clip: GN.Native_Rect,
+    paint_background: bool = true
+) {
+    if !active || width <= 0 || height <= 0 return;
+    fg := foreground;
+    bg := back;
+    if (flags & 4) != 0 {
+        fg = back;
+        bg = foreground;
     }
-    if (flags&2)!=0 emit(.{.kind=0,.x=x,.y=y+height-2,.width=width,.height=1,.color=fg,.clipped=clipped,.clip=clip});
+    if is_selected {
+        fg = selected_fg;
+        bg = selected_bg;
+    }
+    bounds: GN.Native_Rect = .{ cast(f32) x, cast(f32) y, cast(f32) width, cast(f32) height };
+    if clipped bounds = intersect(bounds, clip);
+    if paint_background
+        emit(
+            .{
+                .kind = 0,
+                .x = x,
+                .y = y,
+                .width = width,
+                .height = height,
+                .color = bg,
+                .clipped = clipped,
+                .clip = clip
+            }
+        );
+    if cp != 0 && cp != 32 && (flags & 16) == 0 {
+        font := current.regular;
+        if (flags & 1) != 0 font = current.bold;
+        ink_height := G.font_height(font) * current.scale;
+        top := y + (height - cast(s32) ink_height) / 2;
+        emit(
+            .{
+                .kind = 1,
+                .x = x,
+                .y = top,
+                .width = width,
+                .height = height,
+                .color = fg,
+                .cp = cp,
+                .font = font,
+                .clipped = true,
+                .clip = bounds,
+                .double_ink = (flags & 1) != 0 && current.bold_simulated
+            }
+        );
+    }
+    if (flags & 2) != 0
+        emit(
+            .{
+                .kind = 0,
+                .x = x,
+                .y = y + height - 2,
+                .width = width,
+                .height = 1,
+                .color = fg,
+                .clipped = clipped,
+                .clip = clip
+            }
+        );
 }
 
 clear_shape_cache :: () {
-    for i:0..256 {
-        shape_cache[i].text.free(); S.free_run(&shape_cache[i].run);
-        empty:Shape_Cache; shape_cache[i]=empty;
+    for i: 0..256 {
+        shape_cache[i].text.free();
+        S.free_run(&shape_cache[i].run);
+        empty: Shape_Cache;
+        shape_cache[i] = empty;
     }
 }
 
-cached_shape :: (text:str,bold:bool)->*S.Run {
-    hash:ssize; if bold hash=1;
-    for i:0..text.count hash=(hash*33+cast(ssize)text[i])%256;
-    entry:=&shape_cache[hash];
-    if !entry.valid || entry.text!=text || entry.bold!=bold {
-        entry.text.free(); entry.text=text.clone(); entry.bold=bold; entry.valid=true;
-        shaper:=&current.regular_shaper; if bold shaper= &current.bold_shaper;
-        _:=S.shape(shaper,text,cast(f32)current.size,&entry.run);
+cached_shape :: (text: str, bold: bool) -> *S.Run {
+    hash: ssize;
+    if bold hash = 1;
+    for i: 0..text.count hash = (hash * 33 + cast(ssize) text[i]) % 256;
+    entry := &shape_cache[hash];
+    if !entry.valid || entry.text != text || entry.bold != bold {
+        entry.text.free();
+        entry.text = text.clone();
+        entry.bold = bold;
+        entry.valid = true;
+        shaper := &current.regular_shaper;
+        if bold shaper = &current.bold_shaper;
+        _ := S.shape(shaper, text, cast(f32) current.size, &entry.run);
     }
     return &entry.run;
 }
 
-shapeable :: (cell:Types.Render_Cell)->bool {
-    return cell.codepoint>=32 && cell.codepoint<=126 && (cell.flags&24)==0;
+shapeable :: (cell: Types.Render_Cell) -> bool {
+    return cell.codepoint >= 32 && cell.codepoint <= 126 && (cell.flags & 24) == 0;
 }
-same_shape_style :: (a:Types.Render_Cell,b:Types.Render_Cell)->bool {
+same_shape_style :: (a: Types.Render_Cell, b: Types.Render_Cell) -> bool {
     // Palette provenance and selection do not alter OpenType substitutions.
-    return a.fg==b.fg && a.bg==b.bg && (a.flags&7)==(b.flags&7);
+    return a.fg == b.fg && a.bg == b.bg && (a.flags & 7) == (b.flags & 7);
 }
 
-cluster_end :: (run:*S.Run,first:ssize)->ssize {
-    end:=first+1;
-    while end<run.clusters.count && run.clusters[end]==run.clusters[first] end+=1;
+cluster_end :: (run: *S.Run, first: ssize) -> ssize {
+    end := first + 1;
+    while end < run.clusters.count && run.clusters[end] == run.clusters[first] end += 1;
     return end;
 }
-glyph_end :: (run:*S.Run,end:ssize)->ssize {
-    if end<run.clusters.count return cast(ssize)run.clusters[end];
+glyph_end :: (run: *S.Run, end: ssize) -> ssize {
+    if end < run.clusters.count return cast(ssize) run.clusters[end];
     return run.glyphs.count;
 }
-substituted_cluster :: (run:*S.Run,first:ssize,end:ssize)->bool {
-    start:=cast(ssize)run.clusters[first];
-    if glyph_end(run,end)-start!=end-first return true;
-    for i:first..end if run.glyphs[start+i-first]!=run.nominal_glyphs[i] return true;
+substituted_cluster :: (run: *S.Run, first: ssize, end: ssize) -> bool {
+    start := cast(ssize) run.clusters[first];
+    if glyph_end(run, end) - start != end - first return true;
+    for i: first..end if run.glyphs[start + i - first] != run.nominal_glyphs[i] return true;
     return false;
 }
 
@@ -543,171 +928,355 @@ substituted_cluster :: (run:*S.Run,first:ssize,end:ssize)->bool {
 // a row. Adjacent substituted clusters form one group: contextual ligatures may
 // contain several connected glyphs, whose natural spacing must stay intact.
 // Clip whole shaped ink, including glyphs extending into earlier source cells.
-shaped_ink :: (run:*S.Run,font:G.Font,x:s32,y:s32,cw:s32,ch:s32,fg:u32,bold:bool,clip:GN.Native_Rect) {
-    if clip.width<=0 || clip.height<=0 return;
-    top:=y+(ch-cast(s32)(G.font_height(font)*current.scale))/2;
-    first:ssize;
-    while first<run.clusters.count {
-        end:=cluster_end(run,first);
-        if substituted_cluster(run,first,end) {
-            while end<run.clusters.count {
-                next:=cluster_end(run,end);
-                if !substituted_cluster(run,end,next) break;
-                end=next;
+shaped_ink :: (
+    run: *S.Run,
+    font: G.Font,
+    x: s32,
+    y: s32,
+    cw: s32,
+    ch: s32,
+    fg: u32,
+    bold: bool,
+    clip: GN.Native_Rect
+) {
+    if clip.width <= 0 || clip.height <= 0 return;
+    top := y + (ch - cast(s32)(G.font_height(font) * current.scale)) / 2;
+    first: ssize;
+    while first < run.clusters.count {
+        end := cluster_end(run, first);
+        if substituted_cluster(run, first, end) {
+            while end < run.clusters.count {
+                next := cluster_end(run, end);
+                if !substituted_cluster(run, end, next) break;
+                end = next;
             }
         }
-        start_glyph:=cast(ssize)run.clusters[first];
-        end_glyph:=glyph_end(run,end);
-        origin:=cast(f32)(first*cast(ssize)cw);
-        if end-first>1 {
-            width:f32;
-            for i:start_glyph..end_glyph width+=run.advances[i]*current.scale;
-            origin+=(cast(f32)((end-first)*cast(ssize)cw)-width)*0.5;
+        start_glyph := cast(ssize) run.clusters[first];
+        end_glyph := glyph_end(run, end);
+        origin := cast(f32)(first * cast(ssize) cw);
+        if end - first > 1 {
+            width: f32;
+            for i: start_glyph..end_glyph width += run.advances[i] * current.scale;
+            origin += (cast(f32)((end - first) * cast(ssize) cw) - width) * 0.5;
         }
-        for i:start_glyph..end_glyph {
-            emit(.{.kind=1,.x=x,.y=top,.color=fg,.font=font,
-                .cp=Glyph_Font.GLYPH_BASE+cast(u32)run.glyphs[i],
-                .offset_x=origin+run.offsets[i].advance*current.scale,
-                .offset_y= -run.offsets[i].ascender*current.scale,
-                .clipped=true,.clip=clip,.double_ink=bold&&current.bold_simulated});
-            origin+=run.advances[i]*current.scale;
+        for i: start_glyph..end_glyph {
+            emit(
+                .{
+                    .kind = 1,
+                    .x = x,
+                    .y = top,
+                    .color = fg,
+                    .font = font,
+                    .cp = Glyph_Font.GLYPH_BASE + cast(u32) run.glyphs[i],
+                    .offset_x = origin + run.offsets[i].advance * current.scale,
+                    .offset_y = -run.offsets[i].ascender * current.scale,
+                    .clipped = true,
+                    .clip = clip,
+                    .double_ink = bold && current.bold_simulated
+                }
+            );
+            origin += run.advances[i] * current.scale;
         }
-        first=end;
+        first = end;
     }
 }
 
-draw_shaped :: (x:s32,y:s32,count:s32,cw:s32,ch:s32,cells:[*]const Types.Render_Cell,
-    cursor_column:s32,cursor_color:u32,clipped:bool,clip:GN.Native_Rect)->bool {
-    bold:=(cells[0].flags&1)!=0;
-    font:=current.regular_glyphs; if bold font=current.bold_glyphs;
-    if !ligatures || count<2 || !G.font_valid(font) return false;
-    storage:[512]u8;
-    for i:0..count storage[i]=cast(u8)cells[i].codepoint;
-    text:=cast(str)bytes_view(cast([*]const u8)&storage,cast(ssize)count);
-    run:=cached_shape(text,bold);
+draw_shaped :: (
+    x: s32,
+    y: s32,
+    count: s32,
+    cw: s32,
+    ch: s32,
+    cells: [*]const Types.Render_Cell,
+    cursor_column: s32,
+    cursor_color: u32,
+    clipped: bool,
+    clip: GN.Native_Rect
+) -> bool {
+    bold := (cells[0].flags & 1) != 0;
+    font := current.regular_glyphs;
+    if bold                                           font = current.bold_glyphs;
+    if !ligatures || count < 2 || !G.font_valid(font) return false;
+    storage: [512]u8;
+    for i: 0..count storage[i] = cast(u8) cells[i].codepoint;
+    text := cast(str) bytes_view(cast([*]const u8) &storage, cast(ssize) count);
+    run := cached_shape(text, bold);
     if !run.changed return false;
     // The private glyph font has no Unicode fallback chain. Keep missing
     // characters on the ordinary per-cell path instead of drawing .notdef.
-    for glyph:run.glyphs if glyph==0 return false;
-    first:s32;
-    while first<count {
-        selected:=(cells[first].flags&16#80000000)!=0;
-        end:=first+1;
-        while end<count && ((cells[end].flags&16#80000000)!=0)==selected end+=1;
-        fg:=cells[first].fg;
-        if (cells[first].flags&4)!=0 fg=cells[first].bg;
-        if selected fg=selected_fg;
-        bounds:GN.Native_Rect=.{cast(f32)(x+first*cw),cast(f32)y,cast(f32)((end-first)*cw),cast(f32)ch};
-        if clipped bounds=intersect(bounds,clip);
-        shaped_ink(run,font,x,y,cw,ch,fg,bold,bounds);
-        if (cells[first].flags&2)!=0
-            emit(.{.kind=0,.x=x+first*cw,.y=y+ch-2,.width=(end-first)*cw,.height=1,
-                .color=fg,.clipped=true,.clip=bounds});
-        first=end;
+    for glyph: run.glyphs if glyph == 0 return false;
+    first: s32;
+    while first < count {
+        selected := (cells[first].flags & 16#80000000) != 0;
+        end := first + 1;
+        while end < count && ((cells[end].flags & 16#80000000) != 0) == selected end += 1;
+        fg := cells[first].fg;
+        if (cells[first].flags & 4) != 0 fg = cells[first].bg;
+        if selected                      fg = selected_fg;
+        bounds: GN.Native_Rect = .{
+            cast(f32)(x + first * cw),
+            cast(f32) y,
+            cast(f32)((end - first) * cw),
+            cast(f32) ch
+        };
+        if clipped bounds = intersect(bounds, clip);
+        shaped_ink(run, font, x, y, cw, ch, fg, bold, bounds);
+        if (cells[first].flags & 2) != 0
+            emit(
+                .{
+                    .kind = 0,
+                    .x = x + first * cw,
+                    .y = y + ch - 2,
+                    .width = (end - first) * cw,
+                    .height = 1,
+                    .color = fg,
+                    .clipped = true,
+                    .clip = bounds
+                }
+            );
+        first = end;
     }
-    if cursor_column>=0 && cursor_column<count {
-        left:=x+cursor_column*cw;
-        bounds:GN.Native_Rect=.{cast(f32)left,cast(f32)y,cast(f32)cw,cast(f32)ch};
-        if clipped bounds=intersect(bounds,clip);
-        emit(.{.kind=0,.x=left,.y=y,.width=cw,.height=ch,.color=cursor_color,.clipped=true,.clip=bounds});
-        shaped_ink(run,font,x,y,cw,ch,cursor_ink,bold,bounds);
-        if (cells[cursor_column].flags&2)!=0
-            emit(.{.kind=0,.x=left,.y=y+ch-2,.width=cw,.height=1,.color=cursor_ink,.clipped=true,.clip=bounds});
+    if cursor_column >= 0 && cursor_column < count {
+        left := x + cursor_column * cw;
+        bounds: GN.Native_Rect = .{ cast(f32) left, cast(f32) y, cast(f32) cw, cast(f32) ch };
+        if clipped bounds = intersect(bounds, clip);
+        emit(
+            .{
+                .kind = 0,
+                .x = left,
+                .y = y,
+                .width = cw,
+                .height = ch,
+                .color = cursor_color,
+                .clipped = true,
+                .clip = bounds
+            }
+        );
+        shaped_ink(run, font, x, y, cw, ch, cursor_ink, bold, bounds);
+        if (cells[cursor_column].flags & 2) != 0
+            emit(
+                .{
+                    .kind = 0,
+                    .x = left,
+                    .y = y + ch - 2,
+                    .width = cw,
+                    .height = 1,
+                    .color = cursor_ink,
+                    .clipped = true,
+                    .clip = bounds
+                }
+            );
     }
     return true;
 }
 
-draw_grid :: (x:s32,y:s32,cols:s32,rows:s32,cw:s32,ch:s32,cells:[*]const Types.Render_Cell,
-    cursor_x:s32,cursor_y:s32,visible:s32,cursor_color:u32,clipped:bool,clip:GN.Native_Rect) {
-    if !active || cols<=0 || cols>512 || rows<=0 || rows>256 || cw<=0 || ch<=0 return;
-    shaped_cursor:bool;
-    for yi:0..rows {
-        row:=cast(s32)yi; column:s32;
+draw_grid :: (
+    x: s32,
+    y: s32,
+    cols: s32,
+    rows: s32,
+    cw: s32,
+    ch: s32,
+    cells: [*]const Types.Render_Cell,
+    cursor_x: s32,
+    cursor_y: s32,
+    visible: s32,
+    cursor_color: u32,
+    clipped: bool,
+    clip: GN.Native_Rect
+) {
+    if !active || cols <= 0 || cols > 512 || rows <= 0 || rows > 256 || cw <= 0 || ch <= 0 return;
+    shaped_cursor: bool;
+    for yi: 0..rows {
+        row := cast(s32) yi;
+        column: s32;
         // Paint the complete row before any overhanging ligature ink.
-        while column<cols {
-            c:=cells[row*cols+column];
-            span:s32=1; if (c.flags&8)!=0 && column+1<cols span=2;
-            draw_cell(x+column*cw,y+row*ch,span*cw,ch,0,c.fg,c.bg,c.flags& ~cast(u32)2,
-                (c.flags&16#80000000)!=0,clipped,clip);
-            column+=span;
+        while column < cols {
+            c := cells[row * cols + column];
+            span: s32 = 1;
+            if (c.flags & 8) != 0 && column + 1 < cols span = 2;
+            draw_cell(
+                x + column * cw,
+                y + row * ch,
+                span * cw,
+                ch,
+                0,
+                c.fg,
+                c.bg,
+                c.flags & ~cast(u32) 2,
+                (c.flags & 16#80000000) != 0,
+                clipped,
+                clip
+            );
+            column += span;
         }
-        column=0;
-        while column<cols {
-            c:=cells[row*cols+column];
-            end:=column+1;
+        column = 0;
+        while column < cols {
+            c := cells[row * cols + column];
+            end := column + 1;
             if ligatures && shapeable(c) {
-                while end<cols && shapeable(cells[row*cols+end]) && same_shape_style(c,cells[row*cols+end]) end+=1;
-                cursor_column:s32= -1;
-                if focused && visible!=0 && row==cursor_y && cursor_x>=column && cursor_x<end
-                    cursor_column=cursor_x-column;
-                if draw_shaped(x+column*cw,y+row*ch,end-column,cw,ch,cells+cast(ssize)(row*cols+column),
-                    cursor_column,cursor_color,clipped,clip) {
-                    if cursor_column>=0 shaped_cursor=true;
-                    column=end; continue;
+                while end < cols && shapeable(cells[row * cols + end]) && same_shape_style(
+                    c,
+                    cells[row * cols + end]
+                ) end += 1;
+                cursor_column: s32 = -1;
+                if focused && visible != 0 && row == cursor_y && cursor_x >= column &&
+                   cursor_x < end
+                    cursor_column = cursor_x - column;
+                if draw_shaped(
+                    x + column * cw,
+                    y + row * ch,
+                    end - column,
+                    cw,
+                    ch,
+                    cells + cast(ssize)(row * cols + column),
+                    cursor_column,
+                    cursor_color,
+                    clipped,
+                    clip
+                ) {
+                    if cursor_column >= 0 shaped_cursor = true;
+                    column = end;
+                    continue;
                 }
             }
             // Unchanged glyphs use the exact legacy raster positions and fallback.
-            while column<end {
-                value:=cells[row*cols+column];
-                span:s32=1; if (value.flags&8)!=0 && column+1<cols span=2;
-                draw_cell(x+column*cw,y+row*ch,span*cw,ch,value.codepoint,value.fg,value.bg,value.flags,
-                    (value.flags&16#80000000)!=0,clipped,clip,false);
-                column+=span;
+            while column < end {
+                value := cells[row * cols + column];
+                span: s32 = 1;
+                if (value.flags & 8) != 0 && column + 1 < cols span = 2;
+                draw_cell(
+                    x + column * cw,
+                    y + row * ch,
+                    span * cw,
+                    ch,
+                    value.codepoint,
+                    value.fg,
+                    value.bg,
+                    value.flags,
+                    (value.flags & 16#80000000) != 0,
+                    clipped,
+                    clip,
+                    false
+                );
+                column += span;
             }
         }
     }
-    if visible!=0 && cursor_x>=0 && cursor_x<cols && cursor_y>=0 && cursor_y<rows {
-        column:=cursor_x; c:=cells[cursor_y*cols+column]; span:s32=1;
-        if (c.flags&16)!=0 && column>0 && (cells[cursor_y*cols+column-1].flags&8)!=0 {
-            column-=1; c=cells[cursor_y*cols+column];
+    if visible != 0 && cursor_x >= 0 && cursor_x < cols && cursor_y >= 0 && cursor_y < rows {
+        column := cursor_x;
+        c := cells[cursor_y * cols + column];
+        span: s32 = 1;
+        if (c.flags & 16) != 0 && column > 0 && (cells[cursor_y * cols + column - 1].flags & 8) != 0 {
+            column -= 1;
+            c = cells[cursor_y * cols + column];
         }
-        if (c.flags&8)!=0 && column+1<cols span=2;
+        if (c.flags & 8) != 0 && column + 1 < cols span = 2;
         if focused {
-            if !shaped_cursor draw_cell(x+column*cw,y+cursor_y*ch,span*cw,ch,c.codepoint,cursor_ink,cursor_color,
-                c.flags&3,false,clipped,clip);
-        }
-        else {
-            left:=x+column*cw; top:=y+cursor_y*ch;
-            emit(.{.kind=0,.x=left,.y=top,.width=span*cw,.height=1,.color=cursor_color,.clipped=clipped,.clip=clip});
-            emit(.{.kind=0,.x=left,.y=top+ch-1,.width=span*cw,.height=1,.color=cursor_color,.clipped=clipped,.clip=clip});
-            emit(.{.kind=0,.x=left,.y=top,.width=1,.height=ch,.color=cursor_color,.clipped=clipped,.clip=clip});
-            emit(.{.kind=0,.x=left+span*cw-1,.y=top,.width=1,.height=ch,.color=cursor_color,.clipped=clipped,.clip=clip});
+            if !shaped_cursor
+                draw_cell(
+                    x + column * cw,
+                    y + cursor_y * ch,
+                    span * cw,
+                    ch,
+                    c.codepoint,
+                    cursor_ink,
+                    cursor_color,
+                    c.flags & 3,
+                    false,
+                    clipped,
+                    clip
+                );
+        } else {
+            left := x + column * cw;
+            top := y + cursor_y * ch;
+            emit(
+                .{
+                    .kind = 0,
+                    .x = left,
+                    .y = top,
+                    .width = span * cw,
+                    .height = 1,
+                    .color = cursor_color,
+                    .clipped = clipped,
+                    .clip = clip
+                }
+            );
+            emit(
+                .{
+                    .kind = 0,
+                    .x = left,
+                    .y = top + ch - 1,
+                    .width = span * cw,
+                    .height = 1,
+                    .color = cursor_color,
+                    .clipped = clipped,
+                    .clip = clip
+                }
+            );
+            emit(
+                .{
+                    .kind = 0,
+                    .x = left,
+                    .y = top,
+                    .width = 1,
+                    .height = ch,
+                    .color = cursor_color,
+                    .clipped = clipped,
+                    .clip = clip
+                }
+            );
+            emit(
+                .{
+                    .kind = 0,
+                    .x = left + span * cw - 1,
+                    .y = top,
+                    .width = 1,
+                    .height = ch,
+                    .color = cursor_color,
+                    .clipped = clipped,
+                    .clip = clip
+                }
+            );
         }
     }
 }
-fit_label :: (font:G.Font,text:str,width:s32)->str {
-    if G.measure_text(font,text)*current.scale<=cast(f32)width return text;
-    ellipsis:str="…";
-    available:=cast(f32)width/current.scale-G.measure_text(font,ellipsis);
-    offset:ssize; used:f32;
-    while offset<text.count {
-        character:=text.rune_at(offset).unwrap_or(#char "�");
-        advance:=G.glyph_advance(font,character);
-        if used+advance>available break;
-        used+=advance; offset+=1;
-        while offset<text.count && (text[offset]&16#c0)==16#80 offset+=1;
+fit_label :: (font: G.Font, text: str, width: s32) -> str {
+    if G.measure_text(font, text) * current.scale <= cast(f32) width return text;
+    ellipsis: str = "…";
+    available := cast(f32) width / current.scale - G.measure_text(font, ellipsis);
+    offset: ssize;
+    used: f32;
+    while offset < text.count {
+        character := text.rune_at(offset).unwrap_or(#char "�");
+        advance := G.glyph_advance(font, character);
+        if used + advance > available break;
+        used += advance;
+        offset += 1;
+        while offset < text.count && (text[offset] & 16#c0) == 16#80 offset += 1;
     }
-    return tprint("{}{}",text[0..offset],ellipsis);
+    return tprint("{}{}", text[0..offset], ellipsis);
 }
 
 // Header labels reserve the ellipsis before finding a complete UTF-8 prefix.
 // A tiny target that cannot hold even that marker stays empty, rather than
 // showing a clipped dot or part of a multibyte glyph. Legacy labels keep their
 // existing behavior through fit_label above.
-fit_ui_label :: (text:str,width:s32)->str {
-    font:=current.ui_small;
-    if G.measure_text(font,text)*current.scale<=cast(f32)width return text;
-    ellipsis:str="…";
-    available:=cast(f32)width/current.scale-G.measure_text(font,ellipsis);
-    if available<0 return "";
-    offset:ssize; used:f32;
-    while offset<text.count {
-        character:=text.rune_at(offset).unwrap_or(#char "�");
-        advance:=G.glyph_advance(font,character);
-        if used+advance>available break;
-        used+=advance;
-        offset+=1;
-        while offset<text.count && (text[offset]&16#c0)==16#80 offset+=1;
+fit_ui_label :: (text: str, width: s32) -> str {
+    font := current.ui_small;
+    if G.measure_text(font, text) * current.scale <= cast(f32) width return text;
+    ellipsis: str = "…";
+    available := cast(f32) width / current.scale - G.measure_text(font, ellipsis);
+    if available < 0 return "";
+    offset: ssize;
+    used: f32;
+    while offset < text.count {
+        character := text.rune_at(offset).unwrap_or(#char "�");
+        advance := G.glyph_advance(font, character);
+        if used + advance > available break;
+        used += advance;
+        offset += 1;
+        while offset < text.count && (text[offset] & 16#c0) == 16#80 offset += 1;
     }
-    return tprint("{}{}",text[0..offset],ellipsis);
+    return tprint("{}{}", text[0..offset], ellipsis);
 }

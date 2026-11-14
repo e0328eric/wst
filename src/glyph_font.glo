@@ -5,45 +5,71 @@ F :: #import "windows_fonts.glo";
 #import "Memory";
 #import "Context";
 
-view :: (data:[*]const u8,count:ssize)->[]const u8 #magic "slice_from_pointer";
-be16 :: (p:[*]const u8)->u16 { return (cast(u16)p[0]<<8)|cast(u16)p[1]; }
-be32 :: (p:[*]const u8)->u32 { return (cast(u32)p[0]<<24)|(cast(u32)p[1]<<16)|(cast(u32)p[2]<<8)|cast(u32)p[3]; }
-put16 :: (p:[*]u8,n:u16) { p[0]=cast(u8)(n>>8); p[1]=cast(u8)n; }
-put32 :: (p:[*]u8,n:u32) { p[0]=cast(u8)(n>>24); p[1]=cast(u8)(n>>16); p[2]=cast(u8)(n>>8); p[3]=cast(u8)n; }
-tag :: (p:[*]const u8,value:str)->bool { return p[0]==value[0] && p[1]==value[1] && p[2]==value[2] && p[3]==value[3]; }
+view :: (data: [*]const u8, count: ssize) -> []const u8 #magic "slice_from_pointer";
+be16 :: (p: [*]const u8) -> u16 {
+    return (cast(u16) p[0] << 8) | cast(u16) p[1];
+}
+be32 :: (p: [*]const u8) -> u32 {
+    return (cast(u32) p[0] << 24) | (cast(u32) p[1] << 16) | (cast(u32) p[2] << 8) | cast(u32) p[3];
+}
+put16 :: (p: [*]u8, n: u16) {
+    p[0] = cast(u8)(n >> 8);
+    p[1] = cast(u8) n;
+}
+put32 :: (p: [*]u8, n: u32) {
+    p[0] = cast(u8)(n >> 24);
+    p[1] = cast(u8)(n >> 16);
+    p[2] = cast(u8)(n >> 8);
+    p[3] = cast(u8) n;
+}
+tag :: (p: [*]const u8, value: str) -> bool {
+    return p[0] == value[0] && p[1] == value[1] && p[2] == value[2] && p[3] == value[3];
+}
 
 #public {
+
 GLYPH_BASE :: 16#f0000;
 
-create :: (data:*const F.Font_Data,height:f32,scale:f32)->G.Font {
-    if data.bytes<12 || data.bytes>32*1024*1024-40 return .{};
-    count:=cast(ssize)be16(data.data+4);
-    if 12+16*count>data.bytes return .{};
-    cmap:ssize; glyphs:u16;
-    for i:0..count {
-        table:=data.data+12+16*i;
-        offset:=cast(ssize)be32(table+8); length:=cast(ssize)be32(table+12);
-        if offset+length>data.bytes return .{};
-        if tag(table,"cmap") cmap=12+16*i;
-        if tag(table,"maxp") && length>=6 glyphs=be16(data.data+offset+4);
+create :: (data: *const F.Font_Data, height: f32, scale: f32) -> G.Font {
+    if data.bytes < 12 || data.bytes > 32 * 1024 * 1024 - 40 return .{};
+    count := cast(ssize) be16(data.data + 4);
+    if 12 + 16 * count > data.bytes return .{};
+    cmap: ssize;
+    glyphs: u16;
+    for i: 0..count {
+        table := data.data + 12 + 16 * i;
+        offset := cast(ssize) be32(table + 8);
+        length := cast(ssize) be32(table + 12);
+        if offset + length > data.bytes      return .{};
+        if tag(table, "cmap")                cmap = 12 + 16 * i;
+        if tag(table, "maxp") && length >= 6 glyphs = be16(data.data + offset + 4);
     }
-    if cmap==0 || glyphs==0 return .{};
-    size:=cast(ssize)data.bytes+40;
-    #pattern ?allocation := mem_alloc_raw(Layout.bytes(size)) else { return .{}; }
-    defer mem_free_raw(allocation,Layout.bytes(size));
-    output:=cast([*]u8)allocation;
-    _:=mem_copy_nonoverlapping(allocation,cast(*const void)data.data,cast(ssize)data.bytes);
-    mapping:=output+cast(ssize)data.bytes;
-    _:=mem_fill(cast(*void)mapping,40,0);
-    put16(mapping+2,1); // One Windows full-Unicode encoding record.
-    put16(mapping+4,3); put16(mapping+6,10); put32(mapping+8,12);
-    put16(mapping+12,12); put32(mapping+16,28); put32(mapping+24,1);
-    put32(mapping+28,GLYPH_BASE); put32(mapping+32,GLYPH_BASE+cast(u32)glyphs-1);
+    if cmap == 0 || glyphs == 0 return .{};
+    size := cast(ssize) data.bytes + 40;
+    #pattern ?allocation := mem_alloc_raw(Layout.bytes(size)) else {
+        return .{};
+    }
+    defer mem_free_raw(allocation, Layout.bytes(size));
+    output := cast([*]u8) allocation;
+    _ := mem_copy_nonoverlapping(allocation, cast(*const void) data.data, cast(ssize) data.bytes);
+    mapping := output + cast(ssize) data.bytes;
+    _ := mem_fill(cast(*void) mapping, 40, 0);
+    put16(mapping + 2, 1); // One Windows full-Unicode encoding record.
+    put16(mapping + 4, 3);
+    put16(mapping + 6, 10);
+    put32(mapping + 8, 12);
+    put16(mapping + 12, 12);
+    put32(mapping + 16, 28);
+    put32(mapping + 24, 1);
+    put32(mapping + 28, GLYPH_BASE);
+    put32(mapping + 32, GLYPH_BASE + cast(u32) glyphs - 1);
     // startGlyphID is zero: private codepoint minus GLYPH_BASE is its glyph ID.
-    put32(output+cmap+8,cast(u32)data.bytes); put32(output+cmap+12,40);
-    checksum:u64;
-    for i:0..10 checksum+=cast(u64)be32(mapping+4*i);
-    put32(output+cmap+4,cast(u32)checksum);
-    return G.font_from_bytes(view(cast([*]const u8)output,size),height,scale);
+    put32(output + cmap + 8, cast(u32) data.bytes);
+    put32(output + cmap + 12, 40);
+    checksum: u64;
+    for i: 0..10 checksum += cast(u64) be32(mapping + 4 * i);
+    put32(output + cmap + 4, cast(u32) checksum);
+    return G.font_from_bytes(view(cast([*]const u8) output, size), height, scale);
 }
+
 }

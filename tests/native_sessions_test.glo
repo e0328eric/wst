@@ -3,147 +3,220 @@ P :: #import "../src/platform.glo";
 #import "Io";
 #import "File_System/File";
 kernel32 :: #library,system "kernel32";
-Sleep :: (milliseconds:u32) #foreign kernel32;
+Sleep :: (milliseconds: u32) #foreign kernel32;
 
-contains :: (text:str,needle:str)->bool {
-    if text.count<needle.count return false;
-    for i:0..text.count-needle.count+1 if text[i..i+needle.count]==needle return true;
+contains :: (text: str, needle: str) -> bool {
+    if text.count < needle.count return false;
+    for i: 0..text.count - needle.count + 1 if text[i..i + needle.count] == needle return true;
     return false;
 }
-pump :: () { event:P.Event; while P.next_event(&event)!=0 {} }
-send :: (command:str) { #assert P.pty_send(command.data,cast(s32)command.count)!=0; }
-quiet :: (first:s32,second:s32) {
-    data:[65536]u8;
-    start:=P.ticks(); last:=start;
-    while P.ticks()-last<150 {
+pump :: () {
+    event: P.Event;
+    while P.next_event(&event) != 0 {}
+}
+send :: (command: str) {
+    #assert P.pty_send(command.data, cast(s32) command.count) != 0;
+}
+quiet :: (first: s32, second: s32) {
+    data: [65536]u8;
+    start := P.ticks();
+    last := start;
+    while P.ticks() - last < 150 {
         pump();
-        for id:.[first,second] {
-            #assert P.pty_select(id)!=0;
-            while P.pty_read(cast([*]u8)&data,65536)>0 last=P.ticks();
+        for id: .[first, second] {
+            #assert P.pty_select(id) != 0;
+            while P.pty_read(cast([*]u8) &data, 65536) > 0 last = P.ticks();
         }
-        #assert P.ticks()-start<5000,"independent shell queues settle";
+        #assert P.ticks() - start < 5000, "independent shell queues settle";
         Sleep(5);
     }
 }
-marker :: (id:s32,command:str,expected:str,rejected:str="") {
-    #assert !contains(command,expected),"command echo cannot satisfy state proof";
-    #assert P.pty_select(id)!=0;
+marker :: (id: s32, command: str, expected: str, rejected: str = "") {
+    #assert !contains(command, expected), "command echo cannot satisfy state proof";
+    #assert P.pty_select(id) != 0;
     send(command);
-    data:[65536]u8; output:[..]u8; defer output.free();
-    start:=P.ticks(); found:=false;
-    while P.ticks()-start<10000 {
+    data: [65536]u8;
+    output: [..]u8;
+    defer output.free();
+    start := P.ticks();
+    found := false;
+    while P.ticks() - start < 10000 {
         pump();
-        n:=P.pty_read(cast([*]u8)&data,65536);
-        for i:0..n output.push(data[i]);
-        text:=cast(str)output.view();
-        if rejected.count>0 #assert !contains(text,rejected),"other pane output cannot enter this session queue";
-        if contains(text,expected) { found=true; break; }
+        n := P.pty_read(cast([*]u8) &data, 65536);
+        for i: 0..n output.push(data[i]);
+        text := cast(str) output.view();
+        if rejected.count > 0
+            #assert !contains(text, rejected), "other pane output cannot enter this session queue";
+        if contains(text, expected) {
+            found = true;
+            break;
+        }
         P.wait(10);
     }
-    if !found print("Missing {} in session {} output:\n{}\n",expected,id,cast(str)output.view());
-    #assert found,"session retains its own shell environment";
+    if !found
+        print("Missing {} in session {} output:\n{}\n", expected, id, cast(str) output.view());
+    #assert found, "session retains its own shell environment";
 }
-pixels :: (path:str)->str {
-    if read_file(path,64*1024*1024)== {
-    case .Ok(data); return data;
-    case .Err(error); print("snapshot read failed: {}\n",error.kind); exit(1);
+pixels :: (path: str) -> str {
+    if read_file(path, 64 * 1024 * 1024) == {
+    case .Ok(data);
+        return data;
+    case .Err(error);
+        print("snapshot read failed: {}\n", error.kind);
+        exit(1);
     }
 }
-left:[80]P.Render_Cell;
-right:[80]P.Render_Cell;
-cw:s32;
-ch:s32;
-draw_panes :: (first:s32,second:s32,active:s32) {
+left: [80]P.Render_Cell;
+right: [80]P.Render_Cell;
+cw: s32;
+ch: s32;
+draw_panes :: (first: s32, second: s32, active: s32) {
     P.frame_begin(16#11151c);
-    #assert P.grid_context(first)!=0;
-    cursor:s32=0; if active==first cursor=1;
-    P.grid_clipped(12,48,20,4,cw,ch,cast([*]const P.Render_Cell)&left,2,1,cursor,16#e5c07b,20*cw,4*ch);
-    #assert P.grid_context(second)!=0;
-    cursor=0; if active==second cursor=1;
-    P.grid_clipped(32+20*cw,48,20,4,cw,ch,cast([*]const P.Render_Cell)&right,3,2,cursor,16#e5c07b,20*cw,4*ch);
+    #assert P.grid_context(first) != 0;
+    cursor: s32 = 0;
+    if active == first cursor = 1;
+    P.grid_clipped(
+        12,
+        48,
+        20,
+        4,
+        cw,
+        ch,
+        cast([*]const P.Render_Cell) &left,
+        2,
+        1,
+        cursor,
+        16#e5c07b,
+        20 * cw,
+        4 * ch
+    );
+    #assert P.grid_context(second) != 0;
+    cursor = 0;
+    if active == second cursor = 1;
+    P.grid_clipped(
+        32 + 20 * cw,
+        48,
+        20,
+        4,
+        cw,
+        ch,
+        cast([*]const P.Render_Cell) &right,
+        3,
+        2,
+        cursor,
+        16#e5c07b,
+        20 * cw,
+        4 * ch
+    );
     P.frame_end();
 }
-check_render :: (first:s32,second:s32,active:s32) {
-    #assert P.snapshot("build/sessions_incremental.bmp")!=0;
-    incremental:=pixels("build/sessions_incremental.bmp"); defer incremental.free();
-    P.invalidate_frame(); draw_panes(first,second,active);
-    #assert P.snapshot("build/sessions_fresh.bmp")!=0;
-    fresh:=pixels("build/sessions_fresh.bmp"); defer fresh.free();
-    #assert incremental==fresh,"independent pane caches and cursors match a fresh frame";
+check_render :: (first: s32, second: s32, active: s32) {
+    #assert P.snapshot("build/sessions_incremental.bmp") != 0;
+    incremental := pixels("build/sessions_incremental.bmp");
+    defer incremental.free();
+    P.invalidate_frame();
+    draw_panes(first, second, active);
+    #assert P.snapshot("build/sessions_fresh.bmp") != 0;
+    fresh := pixels("build/sessions_fresh.bmp");
+    defer fresh.free();
+    #assert incremental == fresh, "independent pane caches and cursors match a fresh frame";
 }
 main :: () {
-    #assert P.open("Consolas",16,100,30,12,1)!=0;
+    #assert P.open("Consolas", 16, 100, 30, 12, 1) != 0;
     defer P.close();
-    #assert P.pty_selected()==0;
-    first:=P.pty_create("cmd.exe /d /q",50,20);
-    second:=P.pty_create("cmd.exe /d /q",50,20);
-    #assert first>0 && second>0 && first!=second && P.pty_selected()==0,"creating panes leaves current selection unchanged";
-    #assert P.pty_select(33)==0 && P.pty_selected()==0,"invalid session ids leave selection unchanged";
-    #assert P.grid_context(-1)==0 && P.grid_context(33)==0,"render context bounds are checked";
-    quiet(first,second);
-    #assert P.pty_select(first)!=0; send("set ST_WIN_PANE_TOKEN=FIRST\r");
-    #assert P.pty_select(second)!=0; send("set ST_WIN_PANE_TOKEN=SECOND\r");
-    marker(first,"echo %ST_WIN_PANE_TOKEN%_ISOLATED_OK\r","FIRST_ISOLATED_OK","SECOND_ISOLATED_OK");
-    marker(second,"echo %ST_WIN_PANE_TOKEN%_ISOLATED_OK\r","SECOND_ISOLATED_OK","FIRST_ISOLATED_OK");
-    quiet(first,second);
+    #assert P.pty_selected() == 0;
+    first := P.pty_create("cmd.exe /d /q", 50, 20);
+    second := P.pty_create("cmd.exe /d /q", 50, 20);
+    #assert first > 0 && second > 0 && first != second && P.pty_selected() == 0, "creating panes leaves current selection unchanged";
+    #assert P.pty_select(33) == 0 && P.pty_selected() == 0, "invalid session ids leave selection unchanged";
+    #assert P.grid_context(-1) == 0 && P.grid_context(33) == 0, "render context bounds are checked";
+    quiet(first, second);
+    #assert P.pty_select(first) != 0;
+    send("set ST_WIN_PANE_TOKEN=FIRST\r");
+    #assert P.pty_select(second) != 0;
+    send("set ST_WIN_PANE_TOKEN=SECOND\r");
+    marker(
+        first,
+        "echo %ST_WIN_PANE_TOKEN%_ISOLATED_OK\r",
+        "FIRST_ISOLATED_OK",
+        "SECOND_ISOLATED_OK"
+    );
+    marker(
+        second,
+        "echo %ST_WIN_PANE_TOKEN%_ISOLATED_OK\r",
+        "SECOND_ISOLATED_OK",
+        "FIRST_ISOLATED_OK"
+    );
+    quiet(first, second);
 
     // Output from a background pane must wake the UI while another is selected.
-    #assert P.pty_select(second)!=0;
+    #assert P.pty_select(second) != 0;
     send("echo %ST_WIN_PANE_TOKEN%_BACKGROUND_WAKE\r");
-    #assert P.pty_select(first)!=0;
-    pump(); start:=P.ticks(); P.wait(1500);
-    #assert P.ticks()-start<1000,"background session output wakes the shared window wait";
-    data:[65536]u8;
-    #assert P.pty_read(cast([*]u8)&data,65536)==0,"foreground queue stays quiet during background output";
-    marker(second,"echo %ST_WIN_PANE_TOKEN%_AFTER_WAKE\r","SECOND_AFTER_WAKE");
+    #assert P.pty_select(first) != 0;
+    pump();
+    start := P.ticks();
+    P.wait(1500);
+    #assert P.ticks() - start < 1000, "background session output wakes the shared window wait";
+    data: [65536]u8;
+    #assert P.pty_read(cast([*]u8) &data, 65536) == 0, "foreground queue stays quiet during background output";
+    marker(second, "echo %ST_WIN_PANE_TOKEN%_AFTER_WAKE\r", "SECOND_AFTER_WAKE");
 
-    #assert P.pty_select(first)!=0;
-    #assert P.pty_resize(73,19)!=0;
-    #assert P.pty_prepare("cmd.exe /d /q /k set ST_WIN_PANE_TOKEN=NEW_FIRST",73,19)!=0;
-    #assert P.pty_resize_prepared(67,17)!=0;
-    #assert P.pty_select(second)!=0;
-    #assert P.pty_prepare("cmd.exe /d /q /k set ST_WIN_PANE_TOKEN=NEW_SECOND",50,20)!=0;
-    marker(first,"echo %ST_WIN_PANE_TOKEN%_BEFORE_COMMIT\r","FIRST_BEFORE_COMMIT");
-    marker(second,"echo %ST_WIN_PANE_TOKEN%_BEFORE_COMMIT\r","SECOND_BEFORE_COMMIT");
-    #assert P.pty_commit_all()!=0 && P.pty_selected()==second,"bulk commit preserves selection";
-    marker(first,"echo %ST_WIN_PANE_TOKEN%_AFTER_COMMIT\r","NEW_FIRST_AFTER_COMMIT");
-    marker(second,"echo %ST_WIN_PANE_TOKEN%_AFTER_COMMIT\r","NEW_SECOND_AFTER_COMMIT");
-    #assert P.pty_commit_all()!=0,"empty bulk commit succeeds";
+    #assert P.pty_select(first) != 0;
+    #assert P.pty_resize(73, 19) != 0;
+    #assert P.pty_prepare("cmd.exe /d /q /k set ST_WIN_PANE_TOKEN=NEW_FIRST", 73, 19) != 0;
+    #assert P.pty_resize_prepared(67, 17) != 0;
+    #assert P.pty_select(second) != 0;
+    #assert P.pty_prepare("cmd.exe /d /q /k set ST_WIN_PANE_TOKEN=NEW_SECOND", 50, 20) != 0;
+    marker(first, "echo %ST_WIN_PANE_TOKEN%_BEFORE_COMMIT\r", "FIRST_BEFORE_COMMIT");
+    marker(second, "echo %ST_WIN_PANE_TOKEN%_BEFORE_COMMIT\r", "SECOND_BEFORE_COMMIT");
+    #assert P.pty_commit_all() != 0 && P.pty_selected() == second, "bulk commit preserves selection";
+    marker(first, "echo %ST_WIN_PANE_TOKEN%_AFTER_COMMIT\r", "NEW_FIRST_AFTER_COMMIT");
+    marker(second, "echo %ST_WIN_PANE_TOKEN%_AFTER_COMMIT\r", "NEW_SECOND_AFTER_COMMIT");
+    #assert P.pty_commit_all() != 0, "empty bulk commit succeeds";
 
     // A failed preparation in one pane cannot discard another pane's candidate.
-    #assert P.pty_select(first)!=0;
-    #assert P.pty_prepare("cmd.exe /d /q /k set ST_WIN_PANE_TOKEN=THIRD_FIRST",60,18)!=0;
-    #assert P.pty_select(second)!=0;
-    #assert P.pty_prepare("st_win_intentionally_missing_session.exe",50,20)==0;
-    marker(second,"echo %ST_WIN_PANE_TOKEN%_FAILURE_SURVIVED\r","NEW_SECOND_FAILURE_SURVIVED");
-    #assert P.pty_commit_all()!=0;
-    marker(first,"echo %ST_WIN_PANE_TOKEN%_OTHER_PREPARATION\r","THIRD_FIRST_OTHER_PREPARATION");
+    #assert P.pty_select(first) != 0;
+    #assert P.pty_prepare("cmd.exe /d /q /k set ST_WIN_PANE_TOKEN=THIRD_FIRST", 60, 18) != 0;
+    #assert P.pty_select(second) != 0;
+    #assert P.pty_prepare("st_win_intentionally_missing_session.exe", 50, 20) == 0;
+    marker(second, "echo %ST_WIN_PANE_TOKEN%_FAILURE_SURVIVED\r", "NEW_SECOND_FAILURE_SURVIVED");
+    #assert P.pty_commit_all() != 0;
+    marker(first, "echo %ST_WIN_PANE_TOKEN%_OTHER_PREPARATION\r", "THIRD_FIRST_OTHER_PREPARATION");
 
-    width,height:s32; P.metrics(&width,&height,&cw,&ch);
-    for i:0..80 {
-        left[i]=.{cast(u32)(65+i%26),16#d8dee9,16#11151c,0};
-        right[i]=.{cast(u32)(97+i%26),16#81a1c1,16#203040,0};
+    width, height: s32;
+    P.metrics(&width, &height, &cw, &ch);
+    for i: 0..80 {
+        left[i] = .{ cast(u32)(65 + i % 26), 16#d8dee9, 16#11151c, 0 };
+        right[i] = .{ cast(u32)(97 + i % 26), 16#81a1c1, 16#203040, 0 };
     }
-    draw_panes(first,second,first); check_render(first,second,first);
-    left[23].codepoint=90; right[45].flags=4;
-    draw_panes(first,second,second); check_render(first,second,second);
-    for y:0..3 for x:0..20 left[y*20+x]=left[(y+1)*20+x];
-    draw_panes(first,second,first); check_render(first,second,first);
-    P.invalidate_frame(); draw_panes(first,second,first); check_render(first,second,first);
+    draw_panes(first, second, first);
+    check_render(first, second, first);
+    left[23].codepoint = 90;
+    right[45].flags = 4;
+    draw_panes(first, second, second);
+    check_render(first, second, second);
+    for y: 0..3 for x: 0..20 left[y * 20 + x] = left[(y + 1) * 20 + x];
+    draw_panes(first, second, first);
+    check_render(first, second, first);
+    P.invalidate_frame();
+    draw_panes(first, second, first);
+    check_render(first, second, first);
 
-    #assert P.pty_select(second)!=0;
-    #assert P.pty_destroy(first)!=0 && P.pty_selected()==second,"destroying another pane preserves selection";
-    #assert P.pty_select(first)==0 && P.pty_selected()==second,"destroyed sessions cannot be selected";
-    marker(second,"echo %ST_WIN_PANE_TOKEN%_NEIGHBOR_CLOSED\r","NEW_SECOND_NEIGHBOR_CLOSED");
+    #assert P.pty_select(second) != 0;
+    #assert P.pty_destroy(first) != 0 && P.pty_selected() == second, "destroying another pane preserves selection";
+    #assert P.pty_select(first) == 0 && P.pty_selected() == second, "destroyed sessions cannot be selected";
+    marker(second, "echo %ST_WIN_PANE_TOKEN%_NEIGHBOR_CLOSED\r", "NEW_SECOND_NEIGHBOR_CLOSED");
     P.pty_close();
-    exit_code:s32;
-    #assert P.pty_status(&exit_code)== -1;
-    #assert P.pty_start("cmd.exe /d /q",50,20)!=0,"closed allocated pane can restart independently";
-    #assert P.pty_destroy(second)!=0 && P.pty_selected()==0,"destroying selected pane returns to compatibility slot";
-    #assert P.pty_destroy(second)==0;
-    #assert P.pty_start("cmd.exe /d /q",80,24)!=0,"legacy slot still starts after pane cleanup";
-    #assert P.pty_select(0)!=0;
-    third:=P.pty_create("cmd.exe /d /q",50,20);
-    #assert third>0 && P.pty_selected()==0,"session slots can be reused";
-    print("Session tests passed: independent shells, background wake, staged bulk replacement, pane composition and cleanup.\n");
+    exit_code: s32;
+    #assert P.pty_status(&exit_code) == -1;
+    #assert P.pty_start("cmd.exe /d /q", 50, 20) != 0, "closed allocated pane can restart independently";
+    #assert P.pty_destroy(second) != 0 && P.pty_selected() == 0, "destroying selected pane returns to compatibility slot";
+    #assert P.pty_destroy(second) == 0;
+    #assert P.pty_start("cmd.exe /d /q", 80, 24) != 0, "legacy slot still starts after pane cleanup";
+    #assert P.pty_select(0) != 0;
+    third := P.pty_create("cmd.exe /d /q", 50, 20);
+    #assert third > 0 && P.pty_selected() == 0, "session slots can be reused";
+    print(
+        "Session tests passed: independent shells, background wake, staged bulk replacement, pane composition and cleanup.\n"
+    );
 }

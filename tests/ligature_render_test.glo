@@ -16,132 +16,223 @@ HIGHLIGHT_INK :: 16#102030;
 LEFT :: 24;
 TOP :: 60;
 
-check :: (ok:bool,message:str) { if !ok { print("FAIL: {}\n",message); exit(1); } }
-little32 :: (bytes:str,at:ssize)->u32 {
-    return cast(u32)bytes[at]|(cast(u32)bytes[at+1]<<8)|(cast(u32)bytes[at+2]<<16)|(cast(u32)bytes[at+3]<<24);
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
 }
-pixel :: (bitmap:str,x:s32,y:s32)->u32 {
-    stride:=cast(ssize)little32(bitmap,18)*4;
-    offset:=cast(ssize)little32(bitmap,10);
-    return little32(bitmap,offset+cast(ssize)y*stride+cast(ssize)x*4)&16#ffffff;
+little32 :: (bytes: str, at: ssize) -> u32 {
+    return cast(u32) bytes[at] | (cast(u32) bytes[at + 1] << 8) | (cast(u32) bytes[at + 2] << 16) | (
+        cast(u32) bytes[at + 3] << 24
+    );
 }
-snapshot :: (path:str)->str {
-    check(R.snapshot(path)!=0,R.error_message());
-    if read_file(path,32*1024*1024)== {
-    case .Ok(data); return data;
-    case .Err; check(false,"read rendered bitmap");
+pixel :: (bitmap: str, x: s32, y: s32) -> u32 {
+    stride := cast(ssize) little32(bitmap, 18) * 4;
+    offset := cast(ssize) little32(bitmap, 10);
+    return little32(bitmap, offset + cast(ssize) y * stride + cast(ssize) x * 4) & 16#ffffff;
+}
+snapshot :: (path: str) -> str {
+    check(R.snapshot(path) != 0, R.error_message());
+    if read_file(path, 32 * 1024 * 1024) == {
+    case .Ok(data);
+        return data;
+    case .Err;
+        check(false, "read rendered bitmap");
     }
     return "";
 }
 
 // Only require a font's programming substitutions when that exact family is
 // installed. Windows installations without optional fonts still run fallback QA.
-find_sample :: (family:str,bold:s32,result:*str)->bool {
-    data:F.Font_Data; face:usize;
-    check(F.native_font(family,bold,&data,&face)!=0,"discover installed ligature font");
+find_sample :: (family: str, bold: s32, result: *str) -> bool {
+    data: F.Font_Data;
+    face: usize;
+    check(F.native_font(family, bold, &data, &face) != 0, "discover installed ligature font");
     defer F.native_free(&data);
     defer F.native_release_face(face);
     if !data.matched_family return false;
-    shaper:S.Shaper;
-    check(S.open(face,&shaper),"open installed font shaper");
+    shaper: S.Shaper;
+    check(S.open(face, &shaper), "open installed font shaper");
     defer S.close(&shaper);
-    run:S.Run; defer S.free_run(&run);
-    for sample:.["->","=>","==","!=","===","<=","<=>"] {
-        check(S.shape(&shaper,sample,20,&run),"shape candidate programming ligature");
-        if run.changed { result.*=sample; return true; }
+    run: S.Run;
+    defer S.free_run(&run);
+    for sample: .["->", "=>", "==", "!=", "===", "<=", "<=>"] {
+        check(S.shape(&shaper, sample, 20, &run), "shape candidate programming ligature");
+        if run.changed {
+            result.* = sample;
+            return true;
+        }
     }
     return false;
 }
 
-fill :: (cells:*[16]P.Render_Cell,sample:str,bold:bool)->s32 {
-    flags:u32; if bold flags=1;
-    for i:0..16 cells.*[i]=.{32,FOREGROUND,BACKGROUND,flags};
-    for i:0..sample.count cells.*[i].codepoint=cast(u32)sample[i];
+fill :: (cells: *[16]P.Render_Cell, sample: str, bold: bool) -> s32 {
+    flags: u32;
+    if bold flags = 1;
+    for i: 0..16 cells.*[i] = .{ 32, FOREGROUND, BACKGROUND, flags };
+    for i: 0..sample.count cells.*[i].codepoint = cast(u32) sample[i];
     // A separated sentinel proves following source columns retain their grid
     // positions even when the preceding ligature reduces the glyph count.
-    cells.*[sample.count+1].codepoint=90;
-    return cast(s32)sample.count+3;
+    cells.*[sample.count + 1].codepoint = 90;
+    return cast(s32) sample.count + 3;
 }
-draw :: (cells:*[16]P.Render_Cell,columns:s32,cw:s32,ch:s32,cursor:s32= -1) {
-    check(R.frame_begin(BACKGROUND),R.error_message());
-    visible:s32; if cursor>=0 visible=1;
-    R.grid(LEFT,TOP,columns,1,cw,ch,cast([*]const P.Render_Cell)cells,cursor,0,visible,HIGHLIGHT);
+draw :: (cells: *[16]P.Render_Cell, columns: s32, cw: s32, ch: s32, cursor: s32 = -1) {
+    check(R.frame_begin(BACKGROUND), R.error_message());
+    visible: s32;
+    if cursor >= 0 visible = 1;
+    R.grid(
+        LEFT,
+        TOP,
+        columns,
+        1,
+        cw,
+        ch,
+        cast([*]const P.Render_Cell) cells,
+        cursor,
+        0,
+        visible,
+        HIGHLIGHT
+    );
 }
-same_region :: (a:str,b:str,x:s32,y:s32,width:s32,height:s32)->bool {
-    for row:y..y+height for column:x..x+width if pixel(a,column,row)!=pixel(b,column,row) return false;
+same_region :: (a: str, b: str, x: s32, y: s32, width: s32, height: s32) -> bool {
+    for row: y..y + height for column: x..x + width if pixel(a, column, row) != pixel(
+        b,
+        column,
+        row
+    ) return false;
     return true;
 }
 
 // Selection and the block cursor must recolor the original shaped geometry:
 // inside their cell they match the fully highlighted run, outside it they match
 // the untouched run. This catches decomposing just one half of a ligature.
-check_cell_overlay :: (normal:str,overlay:str,highlighted:str,column:s32,cw:s32,ch:s32,message:str) {
-    width:=cast(s32)little32(normal,18);
-    height:= -cast(s32)little32(normal,22);
-    left:=LEFT+column*cw;
-    for y:cast(s32)0..height for x:cast(s32)0..width {
-        reference:=normal;
-        if x>=left && x<left+cw && y>=TOP && y<TOP+ch reference=highlighted;
-        check(pixel(overlay,x,y)==pixel(reference,x,y),message);
+check_cell_overlay :: (
+    normal: str,
+    overlay: str,
+    highlighted: str,
+    column: s32,
+    cw: s32,
+    ch: s32,
+    message: str
+) {
+    width := cast(s32) little32(normal, 18);
+    height := -cast(s32) little32(normal, 22);
+    left := LEFT + column * cw;
+    for y: cast(s32) 0..height for x: cast(s32) 0..width {
+        reference := normal;
+        if x >= left && x < left + cw && y >= TOP && y < TOP + ch reference = highlighted;
+        check(pixel(overlay, x, y) == pixel(reference, x, y), message);
     }
 }
 
-test_substitutions :: (window:G.Window,family:str,sample:str,bold:bool) {
-    cells:[16]P.Render_Cell;
-    columns:=fill(&cells,sample,bold);
-    cw,ch:s32; R.metrics(&cw,&ch);
+test_substitutions :: (window: G.Window, family: str, sample: str, bold: bool) {
+    cells: [16]P.Render_Cell;
+    columns := fill(&cells, sample, bold);
+    cw, ch: s32;
+    R.metrics(&cw, &ch);
     R.set_ligatures(false);
-    draw(&cells,columns,cw,ch);
-    separate:=snapshot("build/ligature_disabled.bmp"); defer separate.free();
+    draw(&cells, columns, cw, ch);
+    separate := snapshot("build/ligature_disabled.bmp");
+    defer separate.free();
     R.set_ligatures(true);
-    draw(&cells,columns,cw,ch);
-    normal:=snapshot("build/ligature_enabled.bmp"); defer normal.free();
-    check(normal!=separate,"programming ligatures visibly change the rendered glyphs");
-    check(same_region(normal,separate,LEFT+(columns-2)*cw,TOP,cw,ch),
-        "a glyph after a ligature retains its source column and raster position");
+    draw(&cells, columns, cw, ch);
+    normal := snapshot("build/ligature_enabled.bmp");
+    defer normal.free();
+    check(normal != separate, "programming ligatures visibly change the rendered glyphs");
+    check(
+        same_region(normal, separate, LEFT + (columns - 2) * cw, TOP, cw, ch),
+        "a glyph after a ligature retains its source column and raster position"
+    );
     R.frame_end();
-    check(G.update_window_events(window),"pump input for ligature frame replay");
-    replayed:=snapshot("build/ligature_replayed.bmp"); defer replayed.free();
-    check(normal==replayed,"snapshot replay preserves shaped glyph IDs and positions");
-    check(G.update_window_events(window),"pump input after replaying the frame");
+    check(G.update_window_events(window), "pump input for ligature frame replay");
+    replayed := snapshot("build/ligature_replayed.bmp");
+    defer replayed.free();
+    check(normal == replayed, "snapshot replay preserves shaped glyph IDs and positions");
+    check(G.update_window_events(window), "pump input after replaying the frame");
 
-    for i:0..columns cells[i].flags|=16#80000000;
-    draw(&cells,columns,cw,ch);
-    highlighted:=snapshot("build/ligature_highlighted.bmp"); defer highlighted.free();
-    _:=fill(&cells,sample,bold);
-    selected:=cast(s32)sample.count/2;
-    cells[selected].flags|=16#80000000;
-    draw(&cells,columns,cw,ch);
-    partial:=snapshot("build/ligature_selection.bmp"); defer partial.free();
-    check_cell_overlay(normal,partial,highlighted,selected,cw,ch,
-        "a partial selection recolors only its cell without changing ligature geometry");
-    _:=fill(&cells,sample,bold);
-    draw(&cells,columns,cw,ch,selected);
-    cursor:=snapshot("build/ligature_cursor.bmp"); defer cursor.free();
-    check_cell_overlay(normal,cursor,highlighted,selected,cw,ch,
-        "the block cursor recolors shaped ink without breaking the ligature");
+    for i: 0..columns cells[i].flags |= 16#80000000;
+    draw(&cells, columns, cw, ch);
+    highlighted := snapshot("build/ligature_highlighted.bmp");
+    defer highlighted.free();
+    _ := fill(&cells, sample, bold);
+    selected := cast(s32) sample.count / 2;
+    cells[selected].flags |= 16#80000000;
+    draw(&cells, columns, cw, ch);
+    partial := snapshot("build/ligature_selection.bmp");
+    defer partial.free();
+    check_cell_overlay(
+        normal,
+        partial,
+        highlighted,
+        selected,
+        cw,
+        ch,
+        "a partial selection recolors only its cell without changing ligature geometry"
+    );
+    _ := fill(&cells, sample, bold);
+    draw(&cells, columns, cw, ch, selected);
+    cursor := snapshot("build/ligature_cursor.bmp");
+    defer cursor.free();
+    check_cell_overlay(
+        normal,
+        cursor,
+        highlighted,
+        selected,
+        cw,
+        ch,
+        "the block cursor recolors shaped ink without breaking the ligature"
+    );
 
-    check(R.frame_begin(BACKGROUND),R.error_message());
-    R.grid_clipped(LEFT,TOP,columns,1,cw,ch,cast([*]const P.Render_Cell)&cells,
-        -1,0,0,HIGHLIGHT,cw,ch);
-    clipped:=snapshot("build/ligature_clipped.bmp"); defer clipped.free();
-    check(same_region(normal,clipped,LEFT,TOP,cw,ch),"viewport clipping preserves the visible ligature fragment");
-    for y:cast(s32)TOP..TOP+ch for x:cast(s32)(LEFT+cw)..LEFT+columns*cw
-        check(pixel(clipped,x,y)==BACKGROUND,"shaped ink cannot escape its pane viewport");
-    print("Ligature rendering {} (bold {}): {}\n",family,bold,sample);
+    check(R.frame_begin(BACKGROUND), R.error_message());
+    R.grid_clipped(
+        LEFT,
+        TOP,
+        columns,
+        1,
+        cw,
+        ch,
+        cast([*]const P.Render_Cell) &cells,
+        -1,
+        0,
+        0,
+        HIGHLIGHT,
+        cw,
+        ch
+    );
+    clipped := snapshot("build/ligature_clipped.bmp");
+    defer clipped.free();
+    check(
+        same_region(normal, clipped, LEFT, TOP, cw, ch),
+        "viewport clipping preserves the visible ligature fragment"
+    );
+    for y: cast(s32) TOP..TOP + ch for x: cast(s32)(LEFT + cw)..LEFT + columns * cw
+        check(pixel(clipped, x, y) == BACKGROUND, "shaped ink cannot escape its pane viewport");
+    print("Ligature rendering {} (bold {}): {}\n", family, bold, sample);
 }
 
-test_face :: (window:G.Window,family:str,bold:bool,size:s32) {
-    weight:s32; if bold weight=1;
-    data:F.Font_Data; face:usize;
-    check(F.native_font(family,weight,&data,&face)!=0,"read installed font for candidate runs");
-    defer F.native_free(&data); defer F.native_release_face(face);
-    shaper:S.Shaper; check(S.open(face,&shaper),"open candidate-run shaper");
+test_face :: (window: G.Window, family: str, bold: bool, size: s32) {
+    weight: s32;
+    if bold weight = 1;
+    data: F.Font_Data;
+    face: usize;
+    check(
+        F.native_font(family, weight, &data, &face) != 0,
+        "read installed font for candidate runs"
+    );
+    defer F.native_free(&data);
+    defer F.native_release_face(face);
+    shaper: S.Shaper;
+    check(S.open(face, &shaper), "open candidate-run shaper");
     defer S.close(&shaper);
-    run:S.Run; defer S.free_run(&run);
-    for sample:.["->","=>","==","!=","===","<=","<=>"] {
-        check(S.shape(&shaper,sample,cast(f32)size,&run),"shape programming-ligature candidate");
-        if run.changed test_substitutions(window,family,sample,bold);
+    run: S.Run;
+    defer S.free_run(&run);
+    for sample: .["->", "=>", "==", "!=", "===", "<=", "<=>"] {
+        check(
+            S.shape(&shaper, sample, cast(f32) size, &run),
+            "shape programming-ligature candidate"
+        );
+        if run.changed test_substitutions(window, family, sample, bold);
     }
 }
 
@@ -149,107 +240,160 @@ test_face :: (window:G.Window,family:str,bold:bool,size:s32) {
 // font size the natural advance is fractional; independently pinning its pieces
 // to rounded cell origins produces a visible seam. Compare with Gui's ordinary
 // single-string advance accumulation, independent of the grid renderer's layout.
-test_natural_placement :: (window:G.Window) {
-    family:str="Cascadia Code"; size:s32=21;
-    data:F.Font_Data; face:usize;
-    check(F.native_font(family,0,&data,&face)!=0,"read contextual ligature font");
-    defer F.native_free(&data); defer F.native_release_face(face);
+test_natural_placement :: (window: G.Window) {
+    family: str = "Cascadia Code";
+    size: s32 = 21;
+    data: F.Font_Data;
+    face: usize;
+    check(F.native_font(family, 0, &data, &face) != 0, "read contextual ligature font");
+    defer F.native_free(&data);
+    defer F.native_release_face(face);
     if !data.matched_family return;
-    shaper:S.Shaper; check(S.open(face,&shaper),"open contextual ligature shaper");
+    shaper: S.Shaper;
+    check(S.open(face, &shaper), "open contextual ligature shaper");
     defer S.close(&shaper);
-    run:S.Run; defer S.free_run(&run);
-    prepared:R.Prepared;
-    scale:=G.content_scale(window);
-    check(R.prepare(family,size,scale,&prepared),R.error_message()); R.commit(&prepared);
-    cw,ch:s32; R.metrics(&cw,&ch);
-    height:=cast(f32)size*cast(f32)(data.ascent+data.descent)/cast(f32)data.units;
-    font:=Glyph_Font.create(&data,height,scale);
-    check(G.font_valid(font),"create an independent glyph-index reference font");
+    run: S.Run;
+    defer S.free_run(&run);
+    prepared: R.Prepared;
+    scale := G.content_scale(window);
+    check(R.prepare(family, size, scale, &prepared), R.error_message());
+    R.commit(&prepared);
+    cw, ch: s32;
+    R.metrics(&cw, &ch);
+    height := cast(f32) size * cast(f32)(data.ascent + data.descent) / cast(f32) data.units;
+    font := Glyph_Font.create(&data, height, scale);
+    check(G.font_valid(font), "create an independent glyph-index reference font");
     defer G.release_font(font);
-    for sample:.["->","<=>"] {
-        check(S.shape(&shaper,sample,cast(f32)size,&run) && run.changed && run.glyphs.count==sample.count,
-            "Cascadia arrows use multiple contextual glyphs");
-        encoded:[..]u8; defer encoded.free();
-        natural:f32;
-        for i:0..run.glyphs.count {
-            cp:=Glyph_Font.GLYPH_BASE+cast(u32)run.glyphs[i];
-            encoded.push(cast(u8)(240|(cp>>18)),cast(u8)(128|((cp>>12)&63)),
-                cast(u8)(128|((cp>>6)&63)),cast(u8)(128|(cp&63)));
-            advance:=G.glyph_advance(font,cast(rune)cp);
-            check((advance-run.advances[i]).abs()<0.001 && run.offsets[i].advance==0 && run.offsets[i].ascender==0,
-                "the natural reference shares DirectWrite advances without placement offsets");
-            natural+=advance*scale;
+    for sample: .["->", "<=>"] {
+        check(
+            S.shape(&shaper, sample, cast(f32) size, &run) && run.changed && run.glyphs.count == sample.count,
+            "Cascadia arrows use multiple contextual glyphs"
+        );
+        encoded: [..]u8;
+        defer encoded.free();
+        natural: f32;
+        for i: 0..run.glyphs.count {
+            cp := Glyph_Font.GLYPH_BASE + cast(u32) run.glyphs[i];
+            encoded.push(
+                cast(u8)(240 | (cp >> 18)),
+                cast(u8)(128 | ((cp >> 12) & 63)),
+                cast(u8)(128 | ((cp >> 6) & 63)),
+                cast(u8)(128 | (cp & 63))
+            );
+            advance := G.glyph_advance(font, cast(rune) cp);
+            check(
+                (advance - run.advances[i]).abs() < 0.001 && run.offsets[i].advance == 0 && run.offsets[i].ascender == 0,
+                "the natural reference shares DirectWrite advances without placement offsets"
+            );
+            natural += advance * scale;
         }
-        check((natural/cast(f32)sample.count-cast(f32)cw).abs()>0.01,
-            "the contextual ligature regression exercises a fractional cell advance");
-        cells:[16]P.Render_Cell; _:=fill(&cells,sample,false);
-        R.set_ligatures(true); draw(&cells,cast(s32)sample.count,cw,ch);
-        grid:=snapshot("build/ligature_contextual_grid.bmp"); defer grid.free();
-        check(R.frame_begin(BACKGROUND),R.error_message());
-        top:=TOP+(ch-cast(s32)(G.font_height(font)*scale))/2;
-        centered:=cast(f32)LEFT+(cast(f32)(sample.count*cast(ssize)cw)-natural)*0.5;
-        ink:R.Native_Color=.{cast(f32)((FOREGROUND>>16)&255)/255.0,
-            cast(f32)((FOREGROUND>>8)&255)/255.0,cast(f32)(FOREGROUND&255)/255.0,1};
-        bounds:R.Native_Rect=.{cast(f32)LEFT/scale,cast(f32)TOP/scale,
-            cast(f32)(sample.count*cast(ssize)cw)/scale,cast(f32)ch/scale};
+        check(
+            (natural / cast(f32) sample.count - cast(f32) cw).abs() > 0.01,
+            "the contextual ligature regression exercises a fractional cell advance"
+        );
+        cells: [16]P.Render_Cell;
+        _ := fill(&cells, sample, false);
+        R.set_ligatures(true);
+        draw(&cells, cast(s32) sample.count, cw, ch);
+        grid := snapshot("build/ligature_contextual_grid.bmp");
+        defer grid.free();
+        check(R.frame_begin(BACKGROUND), R.error_message());
+        top := TOP + (ch - cast(s32)(G.font_height(font) * scale)) / 2;
+        centered := cast(f32) LEFT + (cast(f32)(sample.count * cast(ssize) cw) - natural) * 0.5;
+        ink: R.Native_Color = .{
+            cast(f32)((FOREGROUND >> 16) & 255) / 255.0,
+            cast(f32)((FOREGROUND >> 8) & 255) / 255.0,
+            cast(f32)(FOREGROUND & 255) / 255.0,
+            1
+        };
+        bounds: R.Native_Rect = .{
+            cast(f32) LEFT / scale,
+            cast(f32) TOP / scale,
+            cast(f32)(sample.count * cast(ssize) cw) / scale,
+            cast(f32) ch / scale
+        };
         G.set_clip(bounds);
-        G.text(font,cast(str)encoded[..],.{centered/scale,cast(f32)top/scale},ink);
+        G.text(font, cast(str) encoded[..], .{ centered / scale, cast(f32) top / scale }, ink);
         G.reset_clip();
-        reference:=snapshot("build/ligature_contextual_natural.bmp"); defer reference.free();
-        check(grid==reference,"connected contextual ligature pieces retain their natural advances at fractional widths");
-        if sample.count==3 {
+        reference := snapshot("build/ligature_contextual_natural.bmp");
+        defer reference.free();
+        check(
+            grid == reference,
+            "connected contextual ligature pieces retain their natural advances at fractional widths"
+        );
+        if sample.count == 3 {
             // This intentionally incorrect placement reproduces the regression.
             // Three pieces expose rounding differences that two pieces can hide.
-            check(R.frame_begin(BACKGROUND),R.error_message());
+            check(R.frame_begin(BACKGROUND), R.error_message());
             G.set_clip(bounds);
-            for i:0..run.glyphs.count
-                G.text(font,cast(str)encoded[i*4..i*4+4],
-                    .{cast(f32)(LEFT+i*cast(ssize)cw)/scale,cast(f32)top/scale},ink);
+            for i: 0..run.glyphs.count
+                G.text(
+                    font,
+                    cast(str) encoded[i * 4..i * 4 + 4],
+                    .{ cast(f32)(LEFT + i * cast(ssize) cw) / scale, cast(f32) top / scale },
+                    ink
+                );
             G.reset_clip();
-            pinned:=snapshot("build/ligature_contextual_individual_cells.bmp"); defer pinned.free();
-            check(reference!=pinned,"three contextual pieces expose incorrect independent cell-origin rounding");
+            pinned := snapshot("build/ligature_contextual_individual_cells.bmp");
+            defer pinned.free();
+            check(
+                reference != pinned,
+                "three contextual pieces expose incorrect independent cell-origin rounding"
+            );
         }
     }
     print("Contextual ligature natural-placement regression passed at size 21.\n");
 }
 
 main :: () {
-    window:=G.create_window(800,420,"wst ligature renderer test",.Hidden|.High_Dpi);
-    check(G.window_valid(window),"create hidden standard Gui window");
+    window := G.create_window(800, 420, "wst ligature renderer test", .Hidden | .High_Dpi);
+    check(G.window_valid(window), "create hidden standard Gui window");
     defer G.destroy_window(window);
-    R.bind_window(window); defer R.close();
+    R.bind_window(window);
+    defer R.close();
     R.set_focus(true);
-    R.set_colors(HIGHLIGHT_INK,HIGHLIGHT,HIGHLIGHT_INK);
-    prepared:R.Prepared;
-    check(R.prepare("Consolas",20,G.content_scale(window),&prepared),R.error_message());
-    check(prepared.cw>0 && prepared.ch>0,"positive terminal grid metrics");
+    R.set_colors(HIGHLIGHT_INK, HIGHLIGHT, HIGHLIGHT_INK);
+    prepared: R.Prepared;
+    check(R.prepare("Consolas", 20, G.content_scale(window), &prepared), R.error_message());
+    check(prepared.cw > 0 && prepared.ch > 0, "positive terminal grid metrics");
     R.commit(&prepared);
-    check(G.update_window_events(window),"pump initial Gui input");
-    found:bool;
-    for family:.["D2KodingLigature Nerd Font Mono","Cascadia Code","Fira Code"] {
-        sample:str;
-        if !find_sample(family,0,&sample) continue;
-        found=true;
-        for size:.[20,21] {
-            check(R.prepare(family,cast(s32)size,G.content_scale(window),&prepared),R.error_message());
+    check(G.update_window_events(window), "pump initial Gui input");
+    found: bool;
+    for family: .["D2KodingLigature Nerd Font Mono", "Cascadia Code", "Fira Code"] {
+        sample: str;
+        if !find_sample(family, 0, &sample) continue;
+        found = true;
+        for size: .[20, 21] {
+            check(
+                R.prepare(family, cast(s32) size, G.content_scale(window), &prepared),
+                R.error_message()
+            );
             R.commit(&prepared);
-            test_face(window,family,false,cast(s32)size);
-            test_face(window,family,true,cast(s32)size);
+            test_face(window, family, false, cast(s32) size);
+            test_face(window, family, true, cast(s32) size);
         }
-        check(R.prepare(family,28,G.content_scale(window),&prepared),R.error_message()); R.commit(&prepared);
-        test_substitutions(window,family,sample,false);
+        check(R.prepare(family, 28, G.content_scale(window), &prepared), R.error_message());
+        R.commit(&prepared);
+        test_substitutions(window, family, sample, false);
     }
     if found test_natural_placement(window);
     else {
-        cells:[16]P.Render_Cell;
-        columns:=fill(&cells,"ABC",false);
-        cw,ch:s32; R.metrics(&cw,&ch);
-        R.set_ligatures(false); draw(&cells,columns,cw,ch);
-        disabled:=snapshot("build/ligature_disabled.bmp"); defer disabled.free();
-        R.set_ligatures(true); draw(&cells,columns,cw,ch);
-        enabled:=snapshot("build/ligature_enabled.bmp"); defer enabled.free();
-        check(disabled==enabled,"ordinary text keeps exact fixed-cell raster positions");
+        cells: [16]P.Render_Cell;
+        columns := fill(&cells, "ABC", false);
+        cw, ch: s32;
+        R.metrics(&cw, &ch);
+        R.set_ligatures(false);
+        draw(&cells, columns, cw, ch);
+        disabled := snapshot("build/ligature_disabled.bmp");
+        defer disabled.free();
+        R.set_ligatures(true);
+        draw(&cells, columns, cw, ch);
+        enabled := snapshot("build/ligature_enabled.bmp");
+        defer enabled.free();
+        check(disabled == enabled, "ordinary text keeps exact fixed-cell raster positions");
         print("Optional programming-ligature fonts unavailable; ordinary renderer checks passed.\n");
     }
-    print("Ligature rendering tests passed: substitutions, grid positions, selection, cursor, clipping and replay.\n");
+    print(
+        "Ligature rendering tests passed: substitutions, grid positions, selection, cursor, clipping and replay.\n"
+    );
 }

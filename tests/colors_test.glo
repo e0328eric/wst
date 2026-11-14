@@ -7,103 +7,227 @@ FS :: #import "File_System/Directory";
 #import "Io";
 #import "Format";
 
-check :: (ok:bool,message:str) { if !ok { print("FAIL: {}\n",message); exit(1); } }
-scheme :: ()->[16]u32 {
-    return .[16#323437,16#ff5454,16#8cc85f,16#e3c78a,16#80a0ff,16#cf87e8,16#79dac8,16#c6c6c6,
-        16#949494,16#ff5189,16#36c692,16#c6c684,16#74b2ff,16#ae81ff,16#85dc85,16#e4e4e4];
-}
-write_source :: (path:str,source:str) { check(write_file(path,source).is_ok(),"write isolated Lua scheme"); }
-config_checks :: () {
-    cfg:=C.defaults(); defer C.release(&cfg);
-    check(C.load("config.example.lua",&cfg),"complete example with profiles and colors parses");
-    check(cfg.foreground==16#bdbdbd && cfg.background==16#080808 && cfg.cursor==16#9e9e9e &&
-        cfg.cursor_text==16#080808 && cfg.selection_fg==16#080808 && cfg.selection_bg==16#b2ceee,
-        "primary, cursor and selection colors match the supplied scheme");
-    expected:=scheme();
-    for i:0..16 check(cfg.palette[i]==expected[i],"all normal and bright ANSI colors match the supplied scheme");
-    path:str="build/colors_test.lua"; defer { _:=FS.remove(path); }
-    write_source(path,"return {colors={primary={foreground='#010203'},normal={green=0x102030}}}");
-    check(C.load(path,&cfg) && cfg.foreground==16#010203 && cfg.background==16#080808 &&
-        cfg.palette[2]==16#102030 && cfg.palette[1]==expected[1],"partial schemes retain unspecified fields and accept RGB integers");
-    for 0..8 {
-        write_source(path,"return {foreground='#abcdef',background=0x123456,cursor='#fedcba',colors={primary={foreground='#000001',background='#000002'},cursor={cursor='#000003',text='#000004'},selection={text='#000005'}}}");
-        check(C.load(path,&cfg) && cfg.foreground==16#abcdef && cfg.background==16#123456 && cfg.cursor==16#fedcba &&
-            cfg.cursor_text==4 && cfg.selection_fg==5,"flat legacy color fields override nested values independent of Lua order");
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
     }
-    before:=C.clone(&cfg); defer C.release(&before);
-    for bad:.[
-        "return {colors=false}", "return {colors={primary=false}}", "return {colors={typo={}}}",
-        "return {colors={primary={typo='#ffffff'}}}", "return {colors={cursor={background='#ffffff'}}}",
-        "return {colors={selection={cursor='#ffffff'}}}", "return {colors={normal={orange='#ffffff'}}}",
-        "return {colors={bright={black='red'}}}", "return {colors={normal={red=-1}}}",
-        "return {colors={normal={red=0x1000000}}}", "return {colors={normal={[1]='#ffffff'}}}",
-        "return {colors={[1]={}}}", "return {colors={primary={foreground='#12345g'}},font_size=25}",
-        "return {colors={cursor={text=true}}}", "return {colors={selection={text='#ffffff00'}}}",
+}
+scheme :: () -> [16]u32 {
+    return .[
+        16#323437,
+        16#ff5454,
+        16#8cc85f,
+        16#e3c78a,
+        16#80a0ff,
+        16#cf87e8,
+        16#79dac8,
+        16#c6c6c6,
+        16#949494,
+        16#ff5189,
+        16#36c692,
+        16#c6c684,
+        16#74b2ff,
+        16#ae81ff,
+        16#85dc85,
+        16#e4e4e4
+    ];
+}
+write_source :: (path: str, source: str) {
+    check(write_file(path, source).is_ok(), "write isolated Lua scheme");
+}
+config_checks :: () {
+    cfg := C.defaults();
+    defer C.release(&cfg);
+    check(C.load("config.example.lua", &cfg), "complete example with profiles and colors parses");
+    check(
+        cfg.foreground == 16#bdbdbd && cfg.background == 16#080808 && cfg.cursor == 16#9e9e9e && cfg.cursor_text == 16#080808 && cfg.selection_fg == 16#080808 && cfg.selection_bg == 16#b2ceee,
+        "primary, cursor and selection colors match the supplied scheme"
+    );
+    expected := scheme();
+    for i: 0..16 check(
+        cfg.palette[i] == expected[i],
+        "all normal and bright ANSI colors match the supplied scheme"
+    );
+    path: str = "build/colors_test.lua";
+    defer {
+        _ := FS.remove(path);
+    }
+    write_source(path, "return {colors={primary={foreground='#010203'},normal={green=0x102030}}}");
+    check(
+        C.load(path, &cfg) && cfg.foreground == 16#010203 && cfg.background == 16#080808 && cfg.palette[2] == 16#102030 && cfg.palette[1] == expected[1],
+        "partial schemes retain unspecified fields and accept RGB integers"
+    );
+    for 0..8 {
+        write_source(
+            path,
+            "return {foreground='#abcdef',background=0x123456,cursor='#fedcba',colors={primary={foreground='#000001',background='#000002'},cursor={cursor='#000003',text='#000004'},selection={text='#000005'}}}"
+        );
+        check(
+            C.load(path, &cfg) && cfg.foreground == 16#abcdef && cfg.background == 16#123456 && cfg.cursor == 16#fedcba && cfg.cursor_text == 4 && cfg.selection_fg == 5,
+            "flat legacy color fields override nested values independent of Lua order"
+        );
+    }
+    before := C.clone(&cfg);
+    defer C.release(&before);
+    for bad: .[
+        "return {colors=false}",
+        "return {colors={primary=false}}",
+        "return {colors={typo={}}}",
+        "return {colors={primary={typo='#ffffff'}}}",
+        "return {colors={cursor={background='#ffffff'}}}",
+        "return {colors={selection={cursor='#ffffff'}}}",
+        "return {colors={normal={orange='#ffffff'}}}",
+        "return {colors={bright={black='red'}}}",
+        "return {colors={normal={red=-1}}}",
+        "return {colors={normal={red=0x1000000}}}",
+        "return {colors={normal={[1]='#ffffff'}}}",
+        "return {colors={[1]={}}}",
+        "return {colors={primary={foreground='#12345g'}},font_size=25}",
+        "return {colors={cursor={text=true}}}",
+        "return {colors={selection={text='#ffffff00'}}}",
     ] {
-        write_source(path,bad);
-        check(!C.load(path,&cfg) && C.error_message().count>0,"malformed schemes reject the complete transaction");
-        check(cfg.foreground==before.foreground && cfg.background==before.background && cfg.cursor==before.cursor &&
-            cfg.cursor_text==before.cursor_text && cfg.selection_fg==before.selection_fg && cfg.selection_bg==before.selection_bg &&
-            cfg.font_size==before.font_size,"rejected schemes preserve primary, cursor, selection and scalar values");
-        for i:0..16 check(cfg.palette[i]==before.palette[i],"rejected schemes preserve every palette slot");
+        write_source(path, bad);
+        check(
+            !C.load(path, &cfg) && C.error_message().count > 0,
+            "malformed schemes reject the complete transaction"
+        );
+        check(
+            cfg.foreground == before.foreground && cfg.background == before.background && cfg.cursor == before.cursor && cfg.cursor_text == before.cursor_text && cfg.selection_fg == before.selection_fg && cfg.selection_bg == before.selection_bg && cfg.font_size == before.font_size,
+            "rejected schemes preserve primary, cursor, selection and scalar values"
+        );
+        for i: 0..16 check(
+            cfg.palette[i] == before.palette[i],
+            "rejected schemes preserve every palette slot"
+        );
     }
 }
 model_checks :: () {
-    t:T.Terminal; T.init(&t,40,4,8,16#bdbdbd,16#080808); defer T.release(&t);
-    first:=scheme(); T.set_palette(&t,&first);
-    for i:0..8 T.feed(&t,tprint("\x1b[{};{}mN",30+i,40+i));
-    for i:0..8 T.feed(&t,tprint("\x1b[{};{}mB",90+i,100+i));
-    for i:0..16 check(t.cells[i].fg==first[i] && t.cells[i].bg==first[i],"normal and bright SGR colors resolve through the configured palette");
-    T.feed(&t,"\x1b[38;5;1;48;5;4mI\x1b[38;2;255;84;84;48;2;128;160;255mR\x1b[0mD");
-    T.feed(&t,"\x1b[38;5;196;48;5;232mQ\x1b[34;45m\x1b7\x1b[38;2;255;84;84m");
-    next:=first;
-    for i:0..16 next[i]=cast(u32)(16#010101*(i+1));
-    x:=t.cursor_x; y:=t.cursor_y;
-    T.set_palette(&t,&next);
-    check(t.cursor_x==x && t.cursor_y==y,"palette changes preserve cursor and text positions");
-    for i:0..16 check(t.cells[i].fg==next[i] && t.cells[i].bg==next[i],"existing normal and bright cells recolor immediately");
-    check(t.cells[16].fg==next[1] && t.cells[16].bg==next[4],"38/48 indexed colors retain their palette origin");
-    check(t.cells[17].fg==first[1] && t.cells[17].bg==first[4],"literal RGB equal to a palette color remains literal");
-    check(t.cells[18].fg==16#bdbdbd && t.cells[18].bg==16#080808,"default colors are independent of the ANSI palette");
-    check(t.cells[19].fg==16#ff0000 && t.cells[19].bg==16#080808,"256-color cube and grayscale remain fixed");
-    check(t.fg==first[1] && t.bg==next[5] && t.saved_fg==next[4] && t.saved_bg==next[5],"current and saved attributes preserve independent RGB/indexed origins");
-    T.feed(&t,"\x1b8S\x1b[39;49mD");
-    check(t.cells[20].fg==next[4] && t.cells[20].bg==next[5] &&
-        t.cells[21].fg==16#bdbdbd && t.cells[21].bg==16#080808,"saved restore and SGR39/49 use the current scheme");
-    T.set_palette(&t,&first);
-    check(t.cells[21].fg==16#bdbdbd && t.cells[21].bg==16#080808 && t.fg==16#bdbdbd,
-        "SGR39/49 clear previous indexed markers");
-    T.feed(&t,"\x1b[31;44;1;4;7m한");
-    T.set_palette(&t,&next);
-    check((t.cells[22].flags&31)==15 && (t.cells[23].flags&16)!=0 &&
-        t.cells[22].fg==next[1] && t.cells[23].bg==next[4],"bold/underline/inverse and wide continuations retain indexed colors");
+    t: T.Terminal;
+    T.init(&t, 40, 4, 8, 16#bdbdbd, 16#080808);
+    defer T.release(&t);
+    first := scheme();
+    T.set_palette(&t, &first);
+    for i: 0..8 T.feed(&t, tprint("\x1b[{};{}mN", 30 + i, 40 + i));
+    for i: 0..8 T.feed(&t, tprint("\x1b[{};{}mB", 90 + i, 100 + i));
+    for i: 0..16 check(
+        t.cells[i].fg == first[i] && t.cells[i].bg == first[i],
+        "normal and bright SGR colors resolve through the configured palette"
+    );
+    T.feed(&t, "\x1b[38;5;1;48;5;4mI\x1b[38;2;255;84;84;48;2;128;160;255mR\x1b[0mD");
+    T.feed(&t, "\x1b[38;5;196;48;5;232mQ\x1b[34;45m\x1b7\x1b[38;2;255;84;84m");
+    next := first;
+    for i: 0..16 next[i] = cast(u32)(16#010101 * (i + 1));
+    x := t.cursor_x;
+    y := t.cursor_y;
+    T.set_palette(&t, &next);
+    check(t.cursor_x == x && t.cursor_y == y, "palette changes preserve cursor and text positions");
+    for i: 0..16 check(
+        t.cells[i].fg == next[i] && t.cells[i].bg == next[i],
+        "existing normal and bright cells recolor immediately"
+    );
+    check(
+        t.cells[16].fg == next[1] && t.cells[16].bg == next[4],
+        "38/48 indexed colors retain their palette origin"
+    );
+    check(
+        t.cells[17].fg == first[1] && t.cells[17].bg == first[4],
+        "literal RGB equal to a palette color remains literal"
+    );
+    check(
+        t.cells[18].fg == 16#bdbdbd && t.cells[18].bg == 16#080808,
+        "default colors are independent of the ANSI palette"
+    );
+    check(
+        t.cells[19].fg == 16#ff0000 && t.cells[19].bg == 16#080808,
+        "256-color cube and grayscale remain fixed"
+    );
+    check(
+        t.fg == first[1] && t.bg == next[5] && t.saved_fg == next[4] && t.saved_bg == next[5],
+        "current and saved attributes preserve independent RGB/indexed origins"
+    );
+    T.feed(&t, "\x1b8S\x1b[39;49mD");
+    check(
+        t.cells[20].fg == next[4] && t.cells[20].bg == next[5] && t.cells[21].fg == 16#bdbdbd && t.cells[21].bg == 16#080808,
+        "saved restore and SGR39/49 use the current scheme"
+    );
+    T.set_palette(&t, &first);
+    check(
+        t.cells[21].fg == 16#bdbdbd && t.cells[21].bg == 16#080808 && t.fg == 16#bdbdbd,
+        "SGR39/49 clear previous indexed markers"
+    );
+    T.feed(&t, "\x1b[31;44;1;4;7m한");
+    T.set_palette(&t, &next);
+    check(
+        (t.cells[22].flags & 31) == 15 && (t.cells[23].flags & 16) != 0 && t.cells[22].fg == next[1] && t.cells[23].bg == next[4],
+        "bold/underline/inverse and wide continuations retain indexed colors"
+    );
     T.begin_session(&t);
-    for i:0..16 check(t.palette[i]==next[i],"replacing a shell retains the active palette");
-    T.feed(&t,"\x1b[31mS");
-    check(t.cells[0].fg==next[1],"the replacement session resolves indexed output through the retained palette");
+    for i: 0..16 check(t.palette[i] == next[i], "replacing a shell retains the active palette");
+    T.feed(&t, "\x1b[31mS");
+    check(
+        t.cells[0].fg == next[1],
+        "the replacement session resolves indexed output through the retained palette"
+    );
 }
 history_checks :: () {
-    first:=scheme(); next:=first; next[1]=16#102938; next[4]=16#304050; next[2]=16#506070; next[5]=16#708090;
-    t:T.Terminal; T.init(&t,6,2,3,16#ffffff,0); defer T.release(&t); T.set_palette(&t,&first);
-    T.feed(&t,"\x1b[31;44m한AB\r\nsecond\r\nthird\r\nfourth\r\nfifth\r\n");
-    check(t.history_count==3 && t.history_start!=0,"history test exercises a wrapped ring");
-    T.scroll_view(&t,2); offset:=t.view_offset;
-    T.resize(&t,2,2); T.set_palette(&t,&next);
-    check(t.view_offset==offset && t.history_stride==6,"palette changes retain scroll position and hidden historical columns");
-    for c:t.history if (c.flags&T.CELL_INDEXED_FG)!=0 check(c.fg==next[1] && c.bg==next[4],"wrapped history recolors all stored columns");
-    T.feed(&t,"\x1b[?1049h\x1b[32;45mA\x1b7");
-    T.set_palette(&t,&first);
-    check(t.primary_fg==first[1] && t.primary_bg==first[4] && t.fg==first[2] &&
-        t.bg==first[5] && t.saved_fg==first[2],"palette updates inactive primary and active alternate attributes");
-    check(t.alt_cells[0].fg==first[2] && t.alt_cells[0].bg==first[5],"alternate screen indexed text recolors");
-    T.feed(&t,"\x1b[?1049lX");
-    check(t.fg==first[1] && t.bg==first[4],"returning from alternate uses recolored primary attributes");
-    T.set_palette(&t,&next);
-    check(t.alt_cells[0].fg==next[2] && t.alt_cells[0].bg==next[5],"inactive alternate cells also follow later palette edits");
-    check(Palette.indexed(&first,16)==0 && Palette.indexed(&first,231)==16#ffffff &&
-        Palette.indexed(&first,232)==16#080808 && Palette.indexed(&first,255)==16#eeeeee,"xterm color extension remains unchanged");
+    first := scheme();
+    next := first;
+    next[1] = 16#102938;
+    next[4] = 16#304050;
+    next[2] = 16#506070;
+    next[5] = 16#708090;
+    t: T.Terminal;
+    T.init(&t, 6, 2, 3, 16#ffffff, 0);
+    defer T.release(&t);
+    T.set_palette(&t, &first);
+    T.feed(&t, "\x1b[31;44m한AB\r\nsecond\r\nthird\r\nfourth\r\nfifth\r\n");
+    check(t.history_count == 3 && t.history_start != 0, "history test exercises a wrapped ring");
+    T.scroll_view(&t, 2);
+    offset := t.view_offset;
+    T.resize(&t, 2, 2);
+    T.set_palette(&t, &next);
+    check(
+        t.view_offset == offset && t.history_stride == 6,
+        "palette changes retain scroll position and hidden historical columns"
+    );
+    for c: t.history if (c.flags & T.CELL_INDEXED_FG) != 0 check(
+        c.fg == next[1] && c.bg == next[4],
+        "wrapped history recolors all stored columns"
+    );
+    T.feed(&t, "\x1b[?1049h\x1b[32;45mA\x1b7");
+    T.set_palette(&t, &first);
+    check(
+        t.primary_fg == first[1] && t.primary_bg == first[4] && t.fg == first[2] && t.bg == first[5] && t.saved_fg == first[2],
+        "palette updates inactive primary and active alternate attributes"
+    );
+    check(
+        t.alt_cells[0].fg == first[2] && t.alt_cells[0].bg == first[5],
+        "alternate screen indexed text recolors"
+    );
+    T.feed(&t, "\x1b[?1049lX");
+    check(
+        t.fg == first[1] && t.bg == first[4],
+        "returning from alternate uses recolored primary attributes"
+    );
+    T.set_palette(&t, &next);
+    check(
+        t.alt_cells[0].fg == next[2] && t.alt_cells[0].bg == next[5],
+        "inactive alternate cells also follow later palette edits"
+    );
+    check(
+        Palette.indexed(&first, 16) == 0 && Palette.indexed(&first, 231) == 16#ffffff && Palette.indexed(
+            &first,
+            232
+        ) == 16#080808 && Palette.indexed(&first, 255) == 16#eeeeee,
+        "xterm color extension remains unchanged"
+    );
 }
 main :: () {
-    config_checks(); model_checks(); history_checks();
-    print("Color scheme tests passed: complete Lua scheme, ANSI/indexed provenance, RGB preservation, saved/alternate attributes and history.\n");
+    config_checks();
+    model_checks();
+    history_checks();
+    print(
+        "Color scheme tests passed: complete Lua scheme, ANSI/indexed provenance, RGB preservation, saved/alternate attributes and history.\n"
+    );
 }
