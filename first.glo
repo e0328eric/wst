@@ -76,14 +76,9 @@ build :: (root: str, console: bool = false) {
     for file: .["LICENSE", "THIRD_PARTY_NOTICES"] required(path_join(root, file));
     directory(path_join(root, "build"));
     compile(root, "src/main.glo", "wst", !console);
-    for file: .[
-        "LICENSE",
-        "THIRD_PARTY_NOTICES",
-        "vendor/conpty/conpty.dll",
-        "vendor/conpty/OpenConsole.exe"
-    ] {
+    for file: .["LICENSE", "THIRD_PARTY_NOTICES"] {
         source := path_join(root, file);
-        destination := path_join(root, tprint("build/{}", path_basename(file)));
+        destination := path_join(root, "build", file);
         if copy_file(source, destination, .Overwrite) == {
         case .Ok;
         case .Err(error);

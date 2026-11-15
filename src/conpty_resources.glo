@@ -1,0 +1,20 @@
+//! Compile Microsoft's signed redistributables into every ConPTY client.
+#import "File_System/File";
+#import "File_System/Path";
+#import "Io";
+
+read_asset :: (name: str) -> str {
+    path := path_join(path_dirname(#source_location.filename), "../vendor/conpty", name);
+    defer path.free();
+    if read_file(path) == {
+    case .Ok(bytes);
+        return bytes;
+    case .Err(error);
+        print("wst: cannot embed {}: {}\n", path, error.kind);
+        exit(1);
+    }
+    return "";
+}
+
+#public DLL_BYTES :: #comptime read_asset("conpty.dll");
+#public HOST_BYTES :: #comptime read_asset("OpenConsole.exe");

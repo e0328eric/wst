@@ -41,8 +41,10 @@ main :: () {
     check(R.prepare("Consolas", 16, G.content_scale(window), &prepared), R.error_message());
     check(prepared.cw > 0 && prepared.ch > 0, "installed font metrics");
     for chain: prepared.fallback check(chain.attempted == 0, "unused fallback fonts stay unloaded");
-    check(!G.font_valid(prepared.regular_glyphs) && !G.font_valid(prepared.bold_glyphs),
-        "private cmap faces stay unloaded before a ligature is drawn");
+    check(
+        !G.font_valid(prepared.regular_glyphs) && !G.font_valid(prepared.bold_glyphs),
+        "private cmap faces stay unloaded before a ligature is drawn"
+    );
     regular := prepared.regular;
     scale := prepared.scale;
     R.commit(&prepared);

@@ -5,8 +5,7 @@
 #import "Strings/Utf8";
 #import "Format";
 #import "Thread/Atomic";
-#import "File_System/Path";
-Process :: #import "Process";
+Bundle :: #import "conpty_bundle.glo";
 T :: #import "platform_types.glo";
 kernel32 :: #library,system "kernel32";
 user32 :: #library,system "user32";
@@ -210,9 +209,8 @@ slots: [SESSION_LIMIT + 1]Pty_Slot;
 selected: s32;
 error_storage: [2048]u8;
 
-// Recent OpenConsole versions forward Kitty's APC graphics strings. Prefer
-// the Microsoft ConPTY redistributable beside wst.exe; keep all operations
-// on a pseudoconsole handle in the same implementation.
+// Recent OpenConsole versions forward Kitty's APC graphics strings. Each
+// pseudoconsole must use the same implementation for create, resize and close.
 Create_Pty :: #fn_ptr(size: Coord, input: Handle, output: Handle, flags: u32, pseudo: *Handle) -> s32 #c_call;
 Resize_Pty :: #fn_ptr(pseudo: Handle, size: Coord) -> s32 #c_call;
 Close_Pty :: #fn_ptr(pseudo: Handle) #c_call;
@@ -225,10 +223,8 @@ close_pty: Close_Pty;
 init_pty_api :: () {
     if pty_api_ready return;
     pty_api_ready = true;
-    executable := Process.current_executable_path();
-    defer executable.free();
-    if executable.count == 0 return;
-    path := path_join(path_dirname(executable), "conpty.dll");
+    path := Bundle.dll_path();
+    if path.count == 0 return;
     defer path.free();
     name := wide(path.c_string());
     defer release(name);
@@ -370,7 +366,8 @@ read_output :: (parameter: usize) -> u32 #c_call {
     buffer: [IO_CHUNK]u8;
     while session.stopping.load() == 0 {
         count: u32;
-        if ReadFile(session.output_pipe, cast(usize) &buffer, IO_CHUNK, &count, 0) == 0 || count == 0
+        if ReadFile(session.output_pipe, cast(usize) &buffer, IO_CHUNK, &count, 0) == 0 ||
+           count == 0
             break;
         EnterCriticalSection(&queue.lock);
         while session.stopping.load() == 0 && !ensure_space(queue, cast(usize) count)

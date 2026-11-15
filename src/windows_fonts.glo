@@ -380,12 +380,7 @@ native_face_data :: (face: usize, result: *Font_Data) -> s32 {
     if bytes > 128 * 1024 * 1024 return failed("Installed font file is too large", E_FAIL);
     hr = method(Read_Fragment, stream, 3)(stream, &fragment, 0, bytes, &fragment_context);
     if hr < 0 return failed("Reading installed font bytes", hr);
-    return sfnt_copy(
-        cast([*]const u8) fragment,
-        bytes,
-        method(Get_Index, face, 5)(face),
-        result
-    );
+    return sfnt_copy(cast([*]const u8) fragment, bytes, method(Get_Index, face, 5)(face), result);
 }
 
 // std/Gui captures PNG. Existing --capture output also supports top-down BGRA BMP.

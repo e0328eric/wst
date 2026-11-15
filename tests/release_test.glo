@@ -50,32 +50,20 @@ main :: () {
     releases := Paths.path_join(build, "releases");
     defer releases.free();
     check(FS.create_directory(build).is_ok(), "create fixture build directory");
-    names := .[
-        "wst.exe",
-        "LICENSE",
-        "THIRD_PARTY_NOTICES",
-        "README.md",
-        "config.example.lua",
-        "conpty.dll",
-        "OpenConsole.exe"
-    ];
+    names := .["wst.exe", "LICENSE", "THIRD_PARTY_NOTICES", "README.md", "config.example.lua"];
     relative := .[
         "build/wst.exe",
         "build/LICENSE",
         "build/THIRD_PARTY_NOTICES",
         "README.md",
-        "config.example.lua",
-        "build/conpty.dll",
-        "build/OpenConsole.exe"
+        "config.example.lua"
     ];
     payload := .[
         "\0MZ\xff\x80\0fake executable\xfe",
         "wst MIT notice\n",
         "all copyright holders: © 글로소\n",
         "readme\n",
-        "return {}\n",
-        "ConPTY DLL fixture",
-        "OpenConsole fixture"
+        "return {}\n"
     ];
     for i: 0..relative.count {
         path := Paths.path_join(workspace, relative[i]);
@@ -84,7 +72,10 @@ main :: () {
     }
     archive_path := Paths.path_join(releases, "wst-test-windows-x64.zip");
     defer archive_path.free();
-    check(R.package(workspace, "test"), "package the app and its runtime files");
+    check(
+        R.package(workspace, "test"),
+        "package the standalone executable and accompanying documents"
+    );
     original := snapshot_file(archive_path);
     defer original.free();
     if Z.Zip_Archive.zip_read_file(archive_path) == {

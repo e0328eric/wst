@@ -3,6 +3,7 @@
 G :: #import "Gui";
 GN :: #import "Gui/Native";
 Types :: #import "platform_types.glo";
+Colors :: #import "colors.glo";
 S :: #import "windows_shaping.glo";
 Glyph_Font :: #import "glyph_font.glo";
 Kitty :: #import "kitty_store.glo";
@@ -172,15 +173,7 @@ prepare :: (family: str, size: s32, scale: f32, result: *Prepared) -> bool {
     next.size = size;
     next.scale = scale;
     metrics: Font_Data;
-    next.regular = load_face(
-        family,
-        size,
-        scale,
-        0,
-        &metrics,
-        0,
-        &next.regular_face.face
-    );
+    next.regular = load_face(family, size, scale, 0, &metrics, 0, &next.regular_face.face);
     if !G.font_valid(next.regular) {
         discard(&next);
         return false;
@@ -607,7 +600,15 @@ ensure_glyph_font :: (font: G.Font, cp: u32) {
         width_limit: s32;
         if group == 0 && i == 2 width_limit = 2 * current.cw;
         metrics: Font_Data;
-        fallback := load_face(names[i], size, current.scale, 0, &metrics, width_limit, &chain.faces[i]);
+        fallback := load_face(
+            names[i],
+            size,
+            current.scale,
+            0,
+            &metrics,
+            width_limit,
+            &chain.faces[i]
+        );
         if !G.font_valid(fallback) continue;
         chain.fonts[i] = fallback;
         if G.font_valid(chain.tail) _ := G.set_font_fallback(chain.tail, fallback);
@@ -872,6 +873,11 @@ intersect :: (a: GN.Native_Rect, b: GN.Native_Rect) -> GN.Native_Rect {
     if height < 0 height = 0;
     return .{ x, y, width, height };
 }
+underline_ink :: (underline: u32, foreground: u32) -> u32 {
+    if underline == Colors.UNDERLINE_DEFAULT return foreground;
+    return underline;
+}
+
 draw_cell :: (
     x: s32,
     y: s32,
@@ -884,7 +890,8 @@ draw_cell :: (
     is_selected: bool,
     clipped: bool,
     clip: GN.Native_Rect,
-    paint_background: bool = true
+    paint_background: bool = true,
+    underline_color: u32 = Colors.UNDERLINE_DEFAULT
 ) {
     if !active || width <= 0 || height <= 0 return;
     fg := foreground;
@@ -942,7 +949,7 @@ draw_cell :: (
                 .y = y + height - 2,
                 .width = width,
                 .height = 1,
-                .color = fg,
+                .color = underline_ink(underline_color, fg),
                 .clipped = clipped,
                 .clip = clip
             }
@@ -1116,19 +1123,27 @@ draw_shaped :: (
         };
         if clipped bounds = intersect(bounds, clip);
         shaped_ink(run, font.*, x, y, cw, ch, fg, bold, bounds);
-        if (cells[first].flags & 2) != 0
-            emit(
-                .{
-                    .kind = 0,
-                    .x = x + first * cw,
-                    .y = y + ch - 2,
-                    .width = (end - first) * cw,
-                    .height = 1,
-                    .color = fg,
-                    .clipped = true,
-                    .clip = bounds
-                }
-            );
+        if (cells[first].flags & 2) != 0 {
+            start := first;
+            while start < end {
+                underline := cells[start].underline_color;
+                next := start + 1;
+                while next < end && cells[next].underline_color == underline next += 1;
+                emit(
+                    .{
+                        .kind = 0,
+                        .x = x + start * cw,
+                        .y = y + ch - 2,
+                        .width = (next - start) * cw,
+                        .height = 1,
+                        .color = underline_ink(underline, fg),
+                        .clipped = true,
+                        .clip = bounds
+                    }
+                );
+                start = next;
+            }
+        }
         first = end;
     }
     if cursor_column >= 0 && cursor_column < count {
@@ -1156,7 +1171,7 @@ draw_shaped :: (
                     .y = y + ch - 2,
                     .width = cw,
                     .height = 1,
-                    .color = cursor_ink,
+                    .color = underline_ink(cells[cursor_column].underline_color, cursor_ink),
                     .clipped = true,
                     .clip = bounds
                 }
@@ -1383,7 +1398,8 @@ draw_grid :: (
                     (value.flags & 16#80000000) != 0,
                     clipped,
                     clip,
-                    false
+                    false,
+                    value.underline_color
                 );
                 column += span;
             }
@@ -1411,7 +1427,9 @@ draw_grid :: (
                     c.flags & 3,
                     false,
                     clipped,
-                    clip
+                    clip,
+                    true,
+                    c.underline_color
                 );
         } else {
             left := x + column * cw;

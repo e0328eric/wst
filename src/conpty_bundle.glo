@@ -1,0 +1,55 @@
+//! Materialize the bundled ConPTY pair for the Windows DLL and process loaders.
+Resources :: #import "conpty_resources.glo";
+#import "File_System/Atomic";
+#import "File_System/Directory";
+#import "File_System/Directory_Paths";
+#import "File_System/File";
+#import "File_System/Metadata";
+#import "File_System/Path";
+#import "Strings/Utf8";
+
+matches :: (path: str, payload: str) -> bool {
+    if #pattern .Ok(bytes) = read_file(path, payload.count + 1) {
+        defer bytes.free();
+        return bytes == payload;
+    }
+    return false;
+}
+
+materialize :: (path: str, payload: str) -> bool {
+    if payload.count == 0 || is_symlink(path).unwrap_or(true)                  return false;
+    if matches(path, payload)                                                  return true;
+    if atomic_write(path, payload.bytes(), .flags = .Replace_Existing).is_ok() return true;
+    // Another wst may have published and loaded the file while we staged it.
+    return matches(path, payload);
+}
+
+prepare_at :: (root: str) -> str {
+    directory := path_join(root, "wst/conpty/1.25.260710002-preview-x64");
+    defer directory.free();
+    if create_directory(directory, .make_parent = true).is_err() return "";
+    host := path_join(directory, "OpenConsole.exe");
+    defer host.free();
+    if !materialize(host, Resources.HOST_BYTES) return "";
+    dll := path_join(directory, "conpty.dll");
+    if materialize(dll, Resources.DLL_BYTES) return dll;
+    dll.free();
+    return "";
+}
+
+/// The caller owns the DLL path. An empty path selects the system ConPTY.
+#public dll_path :: () -> str {
+    #pattern ?cache := get_cache_dir() else {
+        return "";
+    }
+    defer cache.free();
+    root := cache.to_string();
+    defer root.free();
+    dll := prepare_at(root);
+    if dll.count != 0 return dll;
+    // Some restricted Windows profiles allow atomic renames only below Temp.
+    // Keep this fallback inside the same per-user LocalAppData known folder.
+    temporary := path_join(root, "Temp");
+    defer temporary.free();
+    return prepare_at(temporary);
+}

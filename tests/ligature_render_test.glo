@@ -104,6 +104,36 @@ same_region :: (a: str, b: str, x: s32, y: s32, width: s32, height: s32) -> bool
     return true;
 }
 
+test_underline_color :: (sample: str) {
+    cw, ch: s32;
+    R.metrics(&cw, &ch);
+    for enabled: .[false, true] {
+        R.set_ligatures(enabled);
+        cells: [16]P.Render_Cell;
+        columns := fill(&cells, sample, false);
+        draw(&cells, columns, cw, ch);
+        reference := snapshot("build/underline_reference.bmp");
+        defer reference.free();
+
+        for i: 0..columns cells[i].flags |= 2;
+        cells[0].underline_color = 16#d19a66;
+        draw(&cells, columns, cw, ch);
+        underlined := snapshot("build/underline_colored.bmp");
+        defer underlined.free();
+        for y: cast(s32) TOP..TOP + ch for x: cast(s32) LEFT..LEFT + columns * cw {
+            expected := pixel(reference, x, y);
+            if y == TOP + ch - 2 {
+                expected = FOREGROUND;
+                if x < LEFT + cw expected = 16#d19a66;
+            }
+            check(
+                pixel(underlined, x, y) == expected,
+                "underline color affects only the stroke in its own cell"
+            );
+        }
+    }
+}
+
 // Selection and the block cursor must recolor the original shaped geometry:
 // inside their cell they match the fully highlighted run, outside it they match
 // the untouched run. This catches decomposing just one half of a ligature.
@@ -362,7 +392,6 @@ main :: () {
     for family: .["D2KodingLigature Nerd Font Mono", "Cascadia Code", "Fira Code"] {
         sample: str;
         if !find_sample(family, 0, &sample) continue;
-        found = true;
         for size: .[20, 21] {
             check(
                 R.prepare(family, cast(s32) size, G.content_scale(window), &prepared),
@@ -374,10 +403,13 @@ main :: () {
         }
         check(R.prepare(family, 28, G.content_scale(window), &prepared), R.error_message());
         R.commit(&prepared);
+        if !found test_underline_color(sample);
+        found = true;
         test_substitutions(window, family, sample, false);
     }
     if found test_natural_placement(window);
     else {
+        test_underline_color("ABC");
         cells: [16]P.Render_Cell;
         columns := fill(&cells, "ABC", false);
         cw, ch: s32;

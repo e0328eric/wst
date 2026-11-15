@@ -2,12 +2,18 @@
 P :: #import "../src/windows_pty.glo";
 T :: #import "../src/terminal.glo";
 K :: #import "../src/kitty_store.glo";
+Process :: #import "Process";
+#import "Process/Command";
+#import "File_System/Temporary";
+#import "File_System/Path";
+#import "File_System/Copy";
 #import "Io";
 #import "Format";
 #import "Strings/Utf8";
 kernel32 :: #library,system "kernel32";
 GetStdHandle :: (which: s32) -> usize #foreign kernel32;
 GetConsoleMode :: (handle: usize, mode: *u32) -> s32 #foreign kernel32;
+GetModuleHandleA :: (name: cstr) -> usize #foreign kernel32;
 SetConsoleMode :: (handle: usize, mode: u32) -> s32 #foreign kernel32;
 ReadFile :: (handle: usize, bytes: [*]u8, capacity: u32, count: *u32, overlapped: usize) -> s32 #foreign kernel32;
 WriteFile :: (handle: usize, bytes: [*]const u8, size: u32, count: *u32, overlapped: usize) -> s32 #foreign kernel32;
@@ -37,10 +43,49 @@ client :: () {
     if cast(str) received[..total] != expected exit(5);
 }
 
+// Exercise a portable install even when a developer has old sidecars in build/.
+run_standalone :: () -> bool {
+    source := Process.current_executable_path();
+    defer source.free();
+    #pattern .Ok(directory) := Temporary_Directory.create_temporary_directory(
+        path_dirname(source),
+        "kitty-standalone-"
+    ) else {
+        return false;
+    }
+    defer directory.free();
+    executable := path_join(directory.path, "transport.exe");
+    defer executable.free();
+    if copy_file(source, executable).is_err() return false;
+    command := Command.command_make(executable, .["--standalone"]);
+    defer command.destroy();
+    command.set_working_directory(directory.path);
+    command.no_window = true;
+    command.manage_tree = true;
+    if command.run() == {
+    case .Ok(done);
+        return done.status.exited && done.status.code == 0;
+    case .Err(error);
+        if error.child.valid {
+            _ := error.child.kill();
+            _ := error.child.wait();
+            _ := error.child.close();
+        }
+        return false;
+    }
+}
+
 main :: () {
     args := get_cmdline_args();
     if args.count > 1 && args[1] == "--client" {
         client();
+        return;
+    }
+    if args.count == 1 {
+        #assert run_standalone(), "Kitty transport works with only the executable installed";
+        print(
+            "Standalone ConPTY loaded the bundled host and received the Kitty graphics replies.\n"
+        );
         return;
     }
     terminal: T.Terminal;
@@ -52,6 +97,7 @@ main :: () {
         exit(1);
     }
     defer P.close_sessions();
+    #assert GetModuleHandleA("conpty.dll") != 0, "standalone terminal loads the bundled ConPTY DLL";
     buffer: [4096]u8;
     start := P.ticks();
     while P.ticks() - start < 5000 {

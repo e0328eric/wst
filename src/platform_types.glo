@@ -1,4 +1,5 @@
 //! Stable terminal-facing records shared by the Gui adapter and shell bridge.
+Colors :: #import "colors.glo";
 #public {
 
 Event :: struct #c_call {
@@ -14,6 +15,7 @@ Render_Cell :: struct #c_call {
     fg: u32;
     bg: u32;
     flags: u32;
+    underline_color: u32 = Colors.UNDERLINE_DEFAULT;
 }
 Key_Binding :: struct #c_call {
     key: s32;

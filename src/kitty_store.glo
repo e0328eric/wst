@@ -126,10 +126,9 @@ release :: (s: *Store) {
 }
 alt :: (s: *Store, entering: bool) {
     cancel(s);
-    if entering {
-        free_screen(&s.screens[1]);
-        s.active = 1;
-    } else s.active = 0;
+    free_screen(&s.screens[1]);
+    if entering s.active = 1;
+    else        s.active = 0;
 }
 metrics :: (s: *Store, cw: s32, ch: s32) {
     if cw > 0 && cw <= 4096 s.cw = cw;

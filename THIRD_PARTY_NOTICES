@@ -520,7 +520,7 @@ Package: Microsoft.Windows.Console.ConPTY 1.25.260710002-preview (Windows x64)
 Source: https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY/1.25.260710002-preview
 Upstream: https://github.com/microsoft/terminal/tree/release-1.25
 
-The unmodified Microsoft-signed redistributable files are in vendor/conpty/.
+wst embeds the unmodified Microsoft-signed files from vendor/conpty/.
 SHA-256:
   conpty.dll       e2fe87e2258c4e46ffc5157f727218cc25f34a174902f72eb8a5b49edd9a6458
   OpenConsole.exe  2525c351aa136d555e5df9a3c9d6ce9be43f785e37e3c993b8f23b3f0a53c7fa

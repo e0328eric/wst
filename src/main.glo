@@ -2,6 +2,7 @@
 P :: #import "platform.glo";
 T :: #import "terminal.glo";
 C :: #import "config.glo";
+Colors :: #import "colors.glo";
 L :: #import "layout.glo";
 I :: #import "input.glo";
 V :: #import "controls.glo";
@@ -592,7 +593,13 @@ draw_terminal :: (p: *U.Pane, cfg: *C.Config, cw: s32, ch: s32, focused: bool) {
             if (c.flags & 8) != 0 && selected(s, y * t.cols + x + 1) is_selected = true;
             flags := c.flags;
             if is_selected flags |= 16#80000000;
-            render_cells[y * t.cols + x] = .{ c.codepoint, c.fg, c.bg, flags };
+            render_cells[y * t.cols + x] = .{
+                c.codepoint,
+                c.fg,
+                c.bg,
+                flags,
+                Colors.resolve_underline(&t.palette, c.underline_color)
+            };
         }
     }
     show_cursor: s32;

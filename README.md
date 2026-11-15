@@ -12,9 +12,12 @@ compiler on `PATH`, and the selected shell installed. PowerShell and cmd use
 `powershell.exe -NoLogo` and `cmd.exe /d`; Nushell uses `nu.exe` from `PATH`.
 Lua 5.5 and the vendored Clay source are linked statically, so no separate Lua
 or Clay DLL is needed. The initial build compiles those dependency sources into
-the local `build/cache` directory. The build also copies Microsoft's x64 ConPTY
-host beside the executable so terminal graphics reach wst on Windows versions
-whose built-in host drops graphics commands.
+the local `build/cache` directory. The executable embeds Microsoft's x64 ConPTY
+library and console host to support terminal graphics. When the first shell
+starts, wst extracts the signed files to a versioned directory under
+`%LOCALAPPDATA%\wst\conpty`. If that cache is unavailable, wst tries
+`%LOCALAPPDATA%\Temp\wst\conpty`. Later launches reuse matching files.
+wst falls back to the Windows system ConPTY if it cannot load the bundled pair.
 
 Application logic is Glosso, including ConPTY workers, Windows API bindings,
 installed-font discovery, and Clay layout construction. Windows services are
@@ -46,8 +49,7 @@ git -C ../glosso apply (Resolve-Path vendor/glosso/gui-memory.patch).Path
 $env:GLOSSO_STD = (Resolve-Path ../glosso/std).Path
 ```
 
-With a fixed SDK selected and the ConPTY host staged by the standard build,
-you can also compile just the executable:
+With a fixed SDK selected, you can also compile just the executable:
 
 ```powershell
 glosso compile src/main.glo -O3 -o build/wst.exe --cache-dir build/cache --linker-arg /subsystem:windows
@@ -58,8 +60,8 @@ the same output path with a diagnostic console.
 The default build opens only the terminal window. All generated binaries and
 compiler caches belong in `build/`.
 
-Keep `conpty.dll`, `OpenConsole.exe`, `LICENSE`, and `THIRD_PARTY_NOTICES` beside
-`wst.exe` when distributing a build.
+Copy `wst.exe` alone to install it. Include `LICENSE` and `THIRD_PARTY_NOTICES`
+when redistributing a build.
 
 Tasks follow the compiler's `--` separator:
 
@@ -81,7 +83,7 @@ glosso compile first.glo --cache-dir=build/cache -- release --version 0.1.0
 
 This builds a fresh executable and creates
 `build/releases/wst-0.1.0-windows-x64.zip`. The archive contains `wst.exe`,
-`conpty.dll`, `OpenConsole.exe`, `LICENSE`, `THIRD_PARTY_NOTICES`, `README.md`,
+`LICENSE`, `THIRD_PARTY_NOTICES`, `README.md`,
 and `config.example.lua` at its root. The version labels the archive; omitting it uses `dev`. The example
 configuration remains an example until you copy it to your configuration path.
 ZIP creation uses a deterministic Glosso ZIP32 writer with stored entries and

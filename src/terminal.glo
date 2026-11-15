@@ -28,6 +28,7 @@ Cell :: struct #c_call {
     fg: u32;
     bg: u32;
     flags: u32;
+    underline_color: u32 = Colors.UNDERLINE_DEFAULT;
 }
 
 Terminal :: struct {
@@ -59,16 +60,19 @@ Terminal :: struct {
     fg: u32;
     bg: u32;
     attributes: u32;
+    underline_color: u32 = Colors.UNDERLINE_DEFAULT;
     saved_x: s32;
     saved_y: s32;
     saved_fg: u32;
     saved_bg: u32;
     saved_attributes: u32;
+    saved_underline_color: u32 = Colors.UNDERLINE_DEFAULT;
     primary_x: s32;
     primary_y: s32;
     primary_fg: u32;
     primary_bg: u32;
     primary_attributes: u32;
+    primary_underline_color: u32 = Colors.UNDERLINE_DEFAULT;
     top: s32;
     bottom: s32;
     autowrap: bool = true;
@@ -77,6 +81,7 @@ Terminal :: struct {
     insert_mode: bool;
     state: s32;
     args: [32]s32;
+    subparam: [32]bool; // A colon joins this value to the preceding CSI parameter.
     argc: s32 = 1;
     private_mode: bool;
     intermediate: bool;
@@ -363,7 +368,8 @@ term_blank :: (t: *Terminal) -> Cell {
         .codepoint = 32,
         .fg = t.fg,
         .bg = t.bg,
-        .flags = t.attributes & (7 | CELL_COLOR_ORIGIN)
+        .flags = t.attributes & (7 | CELL_COLOR_ORIGIN),
+        .underline_color = t.underline_color
     };
 }
 term_default_blank :: (t: *Terminal) -> Cell {
@@ -508,12 +514,14 @@ term_save :: (t: *Terminal) {
     t.saved_fg = t.fg;
     t.saved_bg = t.bg;
     t.saved_attributes = t.attributes;
+    t.saved_underline_color = t.underline_color;
 }
 term_restore :: (t: *Terminal) {
     term_move(t, t.saved_x, t.saved_y);
     t.fg = t.saved_fg;
     t.bg = t.saved_bg;
     t.attributes = t.saved_attributes;
+    t.underline_color = t.saved_underline_color;
 }
 term_width :: (u: u32) -> s32 {
     // Combining marks are consumed without advancing. Full grapheme shaping is
@@ -562,7 +570,13 @@ term_print :: (t: *Terminal, u: u32) {
         }
     }
     term_erase(t, t.cursor_x, t.cursor_y);
-    c: Cell = .{ .codepoint = u, .fg = t.fg, .bg = t.bg, .flags = t.attributes };
+    c: Cell = .{
+        .codepoint = u,
+        .fg = t.fg,
+        .bg = t.bg,
+        .flags = t.attributes,
+        .underline_color = t.underline_color
+    };
     if width == 2 {
         term_erase(t, t.cursor_x + 1, t.cursor_y);
         c.flags |= 8;
@@ -574,7 +588,8 @@ term_print :: (t: *Terminal, u: u32) {
                 .codepoint = 0,
                 .fg = t.fg,
                 .bg = t.bg,
-                .flags = 16 | (t.attributes & CELL_COLOR_ORIGIN)
+                .flags = 16 | (t.attributes & CELL_COLOR_ORIGIN),
+                .underline_color = t.underline_color
             }
         );
     }
@@ -622,13 +637,66 @@ term_indexed :: (t: *Terminal, foreground: bool, index: s32) {
         t.attributes |= CELL_INDEXED_BG | (cast(u32) n << 17);
     }
 }
+term_sgr_color :: (t: *Terminal, target: s32, values: []s32) {
+    if values.count < 2 return;
+    if values[0] == 5 && values.count == 2 {
+        index := term_clamp(values[1], 0, 255);
+        if target == 58 t.underline_color = Colors.UNDERLINE_INDEXED | cast(u32) index;
+        else            term_indexed(t, target == 38, index);
+    } else if values[0] == 2 && (values.count == 4 || values.count == 5) {
+        // The colon form may include a color-space field before R:G:B.
+        first := values.count - 3;
+        color := cast(u32)(
+            term_clamp(values[first], 0, 255) * 65536 + term_clamp(values[first + 1], 0, 255) * 256 + term_clamp(
+                values[first + 2],
+                0,
+                255
+            )
+        );
+        if target == 58 t.underline_color = color;
+        else if target == 38 {
+            t.fg = color;
+            t.attributes &= ~(CELL_DEFAULT_FG | CELL_INDEXED_FG | CELL_FG_INDEX_MASK);
+        } else {
+            t.bg = color;
+            t.attributes &= ~(CELL_DEFAULT_BG | CELL_INDEXED_BG | CELL_BG_INDEX_MASK);
+        }
+    }
+}
 term_sgr :: (t: *Terminal) {
     i: s32 = 0;
     while i < t.argc {
+        start := i;
         a := t.args[i];
+        i += 1;
+        // In 58:2::209:154:102, the 102 is a blue channel. Only a new
+        // top-level parameter may select the bright-green background (SGR 102).
+        while i < t.argc && t.subparam[i] i += 1;
+        if a == 38 || a == 48 || a == 58 {
+            if i == start + 1 && i < t.argc {
+                // Legacy semicolon colors take a mode followed by its operands.
+                mode := t.args[i];
+                i += 1;
+                if      mode == 5 i += 1;
+                else if mode == 2 i += 3;
+                if i > t.argc i = t.argc;
+                while i < t.argc && t.subparam[i] i += 1;
+            }
+            term_sgr_color(t, a, t.args[cast(ssize)(start + 1)..cast(ssize) i]);
+            continue;
+        }
+        if i > start + 1 {
+            if a == 4 && i == start + 2 {
+                style := t.args[start + 1];
+                if      style == 0 t.attributes &= ~cast(u32) 2;
+                else if style <= 5 t.attributes |= 2;
+            }
+            continue;
+        }
         if a == 0 {
             t.fg = t.default_fg;
             t.bg = t.default_bg;
+            t.underline_color = Colors.UNDERLINE_DEFAULT;
             t.attributes = CELL_DEFAULT_FG | CELL_DEFAULT_BG;
         } else if a == 1 t.attributes |= 1;
         else if a == 4 t.attributes |= 2;
@@ -636,6 +704,7 @@ term_sgr :: (t: *Terminal) {
         else if a == 22 t.attributes &= ~cast(u32) 1;
         else if a == 24 t.attributes &= ~cast(u32) 2;
         else if a == 27 t.attributes &= ~cast(u32) 4;
+        else if a == 59 t.underline_color = Colors.UNDERLINE_DEFAULT;
         else if a == 39 {
             t.fg = t.default_fg;
             t.attributes &= ~(CELL_INDEXED_FG | CELL_FG_INDEX_MASK);
@@ -652,37 +721,7 @@ term_sgr :: (t: *Terminal) {
             term_indexed(t, true, a - 90 + 8);
         } else if a >= 100 && a <= 107 {
             term_indexed(t, false, a - 100 + 8);
-        } else if (a == 38 || a == 48) && i + 1 < t.argc {
-            color: u32 = 0;
-            valid := false;
-            palette_index: s32 = -1;
-            if t.args[i + 1] == 5 && i + 2 < t.argc {
-                palette_index = term_clamp(t.args[i + 2], 0, 255);
-                i += 2;
-                valid = true;
-            } else if t.args[i + 1] == 2 && i + 4 < t.argc {
-                color = cast(u32)(
-                    term_clamp(t.args[i + 2], 0, 255) * 65536 + term_clamp(t.args[i + 3], 0, 255) * 256 + term_clamp(
-                        t.args[i + 4],
-                        0,
-                        255
-                    )
-                );
-                i += 4;
-                valid = true;
-            }
-            if valid {
-                if palette_index >= 0 term_indexed(t, a == 38, palette_index);
-                else if a == 38 {
-                    t.fg = color;
-                    t.attributes &= ~(CELL_DEFAULT_FG | CELL_INDEXED_FG | CELL_FG_INDEX_MASK);
-                } else {
-                    t.bg = color;
-                    t.attributes &= ~(CELL_DEFAULT_BG | CELL_INDEXED_BG | CELL_BG_INDEX_MASK);
-                }
-            }
         }
-        i += 1;
     }
 }
 term_alt :: (t: *Terminal, enable: bool) {
@@ -696,6 +735,7 @@ term_alt :: (t: *Terminal, enable: bool) {
         t.primary_fg = t.fg;
         t.primary_bg = t.bg;
         t.primary_attributes = t.attributes;
+        t.primary_underline_color = t.underline_color;
         term_save(t);
         t.alternate = true;
         term_clear(t, 0, t.cols * t.rows - 1);
@@ -707,6 +747,7 @@ term_alt :: (t: *Terminal, enable: bool) {
         t.fg = t.primary_fg;
         t.bg = t.primary_bg;
         t.attributes = t.primary_attributes;
+        t.underline_color = t.primary_underline_color;
     }
     t.view_offset = 0;
 }
@@ -870,6 +911,7 @@ term_reset :: (t: *Terminal) {
     t.fg = t.default_fg;
     t.bg = t.default_bg;
     t.attributes = CELL_DEFAULT_FG | CELL_DEFAULT_BG;
+    t.underline_color = Colors.UNDERLINE_DEFAULT;
     t.top = 0;
     t.bottom = t.rows - 1;
     t.cursor_visible = true;
@@ -1035,7 +1077,10 @@ term_byte :: (t: *Terminal, b: u8) {
             if t.args[t.argc - 1] < 1000000
                 t.args[t.argc - 1] = t.args[t.argc - 1] * 10 + cast(s32)(b - 48);
         } else if b == 59 || b == 58 {
-            if t.argc < 32 t.argc += 1;
+            if t.argc < 32 {
+                t.subparam[t.argc] = b == 58;
+                t.argc += 1;
+            } else t.intermediate = true; // Discard an oversized CSI as a unit.
         } else if b == 63 t.private_mode = true;
         else if b == 60 || b == 61 || b == 62 t.intermediate = true;
         else if b >= 32 && b <= 47 t.intermediate = true;

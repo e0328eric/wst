@@ -189,6 +189,7 @@ screen_lifetime :: () {
     v := placement(&t);
     check(v.rgba[2] == 255, "alternate placement");
     T.feed(&t, "\x1b[?1049l");
+    check(t.graphics.screens[1].bytes == 0, "leaving the alternate screen releases its image data");
     v = placement(&t);
     check(v.rgba[0] == 255, "main placement is restored");
     T.feed(&t, "\x1b[?1049h");

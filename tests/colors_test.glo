@@ -170,6 +170,86 @@ model_checks :: () {
         "the replacement session resolves indexed output through the retained palette"
     );
 }
+subparameter_checks :: () {
+    t: T.Terminal;
+    T.init(&t, 12, 2, 4, 16#d5c4a1, 16#1d2021);
+    defer T.release(&t);
+    T.feed(&t, "\x1b[1;4:3;58:2::209:154:");
+    T.feed(&t, "102mA\x1b[58;2;7;46;0mB\x1b[58;5;106;4:0mC");
+    for i: 0..3 check(
+        t.cells[i].fg == t.default_fg && t.cells[i].bg == t.default_bg,
+        "underline color components never change the text or background"
+    );
+    check(
+        (t.cells[0].flags & 7) == 3 && (t.cells[1].flags & 7) == 3 && (t.cells[2].flags & 7) == 1,
+        "underline styles and colors preserve bold and do not enable reverse video"
+    );
+    check(
+        t.cells[0].underline_color == 16#d19a66 && t.cells[1].underline_color == 16#072e00 && t.cells[2].underline_color == (
+            Palette.UNDERLINE_INDEXED | 106
+        ),
+        "colon and semicolon SGR 58 set only the underline color"
+    );
+    T.feed(&t, "\x1b[38:2::7:46:102;48:2:255:255:255mD");
+    check(t.cells[3].fg == 16#072e66 && t.cells[3].bg == 16#ffffff, "both colon RGB encodings");
+    T.feed(&t, "\x1b[38:5:6;48:5:14;99:0:7:46mE");
+    check(
+        t.cells[4].fg == t.palette[6] && t.cells[4].bg == t.palette[14] && (t.cells[4].flags & 7) == 1,
+        "indexed colon colors and unknown groups keep independent attributes"
+    );
+    T.feed(&t, "\x1b[4;58:5:6m\x1b7\x1b[59mF");
+    check(
+        t.cells[5].underline_color == Palette.UNDERLINE_DEFAULT && (t.cells[5].flags & 2) != 0,
+        "SGR 59 restores the foreground as underline ink while leaving underline enabled"
+    );
+    T.feed(&t, "\x1b8\x1b[?1049h\x1b[58:2:0:0:0mA\x1b7\x1b[?1049l界");
+    check(
+        t.alt_cells[0].underline_color == 0 && t.cells[5].underline_color == (
+            Palette.UNDERLINE_INDEXED | 6
+        ) && t.cells[6].underline_color == t.cells[5].underline_color,
+        "save, restore and alternate-screen switching preserve underline ink on wide glyphs"
+    );
+    T.feed(&t, "\x1b[0mG");
+    check(t.cells[7].underline_color == Palette.UNDERLINE_DEFAULT, "SGR 0 resets underline color");
+    T.feed(&t, "\r\n\n");
+    T.scroll_view(&t, 1);
+    changed := t.palette;
+    changed[6] = 16#abcdef;
+    T.set_palette(&t, &changed);
+    check(
+        Palette.resolve_underline(&t.palette, T.visible_cell(&t, 5, 0).underline_color) == 16#abcdef && T.visible_cell(
+            &t,
+            0,
+            0
+        ).underline_color == 16#d19a66,
+        "indexed underline ink in history follows the active palette while literal RGB survives"
+    );
+}
+scope_redraw_check :: () {
+    t: T.Terminal;
+    T.init(&t, 8, 3, 0, 16#bdbdbd, 16#080808);
+    defer T.release(&t);
+
+    // Reduced from ConPTY's repaint when moving into a nested Neovim scope.
+    // It resets only the underline before updating the gutter on later rows.
+    T.feed(&t, "\x1b[38;2;211;134;155m\x1b[58:2::209:154:102m\x1b[4mif");
+    T.feed(&t, "\x1b[38;2;189;174;147m\x1b[59m\x1b[24m\r\n23  \x1b[3;3H1 ");
+    for x: 0..2 {
+        cell := T.visible_cell(&t, cast(s32) x, 0);
+        check(
+            cell.bg == t.default_bg && cell.fg == 16#d3869b && cell.underline_color == 16#d19a66 && (
+                cell.flags & 2
+            ) != 0,
+            "moving down preserves the dark background, syntax ink and orange scope underline"
+        );
+    }
+    for cell: .[T.visible_cell(&t, 0, 1), T.visible_cell(&t, 2, 2)] {
+        check(
+            cell.bg == t.default_bg && cell.fg == 16#bdae93 && (cell.flags & 2) == 0 && cell.underline_color == Palette.UNDERLINE_DEFAULT,
+            "the gutter keeps its own foreground and background after a partial redraw"
+        );
+    }
+}
 history_checks :: () {
     first := scheme();
     next := first;
@@ -226,6 +306,8 @@ history_checks :: () {
 main :: () {
     config_checks();
     model_checks();
+    subparameter_checks();
+    scope_redraw_check();
     history_checks();
     print(
         "Color scheme tests passed: complete Lua scheme, ANSI/indexed provenance, RGB preservation, saved/alternate attributes and history.\n"

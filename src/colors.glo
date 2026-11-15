@@ -1,6 +1,15 @@
 //! Shared ANSI palette defaults and the fixed xterm 256-color extension.
 #public {
 
+// Underline colors can follow the glyph's foreground or a configurable palette entry.
+UNDERLINE_DEFAULT: u32 :: 16#ffffffff;
+UNDERLINE_INDEXED: u32 :: 16#01000000;
+
+resolve_underline :: (palette: *const [16]u32, color: u32) -> u32 {
+    if color == UNDERLINE_DEFAULT || color < UNDERLINE_INDEXED return color;
+    return indexed(palette, cast(s32)(color - UNDERLINE_INDEXED));
+}
+
 default_palette :: () -> [16]u32 {
     return .[
         16#1e1e2e,
