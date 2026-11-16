@@ -301,7 +301,13 @@ pump :: () {
     batch_open = true;
     batch := G.input_events(window);
     for i: 0..batch.count feed_event(G.input_event(batch, cast(u32) i));
-    if !render_input_ready && !closed_reported push_close();
+    if !render_input_ready && !closed_reported {
+        if N.window_close_requested() push_close();
+        else {
+            _ := N.set_error(G.last_error().c_string());
+            push(T.Gui_Failure, 0, 0, 0);
+        }
+    }
 }
 
 push_close :: () {

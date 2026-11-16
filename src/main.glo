@@ -1,5 +1,6 @@
 //! wst: a small native Windows terminal, with its terminal model in Glosso.
 P :: #import "platform.glo";
+Presentation :: #import "gui_presentation.glo";
 T :: #import "terminal.glo";
 C :: #import "config.glo";
 Colors :: #import "colors.glo";
@@ -192,15 +193,15 @@ help :: () {
     print("wst: Windows terminal written in Glosso\n");
     print("Usage: wst [--shell powershell|cmd|nushell] [--config PATH]\n");
     print(
-        "              [--profile ID] [--command COMMAND] [--hold] [--smoke-test [--capture BMP]] [--help]\n"
+        "              [--profile ID] [--command COMMAND] [--hold] [--discrete-gpu] [--smoke-test [--capture BMP]] [--help]\n"
     );
     print("Configuration: ./config.lua, then %APPDATA%/wst/config.lua.\n");
     P.help_dialog(
-        "wst: Glosso Windows terminal\n\n--shell powershell|cmd|nushell\n--profile ID\n--config PATH\n--command COMMAND\n--hold\n--smoke-test [--capture BMP]\n\nConfiguration: .\\config.lua, then\n%APPDATA%\\wst\\config.lua"
+        "wst: Glosso Windows terminal\n\n--shell powershell|cmd|nushell\n--profile ID\n--config PATH\n--command COMMAND\n--hold\n--discrete-gpu (prefer the high-performance GPU)\n--smoke-test [--capture BMP]\n\nConfiguration: .\\config.lua, then\n%APPDATA%\\wst\\config.lua"
     );
 }
 
-smoke_test :: (cfg: *C.Config, capture_path: str) {
+smoke_test :: (cfg: *C.Config, capture_path: str, discrete_gpu: bool) {
     #assert P.open(
         cfg.font_family.c_string(),
         cfg.font_size,
@@ -208,9 +209,11 @@ smoke_test :: (cfg: *C.Config, capture_path: str) {
         24,
         cfg.padding,
         1,
-        cfg.window_opacity
+        cfg.window_opacity,
+        discrete_gpu
     ) != 0;
     defer P.close();
+    print("wst D3D11 adapter: {}\n", Presentation.adapter_name().to_string());
     #assert install_keybindings(cfg), "install Lua keyboard shortcuts";
     P.set_colors(cfg.selection_fg, cfg.selection_bg, cfg.cursor_text);
     P.set_ligatures(cfg.font_ligatures);
@@ -786,7 +789,7 @@ workspace_smoke :: (
         #assert P.snapshot(capture_path.c_string()) != 0, "save rendered tabs and panes";
 }
 
-main :: () {
+main :: () -> s32 {
     cfg := C.defaults();
     defer C.release(&cfg);
     args := get_cmdline_args();
@@ -794,12 +797,14 @@ main :: () {
     config_path: str = "";
     capture_path: str = "";
     smoke := false;
+    discrete_gpu := false;
     show_help := false;
     i: ssize = 1;
     while i < args.count {
         a := args[i];
         if a == "--help" || a == "-h" show_help = true;
         else if a == "--smoke-test" smoke = true;
+        else if a == "--discrete-gpu" discrete_gpu = true;
         else if a == "--config" {
             i += 1;
             if i >= args.count {
@@ -830,7 +835,7 @@ main :: () {
     }
     if show_help {
         help();
-        return;
+        return 0;
     }
     if explicit_config config_path = config_path.clone();
     else               config_path = Config_Paths.select_path();
@@ -889,8 +894,8 @@ main :: () {
         exit(2);
     }
     if smoke {
-        smoke_test(&cfg, capture_path);
-        return;
+        smoke_test(&cfg, capture_path, discrete_gpu);
+        return 0;
     }
     if capture_path.count > 0 {
         P.error_dialog("--capture requires --smoke-test");
@@ -903,7 +908,8 @@ main :: () {
         cfg.rows,
         cfg.padding,
         0,
-        cfg.window_opacity
+        cfg.window_opacity,
+        discrete_gpu
     ) == 0 {
         P.error_dialog(P.error());
         exit(1);
@@ -936,6 +942,7 @@ main :: () {
     performance_frequency: s64;
     clock_frequency(&performance_frequency);
     output_cursor: s32;
+    next_graphics_retry: u64;
     while running {
         reset_temporary_storage();
         event: P.Event;
@@ -943,6 +950,33 @@ main :: () {
             if workspace.count == 0 {
                 running = false;
                 break;
+            }
+            if event.kind == P.Gui_Failure {
+                reason := P.error().to_string().clone();
+                defer reason.free();
+                if P.ticks() < next_graphics_retry {
+                    P.error_dialog(tprint(
+                        "The terminal window failed again shortly after reopening. Restart wst.\n\n{}",
+                        reason
+                    ).c_string());
+                    return 1;
+                }
+                if P.recover_window() == 0 || !install_keybindings(&cfg) {
+                    P.error_dialog(tprint(
+                        "Could not restore the terminal window. Restart wst.\n\nWindow update failed\n{}\n\nRecovery failed\n{}",
+                        reason, P.error().to_string()
+                    ).c_string());
+                    return 1;
+                }
+                // A repeatedly failing device must not endlessly recreate the window.
+                next_graphics_retry = P.ticks() + 10000;
+                P.title(previous_title.c_string());
+                chrome = .{};
+                divider_drag = .{};
+                notice_click = false;
+                U.end_drag(&book);
+                dirty = true;
+                continue;
             }
             // Coalesce terminal/ConPTY resizing until the pointer batch ends.
             // Other events must see the latest pane rectangles for hit testing.
@@ -1490,6 +1524,7 @@ main :: () {
         }
         P.wait(wait_ms);
     }
+    return 0;
 }
 
 string_from_raw_parts :: (data: [*]const u8, count: ssize) -> str #magic "string_from_raw_parts";

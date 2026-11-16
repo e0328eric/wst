@@ -14,6 +14,25 @@ typedef HRESULT (WINAPI *CreateDeviceAndSwapChain)(
 
 static HWND presentation_window;
 static int presentation_composed;
+static char adapter_name[128 * 4];
+
+static void record_adapter(ID3D11Device *device)
+{
+    IDXGIDevice *dxgi_device;
+    IDXGIAdapter *adapter;
+    DXGI_ADAPTER_DESC desc;
+
+    adapter_name[0] = '\0';
+    if (FAILED(ID3D11Device_QueryInterface(device, &IID_IDXGIDevice, (void **)&dxgi_device))) return;
+    if (SUCCEEDED(IDXGIDevice_GetAdapter(dxgi_device, &adapter))) {
+        if (SUCCEEDED(IDXGIAdapter_GetDesc(adapter, &desc))) {
+            WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, adapter_name,
+                sizeof(adapter_name), NULL, NULL);
+        }
+        IDXGIAdapter_Release(adapter);
+    }
+    IDXGIDevice_Release(dxgi_device);
+}
 
 HRESULT WINAPI D3D11CreateDeviceAndSwapChain(
     IDXGIAdapter *adapter, D3D_DRIVER_TYPE type, HMODULE software, UINT flags,
@@ -43,6 +62,7 @@ HRESULT WINAPI D3D11CreateDeviceAndSwapChain(
     }
     HRESULT status = create(adapter, type, software, flags, levels, count, sdk,
         selected, swapchain, device, chosen, context);
+    if (SUCCEEDED(status) && device && *device) record_adapter(*device);
     if (SUCCEEDED(status) && selected && swapchain && *swapchain) {
         DXGI_SWAP_CHAIN_DESC actual;
         presentation_window = selected->OutputWindow;
@@ -59,4 +79,9 @@ CreateDeviceAndSwapChain __imp_D3D11CreateDeviceAndSwapChain = D3D11CreateDevice
 int wst_gui_presentation_composed(HWND window)
 {
     return window && window == presentation_window && presentation_composed;
+}
+
+const char *wst_gui_adapter_name(void)
+{
+    return adapter_name[0] ? adapter_name : "unavailable";
 }

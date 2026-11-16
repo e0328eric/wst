@@ -1,0 +1,83 @@
+//! A failed Direct3D resize must preserve the interactive shell.
+P :: #import "../src/platform.glo";
+N :: #import "../src/native.glo";
+R :: #import "../src/gui_render.glo";
+#import "Io";
+#import "Strings/Utf8";
+
+user32 :: #library,system "user32";
+Rect :: struct #c_call {
+    left: s32;
+    top: s32;
+    right: s32;
+    bottom: s32;
+}
+GetWindowRect :: (window: usize, rect: *Rect) -> s32 #foreign user32;
+IsWindowVisible :: (window: usize) -> s32 #foreign user32;
+SendMessageW :: (window: usize, message: u32, detail: usize, parameter: ssize) -> ssize #foreign user32;
+SetWindowPos :: (window: usize, after: usize, x: s32, y: s32, w: s32, h: s32, flags: u32) -> s32 #foreign user32;
+
+shell_reply :: (command: str, expected: str) {
+    #assert P.pty_send(command.data, cast(s32) command.count) != 0;
+    output: [..]u8;
+    defer output.free();
+    data: [8192]u8;
+    start := P.ticks();
+    while P.ticks() - start < 5000 {
+        count := P.pty_read(cast([*]u8) &data, 8192);
+        for i: 0..count output.push(data[i]);
+        if (cast(str) output.view()).contains(expected) return;
+        P.wait(10);
+    }
+    print("Shell did not return {} in {}\n", expected, cast(str) output.view());
+    exit(1);
+}
+
+expect_event :: (wanted: s32, unwanted: s32) {
+    found := false;
+    event: P.Event;
+    // Drain both any already-copied batch and newly polled input.
+    for 0..2 while P.next_event(&event) != 0 {
+        #assert event.kind != unwanted;
+        if event.kind == wanted found = true;
+    }
+    #assert found;
+}
+
+main :: () {
+    #assert P.open("Consolas", 16, 70, 20, 9, 1, 0.8) != 0;
+    defer P.close();
+    session := P.pty_create("cmd.exe /d /q", 70, 20);
+    #assert session > 0 && P.pty_select(session) != 0;
+    shell_reply("set WST_GPU_TOKEN=survived\recho before_%WST_GPU_TOKEN%\r", "before_survived");
+
+    original := N.gui_window_handle();
+    #assert SetWindowPos(original, 0, 51, 72, 670, 410, 16#14) != 0;
+    before: Rect;
+    #assert GetWindowRect(original, &before) != 0;
+    #assert P.set_font_size(21) != 0;
+    // WM_SIZE only changes Gui's recorded dimensions. D3D11 cannot resize a
+    // backbuffer to 32767 by 1, and the actual hidden window stays in place.
+    _ := SendMessageW(original, 16#05, 0, (1 << 16) | 32767);
+    P.frame_begin(0);
+    #assert !R.frame_active(), "oversized swap chain resize fails";
+    expect_event(P.Gui_Failure, 4);
+    #assert P.recover_window() != 0;
+
+    recovered := N.gui_window_handle();
+    after: Rect;
+    #assert recovered != 0 && IsWindowVisible(recovered) == 0;
+    #assert GetWindowRect(recovered, &after) != 0;
+    #assert before.left == after.left && before.top == after.top &&
+        before.right == after.right && before.bottom == after.bottom;
+    #assert P.window_opacity() == 0.8 && R.font_size() == 21;
+    P.frame_begin(0);
+    #assert R.frame_active(), "replacement device accepts a new frame";
+    P.frame_end();
+    #assert P.pty_selected() == session;
+    shell_reply("echo after_%WST_GPU_TOKEN%\r", "after_survived");
+
+    _ := SendMessageW(recovered, 16#10, 0, 0); // WM_CLOSE
+    expect_event(4, P.Gui_Failure);
+    print("Gui recovery retained the hidden window placement, font, opacity and shell.\n");
+}

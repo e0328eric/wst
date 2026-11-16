@@ -37,15 +37,17 @@ glosso compile first.glo --cache-dir=build/cache
 then suppresses its own executable output. The default task builds an optimized
 GUI executable. All build automation is Glosso; no PowerShell scripts are needed.
 
-The build uses Git to apply a memory fix to a temporary copy of affected
-Glosso SDKs. The fix makes `Gui` upload text geometry in batches and allocate
-Direct3D scene resources on first use. SDKs with the fix build directly.
+The build uses Git to patch a temporary copy of older Glosso SDKs when needed.
+The memory patch makes `Gui` upload text geometry in batches and allocate
+Direct3D scene resources on first use. The GPU patch adds adapter selection
+to the Windows `Gui` renderer.
 
-To apply the same fix to a sibling Glosso checkout, run these commands from
-the wst project directory:
+To use GPU selection in other Glosso applications, run the following from
+the wst project directory. Older SDKs that still allocate 3D scene resources
+at startup need `vendor/glosso/gui-memory.patch` applied first.
 
 ```powershell
-git -C ../glosso apply (Resolve-Path vendor/glosso/gui-memory.patch).Path
+git -C ../glosso apply (Resolve-Path vendor/glosso/gui-gpu.patch).Path
 $env:GLOSSO_STD = (Resolve-Path ../glosso/std).Path
 ```
 
@@ -131,15 +133,29 @@ Choose a shell or provide a complete command line:
 ```powershell
 .\build\wst.exe --shell cmd
 .\build\wst.exe --shell nushell
+.\build\wst.exe --discrete-gpu
 .\build\wst.exe --command 'powershell.exe -NoLogo -NoProfile'
 .\build\wst.exe --config .\my-config.lua --hold
 .\build\wst.exe --help
 ```
 
 Supported options are `--shell powershell|cmd|nushell`, `--command <command>`,
-`--profile <id>`, `--config <path>`, `--hold`, `--smoke-test`, and `--help`. A nonempty custom
+`--profile <id>`, `--config <path>`, `--hold`, `--discrete-gpu`, `--smoke-test`, and `--help`. A nonempty custom
 command overrides the selected shell. `--hold` keeps the window open after
 the child exits.
+
+By default, wst prefers the minimum-power GPU, usually the integrated GPU on
+a hybrid laptop. Pass `--discrete-gpu` to prefer the high-performance GPU for
+that launch. If the preferred adapter is unavailable, the renderer tries other
+available hardware and can fall back to software rendering. Other Glosso
+applications using the patched Windows `Gui` can request the same preference
+by passing `Gui.Window_Flags.High_Performance_Gpu` to `Gui.create_window`.
+The smoke test prints the adapter that created the Direct3D device.
+
+If a graphics or window update fails during a session, wst attempts to
+recreate the window at its previous position and size. Running shells, tabs,
+and scrollback survive a successful recovery. A failed recovery or another
+failure within ten seconds displays the error before the terminal closes.
 
 Copy [config.example.lua](config.example.lua) to `%APPDATA%\wst\config.lua`
 to customize the terminal. This single file contains the
@@ -502,7 +518,8 @@ glosso compile first.glo --cache-dir=build/cache -- test
 ```
 
 The Glosso task rebuilds the GUI application, compiles and runs each
-`tests/*_test.glo` program, and waits for `build/wst.exe --smoke-test`. Tests cover the
+`tests/*_test.glo` program, and runs the application smoke test with both GPU
+preferences. Tests cover the
 terminal parser and grid, Clay layout, Lua configuration, and the Windows
 platform integration. Test executables are written under `build/`.
 

@@ -1,6 +1,5 @@
 /* Exercise the real application with an isolated hidden process tree.
-   Only software function-key messages are posted to that application's HWND;
-   shell commands are supplied in Lua before launch, never entered through UI. */
+   Key and resize messages target only that application's window. */
 #define WIN32_LEAN_AND_MEAN
 #define UNICODE
 #define _UNICODE
@@ -152,6 +151,20 @@ int32_t workspace_app_test(void) {
         REQUIRE(alive(children[i+1]),"track the newly created pane shell");
         for(int j=0;j<=i;j++) REQUIRE(alive(children[j]),"creating tabs or panes must preserve every previous session");
     }
+
+    // Force a swap-chain resize beyond the D3D11 texture size limit. The real
+    // window stays the same size, so its replacement can render normally.
+    HWND original=window;
+    REQUIRE(PostMessageW(original,WM_SIZE,SIZE_RESTORED,MAKELPARAM(32767,1)),"trigger a renderer failure");
+    started=GetTickCount64();
+    while(GetTickCount64()-started<10000) {
+        REQUIRE(alive(process.hProcess),"the application must survive the renderer failure");
+        window=app_window(process.dwProcessId);
+        if(window&&window!=original) break;
+        Sleep(20);
+    }
+    REQUIRE(window&&window!=original&&!IsWindowVisible(window),"restore the hidden workspace window");
+    REQUIRE(same_children(ids,cmd_children(process.dwProcessId,ids),known,4),"preserve the four original shells through recovery");
 
     // Remap the new-tab action without replacing any shell or restarting the
     // application. An unbound F1 is only a function-key event, not shell code.

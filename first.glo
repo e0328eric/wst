@@ -23,7 +23,7 @@ usage :: () {
             \\
             \\  build [--console]        build build/wst.exe (default: GUI subsystem)
             \\  run [terminal args...]   build and run wst, waiting for it to exit
-            \\  test                     build and run every *_test.glo and the app smoke test
+            \\  test                     build and run every *_test.glo and smoke-test both GPU preferences
             \\  release [--version NAME] build a release ZIP with licenses (default: dev)
             \\  icon [--output-dir DIR]  regenerate the SVG icon (default output: assets/)
             \\  help                     show this help
@@ -156,7 +156,8 @@ tests :: (root: str) {
         execute(root, path_join(root, tprint("build/{}.exe", stem)), .[]);
     }
     execute(root, path_join(root, "build/wst.exe"), .["--smoke-test"]);
-    print("All {} test programs and the application smoke test passed.\n", names.count);
+    execute(root, path_join(root, "build/wst.exe"), .["--smoke-test", "--discrete-gpu"]);
+    print("All {} test programs and both application smoke tests passed.\n", names.count);
 }
 
 icons :: (root: str, output: str) {

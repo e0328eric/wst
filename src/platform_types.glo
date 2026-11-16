@@ -2,6 +2,8 @@
 Colors :: #import "colors.glo";
 #public {
 
+Gui_Failure :: 12;
+
 Event :: struct #c_call {
     kind: s32;
     a: s32;

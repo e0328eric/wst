@@ -1,4 +1,4 @@
-//! Apply the std/Gui memory fix to an isolated copy of affected Glosso SDKs.
+//! Backport Gui features to an isolated copy when the selected SDK needs them.
 #import "Glosso/Paths";
 #import "File_System/Copy";
 #import "File_System/Directory";
@@ -33,13 +33,44 @@ create_stage :: (root: str) -> Temporary_Directory {
     exit(1);
 }
 
+contains_source :: (file: str, marker: str) -> bool {
+    if read_file(path_join(GLOSSO_STANDARD_DIRECTORY, file)) == {
+    case .Ok(source);
+        defer source.free();
+        return source.contains(marker);
+    case .Err(error);
+        print("wst build: cannot read {}: {}\n", file, error.kind);
+        exit(1);
+    }
+}
+
+apply_patch :: (stage: str, patch: str) -> bool {
+    // Keep git apply rooted in our private tree even inside another checkout.
+    arguments := .[
+        tprint("--git-dir={}/.git", stage),
+        tprint("--work-tree={}", stage),
+        "apply",
+        "--exclude=tests/*",
+        patch
+    ];
+    git := Command.command_make("git", arguments[..]);
+    defer git.destroy();
+    git.set_working_directory(stage);
+    git.no_window = true;
+    if git.run() == {
+    case .Ok(done);
+        return done.status.exited && done.status.code == 0;
+    case .Err(error);
+        if error.child.valid _ := error.child.close();
+        return false;
+    }
+}
+
 #public prepare :: (root: str, stage: *Temporary_Directory) -> str {
     original := GLOSSO_STANDARD_DIRECTORY;
-    source := read_file(path_join(original, "Gui/native/renderer_api.h"));
-    if #pattern .Ok(header) = source {
-        defer header.free();
-        if !header.contains("overlay_capacity(render.overlay_count+6)") return original;
-    } else return original;
+    needs_memory := contains_source("Gui/native/renderer_api.h", "overlay_capacity(render.overlay_count+6)");
+    needs_gpu := !contains_source("Gui/Input_Types.glo", "High_Performance_Gpu ::");
+    if !needs_memory && !needs_gpu return original;
 
     stage.* = create_stage(root);
     staged := path_join(stage.path, "std");
@@ -48,26 +79,12 @@ create_stage :: (root: str) -> Temporary_Directory {
         stage.free();
         exit(1);
     }
-    // Keep git apply rooted in our private tree even inside another checkout.
-    patch := path_join(root, "vendor/glosso/gui-memory.patch");
-    arguments: [5]str = .[
-        tprint("--git-dir={}/.git", stage.path),
-        tprint("--work-tree={}", stage.path),
-        "apply",
-        "--include=std/Gui/native/*",
-        patch
-    ];
-    git := Command.command_make("git", arguments[..]);
-    defer git.destroy();
-    git.set_working_directory(stage.path);
-    git.no_window = true;
-    if git.run() == {
-    case .Ok(done);
-        if done.status.exited && done.status.code == 0 return staged;
-        print("wst build: Gui backport does not apply to this SDK; using its own renderer.\n");
-    case .Err(error);
-        if error.child.valid _ := error.child.close();
-        print("wst build: Git is unavailable for the Gui backport; using the SDK renderer.\n");
+    if needs_memory && !apply_patch(stage.path, path_join(root, "vendor/glosso/gui-memory.patch"))
+        print("wst build: Gui memory backport unavailable; using the SDK's memory allocation.\n");
+    if needs_gpu && !apply_patch(stage.path, path_join(root, "vendor/glosso/gui-gpu.patch")) {
+        print("wst build: could not apply gui-gpu.patch; install Git or select a Gui SDK with High_Performance_Gpu.\n");
+        stage.free();
+        exit(1);
     }
-    return original;
+    return staged;
 }

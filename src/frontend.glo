@@ -18,18 +18,28 @@ Config_Paths :: #import "config_paths.glo";
 };
 
 window: G.Window;
+window_discrete_gpu: bool;
 config_path_storage: str;
 
-#public {
-
-open :: (family: cstr, size: s32, cols: s32, rows: s32, padding: s32, hidden: s32, opacity: f32 = 1) -> s32 {
-    if G.window_valid(window) return N.set_error("A wst window is already open");
+#public open :: (
+    family: cstr, size: s32, cols: s32, rows: s32, padding: s32, hidden: s32,
+    opacity: f32 = 1, discrete_gpu: bool = false
+) -> s32 {
     if !valid_geometry(cols, rows, padding) || cols == 0 || rows == 0
         return N.set_error("Invalid initial terminal grid");
     if !valid_opacity(opacity)
         return N.set_error("Window opacity must be a finite number from 0.1 to 1.0");
+    return open_window(family, size, cols, rows, padding, hidden, opacity, discrete_gpu, null);
+}
+
+open_window :: (
+    family: cstr, size: s32, cols: s32, rows: s32, padding: s32, hidden: s32,
+    opacity: f32, discrete_gpu: bool, placement: ?*N.Window_Placement
+) -> s32 {
+    if G.window_valid(window) return N.set_error("A wst window is already open");
     // Prepare the custom frame and font before exposing a visible window.
     flags := G.Window_Flags.High_Dpi | G.Window_Flags.Hidden;
+    if discrete_gpu flags |= G.Window_Flags.High_Performance_Gpu;
     // Gui installs the embedded application icon and refreshes it for monitor DPI.
     window = G.create_window(900, 650, "wst | Glosso terminal", flags);
     if !G.window_valid(window) return N.set_error(G.last_error().c_string());
@@ -39,46 +49,70 @@ open :: (family: cstr, size: s32, cols: s32, rows: s32, padding: s32, hidden: s3
         window = empty;
         return 0;
     }
-    if N.configure_chrome(16#080808) == 0 {
-        close();
-        return 0;
-    }
-    if N.set_window_opacity(opacity) == 0 {
-        close();
+    if N.configure_chrome(16#080808) == 0 || N.set_window_opacity(opacity) == 0 {
+        close_window();
         return 0;
     }
     G.set_frame_rate(window, 0);
     G.set_vsync(window, false);
     I.bind_window(window);
     R.bind_window(window);
+    if #pattern ?saved = placement {
+        if N.restore_window_placement(saved) == 0 {
+            close_window();
+            return 0;
+        }
+    }
     prepared: R.Prepared;
     if !R.prepare(family.to_string(), size, G.content_scale(window), &prepared) {
         _ := N.set_error(R.error_message().c_string());
-        close();
+        close_window();
         return 0;
     }
-    if !resize_grid_metrics(cols, rows, padding, prepared.cw, prepared.ch) {
+    if placement == null && !resize_grid_metrics(cols, rows, padding, prepared.cw, prepared.ch) {
         R.discard(&prepared);
-        close();
+        close_window();
         return 0;
     }
     R.commit(&prepared);
     I.notify_resize();
     if hidden == 0 && N.window_show() == 0 {
-        close();
+        close_window();
         return 0;
     }
+    window_discrete_gpu = discrete_gpu;
     return 1;
 }
 
-close :: () {
-    N.close_sessions();
+close_window :: () {
     R.close();
     I.close();
     N.gui_unbind();
     if G.window_valid(window) G.destroy_window(window);
     empty: G.Window;
     window = empty;
+}
+
+#public {
+
+// Keep the shell processes and their pipe handles alive across a device loss.
+recover_window :: () -> s32 {
+    placement: N.Window_Placement;
+    if N.save_window_placement(&placement) == 0 return 0;
+    family := R.font_family().clone();
+    defer family.free();
+    size := R.font_size();
+    opacity := N.window_opacity();
+    ligatures := R.ligatures_enabled();
+    close_window();
+    if open_window(family.c_string(), size, 0, 0, 0, 1, opacity, window_discrete_gpu, ?&placement) == 0 return 0;
+    R.set_ligatures(ligatures);
+    return 1;
+}
+
+close :: () {
+    N.close_sessions();
+    close_window();
 }
 
 next_event :: (event: *T.Event) -> s32 {

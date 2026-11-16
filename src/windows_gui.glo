@@ -6,6 +6,7 @@ Presentation :: #import "gui_presentation.glo";
 #import "Strings/Utf8";
 #import "Strings/Utf16";
 #import "Math/Core";
+#import "Meta";
 
 user32 :: #library,system "user32";
 kernel32 :: #library,system "kernel32";
@@ -13,15 +14,23 @@ scene :: #library,system "glosso_scene_runtime";
 dwmapi :: #library,system "dwmapi";
 
 Handle :: usize;
-Rect :: struct #c_call {
+#public Rect :: struct #c_call {
     left: s32;
     top: s32;
     right: s32;
     bottom: s32;
 }
-Point :: struct #c_call {
+#public Point :: struct #c_call {
     x: s32;
     y: s32;
+}
+#public Window_Placement :: struct #c_call {
+    length: u32;
+    flags: u32;
+    show_command: u32;
+    minimized: Point;
+    maximized: Point;
+    normal: Rect;
 }
 Call_Message :: struct #c_call {
     parameter: ssize;
@@ -34,6 +43,7 @@ Hook :: #fn_ptr(code: s32, detail: usize, parameter: ssize) -> ssize #c_call;
 // Gui currently exposes an opaque token. Keep the dependency on its pinned
 // Windows backend accessor here until std.Gui offers a public native handle.
 platform_window :: () -> Handle #foreign scene "platform_window";
+#public window_close_requested :: () -> bool #foreign scene "platform_close_requested";
 SetLastError :: (code: u32) #foreign kernel32 "SetLastError";
 GetCurrentThreadId :: () -> u32 #foreign kernel32 "GetCurrentThreadId";
 GetConsoleWindow :: () -> Handle #foreign kernel32 "GetConsoleWindow";
@@ -50,6 +60,9 @@ SetWindowLongPtrW :: (window: Handle, index: s32, value: ssize) -> ssize #foreig
 SetLayeredWindowAttributes :: (window: Handle, key: u32, alpha: u8, flags: u32) -> s32 #foreign user32 "SetLayeredWindowAttributes";
 GetLayeredWindowAttributes :: (window: Handle, key: *u32, alpha: *u8, flags: *u32) -> s32 #foreign user32 "GetLayeredWindowAttributes";
 IsWindow :: (window: Handle) -> s32 #foreign user32 "IsWindow";
+IsWindowVisible :: (window: Handle) -> s32 #foreign user32 "IsWindowVisible";
+GetWindowPlacement :: (window: Handle, placement: *Window_Placement) -> s32 #foreign user32 "GetWindowPlacement";
+SetWindowPlacement :: (window: Handle, placement: *const Window_Placement) -> s32 #foreign user32 "SetWindowPlacement";
 GetWindowThreadProcessId :: (window: Handle, process: ?*u32) -> u32 #foreign user32 "GetWindowThreadProcessId";
 GetLastError :: () -> u32 #foreign kernel32 "GetLastError";
 PostMessageW :: (window: Handle, message: u32, detail: usize, parameter: ssize) -> s32 #foreign user32 "PostMessageW";
@@ -336,6 +349,18 @@ window_show :: () -> s32 {
     // SW_SHOWDEFAULT also honors STARTF_USESHOWWINDOW after frame setup. Tests
     // and launchers can request SW_HIDE without the frontend exposing a window.
     _ := ShowWindow(window, 10);
+    return 1;
+}
+save_window_placement :: (placement: *Window_Placement) -> s32 {
+    window := platform_window();
+    placement.length = cast(u32) size_of(Window_Placement);
+    if GetWindowPlacement(window, placement) == 0 return P.windows_error("Reading terminal window placement");
+    if IsWindowVisible(window) == 0 placement.show_command = 0;
+    else if placement.show_command == 1 && GetFocus() != window placement.show_command = 4; // SW_SHOWNOACTIVATE
+    return 1;
+}
+restore_window_placement :: (placement: *const Window_Placement) -> s32 {
+    if SetWindowPlacement(platform_window(), placement) == 0 return P.windows_error("Restoring terminal window placement");
     return 1;
 }
 window_maximized :: () -> s32 {
