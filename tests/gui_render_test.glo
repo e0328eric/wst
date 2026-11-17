@@ -1,6 +1,7 @@
 G :: #import "Gui";
 R :: #import "../src/gui_render.glo";
 P :: #import "../src/platform_types.glo";
+T :: #import "../src/terminal.glo";
 #import "Io";
 #import "Strings/Utf8";
 #import "File_System/File";
@@ -31,6 +32,103 @@ pixel :: (bitmap: str, x: s32, y: s32) -> u32 {
     offset := cast(ssize) little32(bitmap, 10);
     return little32(bitmap, offset + cast(ssize) y * stride + cast(ssize) x * 4) & 16#ffffff;
 }
+
+// Grayscale text and antialiasing on a gray prompt background cannot create
+// any saturated pixels. Check both sides to catch a clipped two-column glyph.
+has_color :: (bitmap: str, x: s32, y: s32, width: s32, height: s32) -> bool {
+    for row: y..y + height for column: x..x + width {
+        rgb := pixel(bitmap, column, row);
+        r := cast(s32)(rgb >> 16);
+        g := cast(s32)((rgb >> 8) & 255);
+        b := cast(s32)(rgb & 255);
+        if (r - g).abs() > 40 || (g - b).abs() > 40 || (r - b).abs() > 40 return true;
+    }
+    return false;
+}
+
+PROMPT_X: s32 :: 16;
+PROMPT_Y: s32 :: 160;
+PROMPT_BG: u32 :: 16#303030;
+SELECTED_BG: u32 :: 16#909090;
+SEPARATOR_FG: u32 :: 16#cc4573;
+HEART_X: s32 :: 450;
+CURSOR_BG: u32 :: 16#707070;
+
+draw_prompt :: (cw: s32, ch: s32) {
+    R.set_colors(16#ffffff, SELECTED_BG, 0);
+    cells: [7]P.Render_Cell = .[
+        .{ 16#23f0, 16#ffffff, PROMPT_BG, 8 },
+        .{ 0, 0, PROMPT_BG, 16 },
+        .{ 16#1f3e0, 16#ffffff, PROMPT_BG, 8 | 16#80000000 },
+        .{ 0, 0, PROMPT_BG, 16 | 16#80000000 },
+        .{ 49, 16#ffffff, PROMPT_BG, 0 },
+        .{ 16#e0b0, SEPARATOR_FG, PROMPT_BG, 0 },
+        .{ 16#e0b2, SEPARATOR_FG, PROMPT_BG, 0 }
+    ];
+    source := cast([*]const P.Render_Cell) &cells;
+    R.grid(PROMPT_X, PROMPT_Y, 7, 1, cw, ch, source, 0, 0, 0, 0);
+    R.grid_clipped(300, PROMPT_Y, 7, 1, cw, ch, source, 0, 0, 0, 0, cw, ch);
+    hearts: [3]P.Render_Cell = .[
+        .{ 16#2764, 16#ffffff, PROMPT_BG, 0 },
+        .{ 16#2764, 16#ffffff, PROMPT_BG, 8 | T.CELL_EMOJI_STYLE },
+        .{ 0, 0, PROMPT_BG, 16 }
+    ];
+    R.set_focus(true);
+    source = cast([*]const P.Render_Cell) &hearts;
+    R.grid(HEART_X, PROMPT_Y, 3, 1, cw, ch, source, 2, 0, 1, CURSOR_BG);
+}
+
+check_prompt :: (bitmap: str, cw: s32, ch: s32) {
+    text_ink := ink_count(bitmap, HEART_X, PROMPT_Y, cw, ch, PROMPT_BG);
+    check(
+        text_ink > 0 && !has_color(bitmap, HEART_X, PROMPT_Y, cw, ch),
+        "a heart without VS16 uses the terminal foreground"
+    );
+    cursor_left := pixel(bitmap, HEART_X + cw, PROMPT_Y);
+    cursor_right := pixel(bitmap, HEART_X + 3 * cw - 1, PROMPT_Y);
+    check(
+        cursor_left == CURSOR_BG && cursor_right == CURSOR_BG,
+        "the cursor spans both heart cells"
+    );
+    check(
+        has_color(bitmap, HEART_X + cw, PROMPT_Y, 2 * cw, ch),
+        "a VS16 heart retains its color with a focused cursor on its trailing column"
+    );
+    for column: cast(s32) 0..4 check(
+        has_color(bitmap, PROMPT_X + column * cw, PROMPT_Y, cw, ch),
+        "normal clock and selected house retain their colors across both columns"
+    );
+    check(
+        pixel(bitmap, PROMPT_X + 2 * cw, PROMPT_Y) == SELECTED_BG,
+        "the selection background shows through the transparent emoji corners"
+    );
+    check(
+        ink_count(bitmap, PROMPT_X + 4 * cw, PROMPT_Y, cw, ch, PROMPT_BG) > 0,
+        "the digit following both wide emoji is visible in its own cell"
+    );
+    outside_ink := ink_count(bitmap, 300 + cw, PROMPT_Y, cw, ch, 16#112233);
+    check(has_color(bitmap, 300, PROMPT_Y, cw, ch), "the clipped pane retains the visible half");
+    check(outside_ink == 0, "a half-visible emoji stays inside the pane");
+    right := PROMPT_X + 5 * cw;
+    left := right + cw;
+    for dy: cast(s32) 0..ch {
+        y := PROMPT_Y + dy;
+        check(
+            pixel(bitmap, right, y) != PROMPT_BG && pixel(bitmap, left + cw - 1, y) != PROMPT_BG,
+            "both Powerline separators fill the cell height in their respective directions"
+        );
+    }
+    middle := PROMPT_Y + ch / 2;
+    check(
+        pixel(bitmap, right + cw - 1, PROMPT_Y) == PROMPT_BG && pixel(bitmap, left, PROMPT_Y) == PROMPT_BG,
+        "the corners beside the tips show the adjacent background"
+    );
+    check(
+        pixel(bitmap, right + cw - 3, middle) == SEPARATOR_FG && pixel(bitmap, left + 2, middle) == SEPARATOR_FG,
+        "both Powerline tips reach across their cell at the center"
+    );
+}
+
 main :: () {
     window := G.create_window(700, 400, "wst Gui renderer test", .Hidden | .High_Dpi);
     check(G.window_valid(window), "create standard Gui window");
@@ -45,8 +143,6 @@ main :: () {
         !G.font_valid(prepared.regular_glyphs) && !G.font_valid(prepared.bold_glyphs),
         "private cmap faces stay unloaded before a ligature is drawn"
     );
-    regular := prepared.regular;
-    scale := prepared.scale;
     R.commit(&prepared);
     check(G.update_window_events(window), "pump Gui input");
     check(R.frame_begin(16#112233), "begin Gui render");
@@ -61,15 +157,11 @@ main :: () {
         .{ 90, 16#ffffff, 16#112233, 0 }
     ];
     R.grid(12, 50, 6, 1, cw, ch, cast([*]const P.Render_Cell) &cells, 0, 0, 1, 16#e5c07b);
-    check(
-        G.glyph_advance(regular, #char "😀") * scale <= cast(f32)(2 * cw) + 0.01,
-        "the loaded emoji fallback fits a terminal's two-cell span"
-    );
     R.draw_label(12, 5, 650, 36, "Standard Gui / 한글 / 日本語 / emoji 😀", 16#ffffff);
-    // These cells have the same glyph origin. The taller reference lets ink
-    // extend past the normal row, revealing fallback ascender/descender clipping.
+    // The taller reference reveals ink clipped by a standard cell.
     R.cell(200, 100, 2 * cw, ch, 16#1f600, 16#ffffff, 16#203040, 8, 0);
     R.cell(400, 100 - ch, 2 * cw, 3 * ch, 16#1f600, 16#ffffff, 16#203040, 8, 0);
+    draw_prompt(cw, ch);
     // Chrome primitives share the frame/replay lifetime with terminal text.
     R.rounded_rect(20, 240, 160, 60, 14, 16#304050);
     R.line(35, 260, 50, 275, 2.0, 16#79dac8);
@@ -102,6 +194,7 @@ main :: () {
     defer second.free();
     check(first == second, "post-present snapshot replays the exact Gui composition");
     check(first.count > 54 && first[0] == 66 && first[1] == 77, "legacy snapshot is a bitmap");
+    check_prompt(first, cw, ch);
     check(
         pixel(first, 20, 240) == 16#112233 && pixel(first, 25, 265) == 16#304050,
         "rounded corners preserve the backdrop and fill their interior"

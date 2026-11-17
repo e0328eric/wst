@@ -1,0 +1,222 @@
+//! Rasterize Segoe UI Emoji's color layers with DirectWrite. The renderer
+//! uploads the resulting straight-alpha RGBA pixels to Gui textures.
+F :: #import "windows_fonts.glo";
+#import "Memory";
+#import "Context";
+
+dwrite :: #library,system "dwrite";
+Guid :: struct #c_call {
+    a: u32;
+    b: u16;
+    c: u16;
+    d: [8]u8;
+}
+factory2_id: Guid = .{
+    16#0439fc60,
+    16#ca44,
+    16#4994,
+    .[16#8d, 16#ee, 16#3a, 16#9a, 16#f7, 16#b7, 16#32, 16#ec]
+};
+create_factory :: (kind: s32, id: *const Guid, result: *usize) -> s32 #foreign dwrite "DWriteCreateFactory";
+// DWRITE_GLYPH_RUN and DWRITE_COLOR_GLYPH_RUN.
+Glyph_Run :: struct #c_call {
+    face: usize;
+    em_size: f32;
+    count: u32;
+    indices: *const u16;
+    advances: usize;
+    offsets: usize;
+    sideways: s32;
+    bidi_level: u32;
+}
+Layer :: struct #c_call {
+    run: Glyph_Run;
+    description: usize;
+    x: f32;
+    y: f32;
+    color: [4]f32;
+    palette_index: u16;
+}
+Rect :: struct #c_call {
+    left: s32;
+    top: s32;
+    right: s32;
+    bottom: s32;
+}
+Translate :: #fn_ptr(
+    factory: usize,
+    x: f32,
+    y: f32,
+    run: *const Glyph_Run,
+    description: usize,
+    measuring: s32,
+    transform: usize,
+    palette: u32,
+    result: *usize
+) -> s32 #c_call;
+Move_Next :: #fn_ptr(layers: usize, more: *s32) -> s32 #c_call;
+Current_Run :: #fn_ptr(layers: usize, layer: **const Layer) -> s32 #c_call;
+Analyze :: #fn_ptr(
+    factory: usize,
+    run: *const Glyph_Run,
+    transform: usize,
+    rendering: s32,
+    measuring: s32,
+    grid_fit: s32,
+    antialias: s32,
+    x: f32,
+    y: f32,
+    result: *usize
+) -> s32 #c_call;
+Bounds :: #fn_ptr(analysis: usize, texture_type: s32, rect: *Rect) -> s32 #c_call;
+Alpha_Mask :: #fn_ptr(analysis: usize, texture_type: s32, rect: *const Rect, mask: [*]u8, size: u32) -> s32 #c_call;
+
+method :: (T: type, object: usize, slot: ssize) -> T {
+    table := cast([*]usize) object;
+    slots := cast([*]usize) table[0];
+    return cast(T) slots[slot];
+}
+
+factory: usize;
+face: usize;
+attempted: bool;
+// DirectWrite factories and faces are independent of Gui's GPU device and DPI.
+open :: () -> bool {
+    if attempted return face != 0;
+    attempted = true;
+    if create_factory(0, &factory2_id, &factory) < 0 return false;
+    matched_family: bool;
+    if F.native_match_face("Segoe UI Emoji", 0, &matched_family, &face) == 0 return false;
+    if !matched_family {
+        F.native_release_face(face);
+        face = 0;
+    }
+    return face != 0;
+}
+
+#public close :: () {
+    F.native_release_face(face);
+    F.native_release_face(factory);
+    face = 0;
+    factory = 0;
+    attempted = false;
+}
+
+Target :: struct {
+    width: s32;
+    height: s32;
+    foreground: u32;
+    rgba: [*]u8;
+    mask: [*]u8;
+}
+
+paint :: (target: *Target, layer: *const Layer, analysis: usize, ink: Rect) -> bool {
+    rect := ink;
+    if rect.left < 0               rect.left = 0;
+    if rect.top < 0                rect.top = 0;
+    if rect.right > target.width   rect.right = target.width;
+    if rect.bottom > target.height rect.bottom = target.height;
+    width := rect.right - rect.left;
+    height := rect.bottom - rect.top;
+    if width <= 0 || height <= 0 return true;
+    if method(Alpha_Mask, analysis, 4)(analysis, 0, &rect, target.mask, cast(u32)(width * height)) < 0
+        return false;
+
+    color: [4]u32;
+    for i: 0..4 color[i] = cast(u32)(layer.color[i] * 255 + 0.5);
+    if layer.palette_index == 16#ffff {
+        color = .[
+            (target.foreground >> 16) & 255,
+            (target.foreground >> 8) & 255,
+            target.foreground & 255,
+            255
+        ];
+    }
+    // Straight-alpha source-over. Keep partial edges independent of the cell
+    // background so the same texture composes over selection or an image.
+    for y: rect.top..rect.bottom for x: rect.left..rect.right {
+        coverage := cast(u32) target.mask[(y - rect.top) * width + x - rect.left];
+        alpha := (coverage * color[3] + 127) / 255;
+        if alpha == 0 continue;
+        dest := target.rgba + cast(ssize)((y * target.width + x) * 4);
+        remaining := cast(u32) dest[3] * (255 - alpha);
+        total := alpha * 255 + remaining;
+        for i: 0..3 dest[i] = cast(u8)(
+            (color[i] * alpha * 255 + cast(u32) dest[i] * remaining + total / 2) / total
+        );
+        dest[3] = cast(u8)((total + 127) / 255);
+    }
+    return true;
+}
+
+// Measure and draw using the same palette runs. A color font can draw ink
+// outside both the base glyph outline and its nominal advance.
+layers :: (run: *Glyph_Run, x: f32, y: f32, bounds: *Rect, target: ?*Target) -> bool {
+    enumerator: usize;
+    if method(Translate, factory, 28)(factory, x, y, run, 0, 0, 0, 0, &enumerator) < 0 return false;
+    defer F.native_release_face(enumerator);
+    has_ink := false;
+    while true {
+        more: s32;
+        if method(Move_Next, enumerator, 3)(enumerator, &more) < 0 return false;
+        if more == 0                                               return has_ink;
+        layer: *const Layer;
+        if method(Current_Run, enumerator, 4)(enumerator, &layer) < 0 return false;
+        analysis: usize;
+        // Natural symmetric rendering, grid fitting disabled, grayscale AA.
+        if method(Analyze, factory, 30)(
+            factory,
+            &layer.run,
+            0,
+            5,
+            0,
+            1,
+            1,
+            layer.x,
+            layer.y,
+            &analysis
+        ) < 0
+            return false;
+        defer F.native_release_face(analysis);
+        rect: Rect;
+        if method(Bounds, analysis, 3)(analysis, 0, &rect) < 0 return false;
+        if rect.left >= rect.right || rect.top >= rect.bottom  continue;
+        if !has_ink                                            bounds.* = rect;
+        if rect.left < bounds.left                             bounds.left = rect.left;
+        if rect.top < bounds.top                               bounds.top = rect.top;
+        if rect.right > bounds.right                           bounds.right = rect.right;
+        if rect.bottom > bounds.bottom                         bounds.bottom = rect.bottom;
+        has_ink = true;
+        if #pattern ?surface = target {
+            if !paint(surface, layer, analysis, rect) return false;
+        }
+    }
+    return has_ink;
+}
+
+/// Writes width * height tightly packed straight RGBA pixels. False asks the
+/// caller to use the normal font path (including when a glyph has no palette).
+#public rasterize :: (cp: u32, width: s32, height: s32, foreground: u32, rgba: [*]u8) -> bool {
+    if width <= 0 || height <= 0 || width > 1024 || height > 1024 || !open() return false;
+    index := F.native_glyph_index(face, cp);
+    if index == 0 return false;
+    run: Glyph_Run = .{ .face = face, .em_size = 128, .count = 1, .indices = &index };
+    bounds: Rect;
+    if !layers(&run, 0, 0, &bounds, null) return false;
+    // Leave a small margin and scale both axes equally. Measuring at a fixed
+    // em size keeps glyph proportions stable across zoom and fractional DPI.
+    scale := 0.94 * cast(f32) width / cast(f32)(bounds.right - bounds.left);
+    vertical := 0.94 * cast(f32) height / cast(f32)(bounds.bottom - bounds.top);
+    if vertical < scale scale = vertical;
+    run.em_size *= scale;
+    x := (cast(f32) width - cast(f32)(bounds.left + bounds.right) * scale) * 0.5;
+    y := (cast(f32) height - cast(f32)(bounds.top + bounds.bottom) * scale) * 0.5;
+    pixels := cast(ssize)(width * height);
+    #pattern ?mask := mem_alloc_raw(Layout.bytes(pixels)) else {
+        return false;
+    }
+    defer mem_free_raw(mask, Layout.bytes(pixels));
+    _ := mem_fill(cast(*void) rgba, pixels * 4, 0);
+    target: Target = .{ width, height, foreground, rgba, cast([*]u8) mask };
+    return layers(&run, x, y, &bounds, &target);
+}

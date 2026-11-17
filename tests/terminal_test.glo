@@ -417,7 +417,74 @@ begin_session_tests :: () {
     cell(&disabled, 0, 0, 79);
     cell(&disabled, 1, 0, 75);
 }
+emoji_tests :: () {
+    t: Terminal;
+    init(&t, 8, 3, 2, 16#eeeeee, 0);
+    defer release(&t);
+    feed(&t, "⏰🏠X");
+    cell(&t, 0, 0, 16#23f0);
+    cell(&t, 1, 0, 0);
+    cell(&t, 2, 0, 16#1f3e0);
+    cell(&t, 3, 0, 0);
+    cell(&t, 4, 0, 88);
+    // Unicode 18 classifies U+1F6D9 as wide. The following nonspacing
+    // kana mark and supplementary variation selector add no columns.
+    feed(&t, "\x1bc\u{1F6D9}\u{3099}\u{E0100}X");
+    cell(&t, 0, 0, 16#1f6d9);
+    cell(&t, 1, 0, 0);
+    cell(&t, 2, 0, 88);
+    check(t.cursor_x == 3, "wide scalar and nonspacing marks use SDK properties");
+    feed(&t, "\x1bc♥❤︎X");
+    check(t.cursor_x == 3 && (visible_cell(&t, 1, 0).flags & CELL_TEXT_STYLE) != 0,
+        "plain text symbols and explicit text presentation remain narrow");
+    feed(&t, "\x1bc❤");
+    vs16: [3]u8 = .[239, 184, 143];
+    feed(&t, cast(str) vs16[0..1]);
+    feed(&t, cast(str) vs16[1..3]);
+    feed(&t, "X");
+    check(t.cursor_x == 3 && (visible_cell(&t, 0, 0).flags & (CELL_EMOJI_STYLE | 8)) ==
+        (CELL_EMOJI_STYLE | 8), "a split VS16 upgrades the heart to two emoji cells");
+    cell(&t, 1, 0, 0);
+    cell(&t, 2, 0, 88);
+    feed(&t, "\x1bc⏰︎X");
+    check((visible_cell(&t, 0, 0).flags & CELL_TEXT_STYLE) != 0 && t.cursor_x == 3,
+        "explicit text presentation preserves the wide base character's columns");
+    feed(&t, "\x1bc🖥X");
+    cell(&t, 0, 0, 16#1f5a5);
+    cell(&t, 1, 0, 88);
+    feed(&t, "\x1bc🖥️\x1b[bX");
+    cell(&t, 0, 0, 16#1f5a5);
+    cell(&t, 2, 0, 16#1f5a5);
+    cell(&t, 4, 0, 88);
+    check((visible_cell(&t, 2, 0).flags & CELL_EMOJI_STYLE) != 0,
+        "repeating a graphic retains its presentation selector");
+    feed(&t, "\x1bc123456한\x1b[1;8H❤");
+    feed(&t, "️X");
+    cell(&t, 6, 0, 16#d55c);
+    cell(&t, 7, 0, 0);
+    cell(&t, 0, 1, 16#2764);
+    cell(&t, 1, 1, 0);
+    cell(&t, 2, 1, 88);
+    feed(&t, "\x1bc123456한\x1b[?7l\x1b[1;8H❤️");
+    check(t.cursor_x == 7 && t.cursor_y == 0 && visible_cell(&t, 6, 0).codepoint == 16#d55c &&
+        (visible_cell(&t, 7, 0).flags & 16) != 0,
+        "without wrapping a promoted glyph cannot overwrite half of the old margin pair");
+    feed(&t, "\x1bcAB한CD\x1b[1;2H\x1b[4h❤️");
+    cell(&t, 0, 0, 65);
+    cell(&t, 3, 0, 66);
+    cell(&t, 4, 0, 16#d55c);
+    cell(&t, 5, 0, 0);
+    cell(&t, 6, 0, 67);
+    cell(&t, 7, 0, 68);
+    feed(&t, "\x1bc❤\x1b[1;2H️X");
+    check((visible_cell(&t, 0, 0).flags & CELL_EMOJI_STYLE) == 0 && t.cursor_x == 2,
+        "a selector after cursor movement leaves the earlier symbol alone");
+    feed(&t, "\x1bcA️X");
+    check(t.cursor_x == 2 && (visible_cell(&t, 0, 0).flags & CELL_EMOJI_STYLE) == 0,
+        "an unsupported variation sequence consumes no extra cell");
+}
 main :: () {
+    emoji_tests();
     theme_tests();
     history_limit_tests();
     begin_session_tests();

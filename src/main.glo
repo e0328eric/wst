@@ -164,7 +164,11 @@ copy_selection :: (t: *T.Terminal, s: *Selection) {
         col := left;
         while col <= right {
             c := T.visible_cell(t, col, row);
-            if (c.flags & 16) == 0 utf8_append(&bytes, c.codepoint);
+            if (c.flags & 16) == 0 {
+                utf8_append(&bytes, c.codepoint);
+                if (c.flags & T.CELL_EMOJI_STYLE) != 0 utf8_append(&bytes, 16#fe0f);
+                if (c.flags & T.CELL_TEXT_STYLE) != 0 utf8_append(&bytes, 16#fe0e);
+            }
             col += 1;
         }
         if row < last / t.cols bytes.push(13, 10);

@@ -1,6 +1,7 @@
 //! Streaming UTF-8/VT terminal model. No window or operating-system dependencies.
 //! Coordinates are zero based; callers consume replies then call replies.clear().
 #import "Format";
+#import "Unicode";
 Colors :: #import "colors.glo";
 Kitty :: #import "kitty_store.glo";
 
@@ -20,6 +21,8 @@ CELL_INDEXED_FG: u32 :: 128;
 CELL_INDEXED_BG: u32 :: 256;
 CELL_FG_INDEX_MASK: u32 :: 16#1fe00;
 CELL_BG_INDEX_MASK: u32 :: 16#1fe0000;
+CELL_EMOJI_STYLE: u32 :: 16#2000000;
+CELL_TEXT_STYLE: u32 :: 16#4000000;
 CELL_COLOR_ORIGIN: u32 :: CELL_DEFAULT_FG | CELL_DEFAULT_BG | CELL_INDEXED_FG |
     CELL_INDEXED_BG | CELL_FG_INDEX_MASK | CELL_BG_INDEX_MASK;
 
@@ -90,6 +93,11 @@ Terminal :: struct {
     utf_min: u32;
     utf_remaining: s32;
     last_codepoint: u32;
+    last_style: u32;
+    // A variation selector may arrive in a later PTY read. A narrow base
+    // written at the margin may need to move, even after overwriting a wide pair.
+    preceding_x: s32 = -1;
+    previous_margin: [2]Cell;
 }
 
 init :: (t: *Terminal, cols: s32, rows: s32, scrollback: s32, fg: u32, bg: u32) {
@@ -269,6 +277,7 @@ resize :: (t: *Terminal, cols: s32, rows: s32) {
     width := term_clamp(cols, 2, 512);
     height := term_clamp(rows, 1, 256);
     if width == t.cols && height == t.rows return;
+    t.preceding_x = -1;
     if height < t.rows                     Kitty.resize(&t.graphics, height);
     next: [..]Cell;
     next_alt: [..]Cell;
@@ -524,25 +533,52 @@ term_restore :: (t: *Terminal) {
     t.underline_color = t.saved_underline_color;
 }
 term_width :: (u: u32) -> s32 {
-    // Combining marks are consumed without advancing. Full grapheme shaping is
-    // intentionally left to a future renderer; common CJK/emoji occupy two cells.
-    if (u >= 16#300 && u <= 16#36f) || (u >= 16#1ab0 && u <= 16#1aff) ||
-       (u >= 16#1dc0 && u <= 16#1dff) || (u >= 16#20d0 && u <= 16#20ff) ||
-       (u >= 16#fe00 && u <= 16#fe0f) || (u >= 16#fe20 && u <= 16#fe2f) ||
-       u == 16#200d
-        return 0;
-    if (u >= 16#1100 && u <= 16#115f) || (u >= 16#2329 && u <= 16#232a) ||
-       (u >= 16#2e80 && u <= 16#a4cf && u != 16#303f) ||
-       (u >= 16#ac00 && u <= 16#d7a3) || (u >= 16#f900 && u <= 16#faff) ||
-       (u >= 16#fe10 && u <= 16#fe19) || (u >= 16#fe30 && u <= 16#fe6f) ||
-       (u >= 16#ff00 && u <= 16#ff60) || (u >= 16#ffe0 && u <= 16#ffe6) ||
-       (u >= 16#1f300 && u <= 16#1faff) || (u >= 16#20000 && u <= 16#3fffd)
-        return 2;
+    if u < 128 return 1; // The VT parser has already consumed ASCII controls.
+    // A nonspacing or enclosing mark occupies no additional terminal cell.
+    category := u.get_general_category();
+    if category == .Mark_Nonspacing || category == .Mark_Enclosing || u == 16#200d return 0;
+    width := u.get_east_asian_width();
+    if width == .Wide || width == .Fullwidth return 2;
     return 1;
 }
-term_print :: (t: *Terminal, u: u32) {
+term_print :: (t: *Terminal, u: u32, style: u32 = 0) {
+    if u == 16#fe0f || u == 16#fe0e {
+        term_variation(t, u);
+        return;
+    }
+    t.preceding_x = -1;
     width := term_width(u);
     if width == 0 return;
+    if style == CELL_EMOJI_STYLE width = 2;
+    term_write(t, u, width, style);
+}
+term_variation :: (t: *Terminal, selector: u32) {
+    x := t.preceding_x;
+    t.preceding_x = -1;
+    if x < 0 || !t.last_codepoint.supports_unicode_emoji_variation() return;
+    c := term_get(t, x, t.cursor_y);
+    style := CELL_TEXT_STYLE;
+    if selector == 16#fe0f style = CELL_EMOJI_STYLE;
+    t.last_style = style;
+    // VS15 selects the text face and retains the character's East Asian width.
+    if style == CELL_TEXT_STYLE || (c.flags & 8) != 0 {
+        c.flags |= style;
+        term_set(t, x, t.cursor_y, c);
+        return;
+    }
+    t.cursor_x = x;
+    t.pending_wrap = false;
+    inserted: s32 = 1;
+    if x == t.cols - 1 {
+        // The complete two-cell character wraps before writing either half.
+        term_set(t, x - 1, t.cursor_y, t.previous_margin[0]);
+        term_set(t, x, t.cursor_y, t.previous_margin[1]);
+        inserted = 0;
+    }
+    term_write(t, c.codepoint, 2, style, inserted);
+    t.preceding_x = -1;
+}
+term_write :: (t: *Terminal, u: u32, width: s32, style: u32, already_inserted: s32 = 0) {
     if t.pending_wrap && t.autowrap {
         t.cursor_x = 0;
         term_newline(t);
@@ -554,16 +590,20 @@ term_print :: (t: *Terminal, u: u32) {
             term_newline(t);
         } else return;
     }
+    if width == 1 && t.cursor_x == t.cols - 1 {
+        t.previous_margin[0] = term_get(t, t.cursor_x - 1, t.cursor_y);
+        t.previous_margin[1] = term_get(t, t.cursor_x, t.cursor_y);
+    }
     if t.insert_mode {
         x := t.cols - 1;
         while x >= t.cursor_x + width {
-            term_set(t, x, t.cursor_y, term_get(t, x - width, t.cursor_y));
+            term_set(t, x, t.cursor_y, term_get(t, x - width + already_inserted, t.cursor_y));
             x -= 1;
         }
         // The shifted glyph may now start immediately after the inserted span.
         // Blank the vacated slots directly: erasing their old wide flags would
         // incorrectly erase that newly shifted glyph's leading cell.
-        x = t.cursor_x;
+        x = t.cursor_x + already_inserted;
         while x < t.cursor_x + width {
             term_set(t, x, t.cursor_y, term_blank(t));
             x += 1;
@@ -574,7 +614,7 @@ term_print :: (t: *Terminal, u: u32) {
         .codepoint = u,
         .fg = t.fg,
         .bg = t.bg,
-        .flags = t.attributes,
+        .flags = t.attributes | style,
         .underline_color = t.underline_color
     };
     if width == 2 {
@@ -596,8 +636,12 @@ term_print :: (t: *Terminal, u: u32) {
     term_set(t, t.cursor_x, t.cursor_y, c);
     if t.insert_mode term_repair_row(t, t.cursor_y);
     t.last_codepoint = u;
-    if t.cursor_x + width >= t.cols t.pending_wrap = true;
-    else                            t.cursor_x += width;
+    t.last_style = style;
+    if style == 0 t.preceding_x = t.cursor_x;
+    if t.cursor_x + width >= t.cols {
+        t.pending_wrap = true;
+        t.cursor_x = t.cols - 1;
+    } else t.cursor_x += width;
 }
 term_repair_row :: (t: *Terminal, y: s32) {
     x: s32 = 0;
@@ -888,7 +932,7 @@ term_csi :: (t: *Terminal, final: u8) {
         count := term_clamp(n, 1, 65535);
         i: s32 = 0;
         while i < count {
-            term_print(t, t.last_codepoint);
+            term_print(t, t.last_codepoint, t.last_style);
             i += 1;
         }
     }
@@ -953,6 +997,7 @@ term_graphics_finish :: (t: *Terminal) {
     t.state = 0;
 }
 term_byte :: (t: *Terminal, b: u8) {
+    if b < 32 || b == 127 t.preceding_x = -1;
     // Store only recognized Kitty APCs. Reuse the OSC buffer because control
     // strings cannot nest. A cancelled or oversized frame invalidates any
     // in-progress image upload, and none of its payload reaches the grid.

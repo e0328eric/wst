@@ -1,0 +1,132 @@
+//! Cache Windows color glyphs at their physical cell size. Replay looks up a
+//! glyph by value so eviction during another pane's draw is safe.
+G :: #import "Gui";
+GN :: #import "Gui/Native";
+Windows :: #import "windows_emoji.glo";
+
+Glyph :: struct {
+    cp: u32;
+    fg: u32;
+    width: s32;
+    height: s32;
+    pixels: [..]u8;
+    texture: G.Texture;
+}
+cache: [64]Glyph;
+next_slot: ssize;
+
+// Inline images and emoji share Gui's texture slots. Cached glyph pixels
+// allow images to reclaim the slots even while a snapshot references a glyph.
+#public release_textures :: () -> bool {
+    released := false;
+    for i: 0..cache.count {
+        if cache[i].texture.id != 0 {
+            G.release_texture(cache[i].texture);
+            cache[i].texture = .{};
+            released = true;
+        }
+    }
+    return released;
+}
+
+#public clear :: () {
+    _ := release_textures();
+    next_slot = 0;
+    for i: 0..cache.count {
+        cache[i].pixels.reset();
+        cache[i] = .{};
+    }
+}
+
+#public close :: () {
+    clear();
+    Windows.close();
+}
+
+cached_glyph :: (cp: u32, fg: u32, w: s32, h: s32, slots: ssize) -> *Glyph {
+    for i: 0..slots {
+        entry := &cache[i];
+        if entry.cp == 0                                                             break;
+        if entry.cp == cp && entry.fg == fg && entry.width == w && entry.height == h return entry;
+    }
+    glyph := &cache[next_slot];
+    next_slot = (next_slot + 1) % slots;
+    G.release_texture(glyph.texture);
+    glyph.pixels.reset();
+    glyph.* = .{ .cp = cp, .fg = fg, .width = w, .height = h };
+    glyph.pixels.resize(cast(ssize)(w * h * 4));
+    if !Windows.rasterize(cp, w, h, fg, glyph.pixels.data) glyph.pixels.reset();
+    return glyph;
+}
+
+// With all texture slots occupied by inline images, draw equal-color runs
+// directly from the same bitmap. The active cell/viewport clip applies here.
+draw_runs :: (glyph: *Glyph, x: s32, y: s32, scale: f32) {
+    for row: cast(s32) 0..glyph.height {
+        column: s32;
+        while column < glyph.width {
+            start := column;
+            at := (row * glyph.width + start) * 4;
+            p := glyph.pixels.data + cast(ssize) at;
+            column += 1;
+            while column < glyph.width {
+                next := glyph.pixels.data + cast(ssize)((row * glyph.width + column) * 4);
+                if next[3] != p[3] || next[0] != p[0] || next[1] != p[1] || next[2] != p[2] break;
+                column += 1;
+            }
+            if p[3] > 0
+                G.rectangle(
+                    .{
+                        cast(f32)(x + start) / scale,
+                        cast(f32)(y + row) / scale,
+                        cast(f32)(column - start) / scale,
+                        1.0 / scale
+                    },
+                    .{
+                        cast(f32) p[0] / 255,
+                        cast(f32) p[1] / 255,
+                        cast(f32) p[2] / 255,
+                        cast(f32) p[3] / 255
+                    }
+                );
+        }
+    }
+}
+
+#public draw :: (
+    cp: u32,
+    fg: u32,
+    x: s32,
+    y: s32,
+    width: s32,
+    height: s32,
+    max_width: s32,
+    max_height: s32,
+    scale: f32
+) -> bool {
+    w := width;
+    h := height;
+    if w > max_width                            w = max_width;
+    if h > max_height                           h = max_height;
+    if w <= 0 || h <= 0 || w > 1024 || h > 1024 return false;
+    // At high DPI, reduce the slot count to keep pixel storage under 4 MiB.
+    slots := (1024 * 1024) / (cast(ssize) max_width * cast(ssize) max_height);
+    if slots < 1           slots = 1;
+    if slots > cache.count slots = cache.count;
+    glyph := cached_glyph(cp, fg, w, h, slots);
+    if glyph.pixels.count == 0 return false;
+    if glyph.texture.id == 0   glyph.texture = G.create_texture(w, h, glyph.pixels[..], .Nearest);
+    left := x + (width - w) / 2;
+    top := y + (height - h) / 2;
+    if glyph.texture.id != 0 {
+        dest: GN.Native_Rect = .{
+            cast(f32) left / scale,
+            cast(f32) top / scale,
+            cast(f32) w / scale,
+            cast(f32) h / scale
+        };
+        return G.draw_texture(glyph.texture, dest);
+    }
+    draw_runs(glyph, left, top, scale);
+    return true;
+}

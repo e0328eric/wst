@@ -1,4 +1,4 @@
-//! Backport Gui features to an isolated copy when the selected SDK needs them.
+//! Backport Gui and Unicode features to an isolated copy of older SDKs.
 #import "Glosso/Paths";
 #import "File_System/Copy";
 #import "File_System/Directory";
@@ -50,7 +50,7 @@ apply_patch :: (stage: str, patch: str) -> bool {
         tprint("--git-dir={}/.git", stage),
         tprint("--work-tree={}", stage),
         "apply",
-        "--exclude=tests/*",
+        "--include=std/*",
         patch
     ];
     git := Command.command_make("git", arguments[..]);
@@ -70,7 +70,9 @@ apply_patch :: (stage: str, patch: str) -> bool {
     original := GLOSSO_STANDARD_DIRECTORY;
     needs_memory := contains_source("Gui/native/renderer_api.h", "overlay_capacity(render.overlay_count+6)");
     needs_gpu := !contains_source("Gui/Input_Types.glo", "High_Performance_Gpu ::");
-    if !needs_memory && !needs_gpu return original;
+    needs_emoji := !contains_source("Unicode/utilities.glo", "is_unicode_emoji_presentation ::") ||
+        !contains_source("Unicode/utilities.glo", "supports_unicode_emoji_variation ::");
+    if !needs_memory && !needs_gpu && !needs_emoji return original;
 
     stage.* = create_stage(root);
     staged := path_join(stage.path, "std");
@@ -83,6 +85,11 @@ apply_patch :: (stage: str, patch: str) -> bool {
         print("wst build: Gui memory backport unavailable; using the SDK's memory allocation.\n");
     if needs_gpu && !apply_patch(stage.path, path_join(root, "vendor/glosso/gui-gpu.patch")) {
         print("wst build: could not apply gui-gpu.patch; install Git or select a Gui SDK with High_Performance_Gpu.\n");
+        stage.free();
+        exit(1);
+    }
+    if needs_emoji && !apply_patch(stage.path, path_join(root, "vendor/glosso/unicode-emoji.patch")) {
+        print("wst build: could not apply unicode-emoji.patch; select a Glosso SDK with Unicode emoji properties.\n");
         stage.free();
         exit(1);
     }

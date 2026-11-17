@@ -6,6 +6,8 @@ Types :: #import "platform_types.glo";
 Colors :: #import "colors.glo";
 S :: #import "windows_shaping.glo";
 Glyph_Font :: #import "glyph_font.glo";
+#import "Unicode";
+Emoji_Render :: #import "emoji_render.glo";
 Kitty :: #import "kitty_store.glo";
 Terminal :: #import "terminal.glo";
 #import "windows_fonts.glo";
@@ -39,8 +41,9 @@ replaying: bool;
 error_storage: [1024]u8;
 error_count: ssize;
 
+Command_Kind :: enum { Rectangle; Glyph; Label; Rounded_Rect; Stroke; Image; Powerline; Color_Emoji; }
 Command :: struct {
-    kind: s32; // rectangle, terminal glyph, UI string, rounded rectangle, stroke, image
+    kind: Command_Kind;
     x: s32;
     y: s32;
     width: s32;
@@ -206,6 +209,7 @@ prepare :: (family: str, size: s32, scale: f32, result: *Prepared) -> bool {
 
 commit :: (prepared: *Prepared) {
     if !prepared.changed return;
+    Emoji_Render.clear();
     clear_shape_cache();
     discard(&current);
     current = prepared.*;
@@ -303,6 +307,7 @@ close :: () {
     image_commands.reset();
     for entry: image_textures G.release_texture(entry.texture);
     image_textures.reset();
+    Emoji_Render.close();
     clear_shape_cache();
     discard(&current);
     ligatures = true;
@@ -313,7 +318,7 @@ close :: () {
 
 rect :: (x: s32, y: s32, width: s32, height: s32, color: u32) {
     if !active || width <= 0 || height <= 0 return;
-    emit(.{ .kind = 0, .x = x, .y = y, .width = width, .height = height, .color = color });
+    emit(.{ .kind = .Rectangle, .x = x, .y = y, .width = width, .height = height, .color = color });
 }
 
 rounded_rect :: (x: s32, y: s32, width: s32, height: s32, radius: s32, color: u32) {
@@ -324,7 +329,7 @@ rounded_rect :: (x: s32, y: s32, width: s32, height: s32, radius: s32, color: u3
     }
     emit(
         .{
-            .kind = 3,
+            .kind = .Rounded_Rect,
             .x = x,
             .y = y,
             .width = width,
@@ -339,7 +344,7 @@ line :: (x1: s32, y1: s32, x2: s32, y2: s32, thickness: f32, color: u32) {
     if !active || !is_finite(thickness) || thickness <= 0 || thickness > 4096 return;
     emit(
         .{
-            .kind = 4,
+            .kind = .Stroke,
             .x = x1,
             .y = y1,
             .width = x2,
@@ -386,7 +391,7 @@ label_with_font :: (
     top := y + (height - cast(s32) logical_height) / 2;
     emit(
         .{
-            .kind = 2,
+            .kind = .Label,
             .x = x,
             .y = top,
             .width = width,
@@ -659,7 +664,7 @@ draw :: (command: Command) {
     if scale <= 0 scale = 1;
     if command.clipped G.set_clip(logical_rect(command.clip));
     else               G.reset_clip();
-    if command.kind == 0 {
+    if command.kind == .Rectangle {
         G.rectangle(
             .{
                 cast(f32) command.x / scale,
@@ -669,7 +674,19 @@ draw :: (command: Command) {
             },
             color(command.color)
         );
-    } else if command.kind == 1 {
+    } else if command.kind == .Glyph || command.kind == .Color_Emoji {
+        top := command.y;
+        if command.kind == .Color_Emoji {
+            if Emoji_Render.draw(
+                command.cp, command.color, command.x, top, command.width, command.height,
+                2 * current.cw, current.ch, scale
+            ) {
+                G.reset_clip();
+                return;
+            }
+            ensure_glyph_font(command.font, command.cp);
+            top += (command.height - cast(s32)(G.font_height(command.font) * scale)) / 2;
+        }
         storage: [4]u8;
         length := encode(command.cp, &storage);
         value := cast(str) bytes_view(cast([*]const u8) &storage, length);
@@ -678,7 +695,7 @@ draw :: (command: Command) {
             value,
             .{
                 (cast(f32) command.x + command.offset_x) / scale,
-                (cast(f32) command.y + command.offset_y) / scale
+                (cast(f32) top + command.offset_y) / scale
             },
             color(command.color)
         );
@@ -688,22 +705,24 @@ draw :: (command: Command) {
                 value,
                 .{
                     (cast(f32) command.x + command.offset_x + 0.6) / scale,
-                    (cast(f32) command.y + command.offset_y) / scale
+                    (cast(f32) top + command.offset_y) / scale
                 },
                 color(command.color)
             );
-    } else if command.kind == 2 {
+    } else if command.kind == .Label {
         G.text(
             command.font,
             command.text,
             .{ cast(f32) command.x / scale, cast(f32) command.y / scale },
             color(command.color)
         );
-    } else if command.kind == 3 {
+    } else if command.kind == .Rounded_Rect {
         draw_rounded(command);
-    } else if command.kind == 4 {
+    } else if command.kind == .Stroke {
         draw_stroke(command);
-    } else if command.kind == 5 {
+    } else if command.kind == .Powerline {
+        draw_powerline(command);
+    } else if command.kind == .Image {
         placement := image_commands[command.image_index];
         G.set_clip(logical_rect(placement.clip));
         if !G.draw_texture(placement.texture, logical_rect(placement.destination), placement.source)
@@ -737,6 +756,20 @@ paint_span :: (left: f32, right: f32, y: s32, ink: GN.Native_Color) {
     edge = ink;
     edge.a *= right - cast(f32) last;
     paint_rect(cast(f32) last, cast(f32) y, 1, 1, edge);
+}
+// Solid Powerline separators meet the neighboring segment along the full cell
+// edge, including any line gap above and below the font's glyph box.
+draw_powerline :: (command: Command) {
+    ink := color(command.color);
+    left := cast(f32) command.x;
+    right := cast(f32)(command.x + command.width);
+    for row: cast(s32) 0..command.height {
+        from_edge := row;
+        if command.height - row - 1 < from_edge from_edge = command.height - row - 1;
+        extent := cast(f32)(2 * from_edge + 1) * cast(f32) command.width / cast(f32) command.height;
+        if command.cp == 16#e0b0 paint_span(left, left + extent, command.y + row, ink);
+        else                     paint_span(right - extent, right, command.y + row, ink);
+    }
 }
 draw_rounded :: (command: Command) {
     radius := cast(s32) command.geometry;
@@ -905,11 +938,14 @@ draw_cell :: (
         bg = selected_bg;
     }
     bounds: GN.Native_Rect = .{ cast(f32) x, cast(f32) y, cast(f32) width, cast(f32) height };
-    if clipped bounds = intersect(bounds, clip);
+    if clipped {
+        bounds = intersect(bounds, clip);
+        if bounds.width <= 0 || bounds.height <= 0 return;
+    }
     if paint_background
         emit(
             .{
-                .kind = 0,
+                .kind = .Rectangle,
                 .x = x,
                 .y = y,
                 .width = width,
@@ -919,15 +955,35 @@ draw_cell :: (
                 .clip = clip
             }
         );
-    if cp != 0 && cp != 32 && (flags & 16) == 0 {
-        font := current.regular;
-        if (flags & 1) != 0 font = current.bold;
-        ensure_glyph_font(font, cp);
-        ink_height := G.font_height(font) * current.scale;
-        top := y + (height - cast(s32) ink_height) / 2;
+    if (cp == 16#e0b0 || cp == 16#e0b2) && (flags & 16) == 0 {
         emit(
             .{
-                .kind = 1,
+                .kind = .Powerline,
+                .x = x,
+                .y = y,
+                .width = width,
+                .height = height,
+                .color = fg,
+                .cp = cp,
+                .clipped = true,
+                .clip = bounds
+            }
+        );
+    } else if cp != 0 && cp != 32 && (flags & 16) == 0 {
+        font := current.regular;
+        if (flags & 1) != 0 font = current.bold;
+        kind: Command_Kind = .Glyph;
+        top := y;
+        if (flags & Terminal.CELL_EMOJI_STYLE) != 0 ||
+           ((flags & Terminal.CELL_TEXT_STYLE) == 0 && cp >= 128 && cp.is_unicode_emoji_presentation()) {
+            kind = .Color_Emoji;
+        } else {
+            ensure_glyph_font(font, cp);
+            top += (height - cast(s32)(G.font_height(font) * current.scale)) / 2;
+        }
+        emit(
+            .{
+                .kind = kind,
                 .x = x,
                 .y = top,
                 .width = width,
@@ -944,7 +1000,7 @@ draw_cell :: (
     if (flags & 2) != 0
         emit(
             .{
-                .kind = 0,
+                .kind = .Rectangle,
                 .x = x,
                 .y = y + height - 2,
                 .width = width,
@@ -983,7 +1039,8 @@ cached_shape :: (text: str, bold: bool) -> *S.Run {
 }
 
 shapeable :: (cell: Types.Render_Cell) -> bool {
-    return cell.codepoint >= 32 && cell.codepoint <= 126 && (cell.flags & 24) == 0;
+    return cell.codepoint >= 32 && cell.codepoint <= 126 &&
+        (cell.flags & (24 | Terminal.CELL_EMOJI_STYLE)) == 0;
 }
 same_shape_style :: (a: Types.Render_Cell, b: Types.Render_Cell) -> bool {
     // Palette provenance and selection do not alter OpenType substitutions.
@@ -1044,7 +1101,7 @@ shaped_ink :: (
         for i: start_glyph..end_glyph {
             emit(
                 .{
-                    .kind = 1,
+                    .kind = .Glyph,
                     .x = x,
                     .y = top,
                     .color = fg,
@@ -1131,7 +1188,7 @@ draw_shaped :: (
                 while next < end && cells[next].underline_color == underline next += 1;
                 emit(
                     .{
-                        .kind = 0,
+                        .kind = .Rectangle,
                         .x = x + start * cw,
                         .y = y + ch - 2,
                         .width = (next - start) * cw,
@@ -1152,7 +1209,7 @@ draw_shaped :: (
         if clipped bounds = intersect(bounds, clip);
         emit(
             .{
-                .kind = 0,
+                .kind = .Rectangle,
                 .x = left,
                 .y = y,
                 .width = cw,
@@ -1166,7 +1223,7 @@ draw_shaped :: (
         if (cells[cursor_column].flags & 2) != 0
             emit(
                 .{
-                    .kind = 0,
+                    .kind = .Rectangle,
                     .x = left,
                     .y = y + ch - 2,
                     .width = cw,
@@ -1205,6 +1262,8 @@ image_texture :: (view: *Kitty.View) -> G.Texture {
     // Replacements and tab switches can exhaust Gui's texture slots while
     // unused textures from the preceding frame still reside in the cache.
     if !G.texture_valid(texture) && discard_unused_textures()
+        texture = G.create_texture(view.width, view.height, pixels, .Nearest);
+    if !G.texture_valid(texture) && Emoji_Render.release_textures()
         texture = G.create_texture(view.width, view.height, pixels, .Nearest);
     if G.texture_valid(texture) {
         image_textures.push(
@@ -1281,7 +1340,7 @@ prepare_images :: (
 }
 
 draw_images :: (first: ssize, end: ssize) {
-    for i: first..end emit(.{ .kind = 5, .image_index = i });
+    for i: first..end emit(.{ .kind = .Image, .image_index = i });
 }
 
 default_background :: (cell: Types.Render_Cell) -> bool {
@@ -1424,7 +1483,7 @@ draw_grid :: (
                     c.codepoint,
                     cursor_ink,
                     cursor_color,
-                    c.flags & 3,
+                    c.flags & (3 | Terminal.CELL_EMOJI_STYLE | Terminal.CELL_TEXT_STYLE),
                     false,
                     clipped,
                     clip,
@@ -1436,7 +1495,7 @@ draw_grid :: (
             top := y + cursor_y * ch;
             emit(
                 .{
-                    .kind = 0,
+                    .kind = .Rectangle,
                     .x = left,
                     .y = top,
                     .width = span * cw,
@@ -1448,7 +1507,7 @@ draw_grid :: (
             );
             emit(
                 .{
-                    .kind = 0,
+                    .kind = .Rectangle,
                     .x = left,
                     .y = top + ch - 1,
                     .width = span * cw,
@@ -1460,7 +1519,7 @@ draw_grid :: (
             );
             emit(
                 .{
-                    .kind = 0,
+                    .kind = .Rectangle,
                     .x = left,
                     .y = top,
                     .width = 1,
@@ -1472,7 +1531,7 @@ draw_grid :: (
             );
             emit(
                 .{
-                    .kind = 0,
+                    .kind = .Rectangle,
                     .x = left + span * cw - 1,
                     .y = top,
                     .width = 1,

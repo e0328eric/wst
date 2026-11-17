@@ -40,7 +40,16 @@ GUI executable. All build automation is Glosso; no PowerShell scripts are needed
 The build uses Git to patch a temporary copy of older Glosso SDKs when needed.
 The memory patch makes `Gui` upload text geometry in batches and allocate
 Direct3D scene resources on first use. The GPU patch adds adapter selection
-to the Windows `Gui` renderer.
+to the Windows `Gui` renderer. When the selected SDK lacks emoji presentation
+properties, the build applies the `std/Unicode` portion of `unicode-emoji.patch`.
+
+To update a sibling Glosso checkout that lacks the emoji APIs, apply the
+full patch from wst. It includes the pinned data, generator changes, and tests.
+
+```powershell
+git -C ../glosso apply (Resolve-Path vendor/glosso/unicode-emoji.patch).Path
+glosso compile first.glo --std=../glosso/std --cache-dir=build/cache -- test
+```
 
 To use GPU selection in other Glosso applications, run the following from
 the wst project directory. Older SDKs that still allocate 3D scene resources
@@ -358,6 +367,12 @@ D2KodingLigature Nerd Font Mono; fonts without them retain their ordinary glyphs
 Ligatures combine compatible runs of single-cell ASCII text while preserving
 the terminal grid, original text, and cell-based cursor and selection behavior.
 Set `font_ligatures = false` to draw each character separately.
+
+wst uses Segoe UI Emoji for color glyphs such as 🏠 and ⏰. Both occupy two
+terminal columns. Symbols such as ❤ use their text appearance by default and
+switch to color with the emoji presentation selector (❤️). The solid left and
+right Powerline separators fill the cell height with any terminal font.
+
 `window_opacity` controls transparency and hot reloads on save. Its range is
 `0.1` to `1.0`; the default `1.0` is fully opaque, and `0.9` gives 90% opacity.
 It applies to the entire window, including text, cursor, and header. Mouse and
@@ -531,9 +546,9 @@ To save an offscreen rendering preview while running the end-to-end smoke test:
 
 This is a deliberately small emulator. It does not reflow existing text;
 narrower views clip historical lines
-without discarding their hidden columns. Scrollback is limited to 10,000 lines. CJK and
-emoji use basic Unicode scalar widths;
-grapheme cluster shaping, bidirectional text, and IME composition are not implemented.
+without discarding their hidden columns. Scrollback is limited to 10,000 lines.
+Cell widths and emoji presentation use the character properties in Glosso’s `Unicode` module.
+Grapheme cluster shaping, bidirectional text, and IME composition are not implemented.
 The parser supports common VT sequences, colors, cursor movement, and screen
 updates, with the implementation and regression cases in `src/terminal.glo`
 and `tests/terminal_test.glo` defining its current scope.
@@ -541,7 +556,8 @@ and `tests/terminal_test.glo` defining its current scope.
 Original contributions to wst are [MIT licensed](LICENSE). Third-party materials
 retain their upstream copyrights and license terms. Complete notices for st,
 Clay, Glosso (including `Gui`), Lua, stb_truetype, LLVM compiler-rt builtins,
-and Microsoft's ConPTY host are included in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) and accompany binary
-releases. The upstream st and Clay license files also remain in their source
+Microsoft's ConPTY host, and Unicode character data are included in
+[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) and accompany binary releases.
+The upstream st and Clay license files also remain in their source
 directories. The st notice is retained for the supplied reference sources and
 st-derived portions of wst.

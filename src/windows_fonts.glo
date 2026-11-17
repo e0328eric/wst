@@ -254,9 +254,13 @@ native_retain_face :: (face: usize) {
 native_release_face :: (face: usize) {
     release(face);
 }
-native_has_glyph :: (face: usize, cp: u32) -> bool {
+native_glyph_index :: (face: usize, cp: u32) -> u16 {
     glyph: u16;
-    return face != 0 && method(Get_Glyphs, face, 11)(face, &cp, 1, &glyph) >= 0 && glyph != 0;
+    if face == 0 || method(Get_Glyphs, face, 11)(face, &cp, 1, &glyph) < 0 return 0;
+    return glyph;
+}
+native_has_glyph :: (face: usize, cp: u32) -> bool {
+    return native_glyph_index(face, cp) != 0;
 }
 native_free :: (data: *Font_Data) {
     if data.bytes > 0 mem_free_raw(cast(*void) data.data, Layout.bytes(cast(ssize) data.bytes));
@@ -287,12 +291,12 @@ include_vertical_ink :: (data: *Font_Data) {
     put16(source + hhea_at + 4, cast(u16) cast(s16) data.ascent);
     put16(source + hhea_at + 6, cast(u16) cast(s16)(-data.descent));
 }
-native_font :: (family: str, bold: s32, result: *Font_Data, face_result: ?*usize = null) -> s32 {
-    empty: Font_Data;
-    result.* = empty;
+// Returns an owned DirectWrite face without copying its font file.
+native_match_face :: (family: str, bold: s32, matched_family: *bool, face_result: *usize) -> s32 {
+    face_result.* = 0;
+    matched_family.* = false;
     error_count = 0;
     error_storage[0] = 0;
-    if #pattern ?destination = face_result destination.* = 0;
     if family.count == 0 || !family.string_is_valid() || family.contains("\0")
         return failed("Invalid font family", E_INVALIDARG);
     name := family.cstring16_from_string();
@@ -302,10 +306,8 @@ native_font :: (family: str, bold: s32, result: *Font_Data, face_result: ?*usize
     collection: usize;
     font_family: usize;
     font: usize;
-    face: usize;
     index: u32;
     defer {
-        release(face);
         release(font);
         release(font_family);
         release(collection);
@@ -318,7 +320,7 @@ native_font :: (family: str, bold: s32, result: *Font_Data, face_result: ?*usize
     exists: s32;
     hr = method(Find_Family, collection, 5)(collection, name, &index, &exists);
     if hr < 0 return failed("Finding installed font", hr);
-    result.matched_family = exists != 0;
+    matched_family.* = exists != 0;
     if exists == 0 {
         fallback := "Consolas".cstring16_from_string();
         defer fallback.free();
@@ -332,8 +334,17 @@ native_font :: (family: str, bold: s32, result: *Font_Data, face_result: ?*usize
     if bold != 0 weight = 700;
     hr = method(Match_Font, font_family, 7)(font_family, weight, 5, 0, &font);
     if hr < 0 return failed("Matching installed font", hr);
-    hr = method(Create_Object, font, 13)(font, &face);
+    hr = method(Create_Object, font, 13)(font, face_result);
     if hr < 0 return failed("Reading installed font face", hr);
+    return 1;
+}
+native_font :: (family: str, bold: s32, result: *Font_Data, face_result: ?*usize = null) -> s32 {
+    empty: Font_Data;
+    result.* = empty;
+    if #pattern ?destination = face_result destination.* = 0;
+    face: usize;
+    if native_match_face(family, bold, &result.matched_family, &face) == 0 return 0;
+    defer release(face);
     success := native_face_data(face, result);
     if success != 0 if #pattern ?destination = face_result {
         native_retain_face(face);
