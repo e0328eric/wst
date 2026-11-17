@@ -1,5 +1,5 @@
 //! Bounded decoding of Kitty direct-transfer chunks into straight RGBA8.
-Deflate :: #import "../vendor/glosso/Deflate.glo";
+Deflate :: #import "Archive/Deflate";
 #import "Image/Core";
 #import "Image/Png";
 #import "Memory/Raw";
