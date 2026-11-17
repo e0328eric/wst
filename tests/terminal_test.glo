@@ -483,7 +483,25 @@ emoji_tests :: () {
     check(t.cursor_x == 2 && (visible_cell(&t, 0, 0).flags & CELL_EMOJI_STYLE) == 0,
         "an unsupported variation sequence consumes no extra cell");
 }
+lazygit_exit_test :: () {
+    t: Terminal;
+    init(&t, 32, 10, 4, 16#ffffff, 0);
+    defer release(&t);
+    // Leave an old saved cursor four rows below the next shell prompt.
+    feed(&t, "\x1b[7;1H\x1b[s\x1b[Hprompt\r\nlg()\r\n");
+    // Lazygit probes the keyboard protocol before switching screens.
+    feed(&t, "\x1b[?u\x1b[?1049h\x1b[8;1Hlazygit\x1b[?1049l\x1b[6n");
+    check(cast(str) t.replies.view() == "\x1b[3;1R", "lazygit exit reports the command's next row");
+    feed(&t, "next prompt");
+    cell(&t, 0, 0, #char "p");
+    cell(&t, 0, 1, #char "l");
+    cell(&t, 0, 2, #char "n");
+    cell(&t, 0, 6, 32);
+    feed(&t, "\x1b[s\x1b[H\x1b[?1s\x1b[u");
+    check(t.cursor_x == 11 && t.cursor_y == 2, "plain CSI s/u still saves and restores the cursor");
+}
 main :: () {
+    lazygit_exit_test();
     emoji_tests();
     theme_tests();
     history_limit_tests();
@@ -670,6 +688,11 @@ main :: () {
     feed(&edge, "\x1bc\x1b[<0c\x1b[=1c\x1b[>0cZ");
     cell(&edge, 0, 0, 90);
     cell(&edge, 1, 0, 32);
+    feed(&edge, "\x1bcA\r\nB\x1b[?2K");
+    cell(&edge, 0, 1, 32);
+    cell(&edge, 0, 0, #char "A");
+    feed(&edge, "\x1b[?2J");
+    cell(&edge, 0, 0, 32);
     feed(&t, "\x1bc한A\x1b[H\x1b[@");
     cell(&t, 0, 0, 32);
     cell(&t, 1, 0, 16#d55c);

@@ -827,6 +827,16 @@ term_reply :: (t: *Terminal, text: str) {
     }
 }
 term_csi :: (t: *Terminal, final: u8) {
+    if final == #char "h" || final == #char "l" {
+        term_mode(t, final == #char "h");
+        return;
+    }
+    if t.private_mode {
+        // CSI ? u queries keyboard flags. Falling through to CSI u would
+        // restore an old cursor before a fullscreen application saves it.
+        // Only selective erase shares the handlers below (all cells are erasable).
+        if (final != #char "J" && final != #char "K") || t.args[0] > 2 return;
+    }
     n := t.args[0];
     if n == 0 n = 1;
     x := t.cursor_x;
@@ -903,9 +913,7 @@ term_csi :: (t: *Terminal, final: u8) {
     } else if final == 83 term_scroll_up(t, t.top, t.bottom, n, true);
     else if final == 84 term_scroll_down(t, t.top, t.bottom, n);
     else if final == 109 term_sgr(t);
-    else if final == 104 term_mode(t, true);
-    else if final == 108 term_mode(t, false);
-    else if final == 114 && !t.private_mode {
+    else if final == 114 {
         top := n - 1;
         bottom := t.rows - 1;
         if t.argc > 1 && t.args[1] > 0 bottom = t.args[1] - 1;
@@ -917,15 +925,15 @@ term_csi :: (t: *Terminal, final: u8) {
         }
     } else if final == 115 term_save(t);
     else if final == 117 term_restore(t);
-    else if final == 99 && !t.private_mode term_reply(t, "\x1b[?1;2c");
-    else if final == 116 && !t.private_mode {
+    else if final == 99 term_reply(t, "\x1b[?1;2c");
+    else if final == 116 {
         if t.args[0] == 14
             term_reply(t, tprint("\x1b[4;{};{}t", t.rows * t.cell_height, t.cols * t.cell_width));
         else if t.args[0] == 16
             term_reply(t, tprint("\x1b[6;{};{}t", t.cell_height, t.cell_width));
         else if t.args[0] == 18
             term_reply(t, tprint("\x1b[8;{};{}t", t.rows, t.cols));
-    } else if final == 110 && !t.private_mode {
+    } else if final == 110 {
         if      t.args[0] == 5 term_reply(t, "\x1b[0n");
         else if t.args[0] == 6 term_reply(t, tprint("\x1b[{};{}R", y + 1, x + 1));
     } else if final == 98 && t.last_codepoint != 0 {
