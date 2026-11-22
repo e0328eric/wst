@@ -1,4 +1,4 @@
-//! Native client-header behavior without taking over Gui's window procedure.
+//! Native client-header behavior while Gui keeps handling window messages.
 G :: #import "Gui";
 N :: #import "../src/windows_gui.glo";
 #import "Io";
@@ -14,6 +14,12 @@ Point :: struct #c_call {
     x: s32;
     y: s32;
 }
+Monitor_Info :: struct #c_call {
+    size: u32;
+    monitor: Rect;
+    work: Rect;
+    flags: u32;
+}
 Message :: struct #c_call {
     window: usize;
     message: u32;
@@ -26,6 +32,10 @@ Message :: struct #c_call {
 GetWindowLongPtrW :: (window: usize, index: s32) -> ssize #foreign user;
 SetWindowLongPtrW :: (window: usize, index: s32, value: ssize) -> ssize #foreign user;
 GetWindowRect :: (window: usize, rect: *Rect) -> s32 #foreign user;
+GetClientRect :: (window: usize, rect: *Rect) -> s32 #foreign user;
+SetWindowPos :: (window: usize, after: usize, x: s32, y: s32, width: s32, height: s32, flags: u32) -> s32 #foreign user;
+MonitorFromWindow :: (window: usize, flags: u32) -> usize #foreign user;
+GetMonitorInfoW :: (monitor: usize, info: *Monitor_Info) -> s32 #foreign user;
 GetSystemMenu :: (window: usize, revert: s32) -> usize #foreign user;
 IsWindowVisible :: (window: usize) -> s32 #foreign user;
 ClientToScreen :: (window: usize, point: *Point) -> s32 #foreign user;
@@ -55,7 +65,6 @@ main :: () {
     check(N.gui_bind() != 0, "bind supplemental native services");
     defer N.gui_unbind();
     handle := N.gui_window_handle();
-    procedure := GetWindowLongPtrW(handle, -4);
     check(N.configure_chrome(16#080808) != 0, "configure integrated header");
     style := GetWindowLongPtrW(handle, -16);
     check((style & 16#00c00000) == 0, "standard caption is removed");
@@ -63,7 +72,6 @@ main :: () {
         (style & 16#000f0000) == 16#000f0000,
         "native resize, system menu, minimize and maximize styles remain"
     );
-    check(GetWindowLongPtrW(handle, -4) == procedure, "Gui remains the sole window procedure");
     check(
         GetSystemMenu(handle, 0) != 0 && IsWindowVisible(handle) == 0,
         "system menu exists and hidden setup stays hidden"
@@ -88,6 +96,51 @@ main :: () {
     check(hit == 10, "native left resize edge remains active");
     hit = SendMessageW(handle, 16#84, 0, packed((before.left + before.right) / 2, before.top + 1));
     check(hit == 12, "native top resize edge remains active");
+
+    // Windows places a caption-less maximized window over the full monitor and
+    // the taskbar. Apply that placement to the hidden window without showing it.
+    info: Monitor_Info;
+    info.size = cast(u32) size_of(Monitor_Info);
+    check(GetMonitorInfoW(MonitorFromWindow(handle, 2), &info) != 0, "read monitor work area");
+    _ := SetWindowLongPtrW(handle, -16, style | 16#01000000);
+    check(
+        SetWindowPos(
+            handle,
+            0,
+            info.monitor.left - 8,
+            info.monitor.top - 8,
+            info.monitor.right - info.monitor.left + 16,
+            info.monitor.bottom - info.monitor.top + 16,
+            16#14
+        ) != 0,
+        "apply full-monitor maximized bounds"
+    );
+    client: Rect;
+    origin: Point;
+    check(
+        GetClientRect(handle, &client) != 0 && ClientToScreen(handle, &origin) != 0 &&
+        origin.x == info.work.left && origin.y == info.work.top &&
+        client.right == info.work.right - info.work.left &&
+        client.bottom == info.work.bottom - info.work.top,
+        "maximized client fills the work area and leaves the taskbar uncovered"
+    );
+    _ := SetWindowLongPtrW(handle, -16, style);
+    check(
+        SetWindowPos(
+            handle,
+            0,
+            before.left,
+            before.top,
+            before.right - before.left,
+            before.bottom - before.top,
+            16#14
+        ) != 0 &&
+        GetWindowRect(handle, &after) != 0 && before.left == after.left && before.top == after.top &&
+        before.right == after.right && before.bottom == after.bottom,
+        "normal bounds are not fitted to the work area"
+    );
+    _ := G.update_window_events(window);
+    check(IsWindowVisible(handle) == 0, "maximized geometry test keeps the window hidden");
 
     // Inspect queued commands instead of opening an OS menu/move loop or showing
     // a test window over the user's desktop. Windows owns command execution.

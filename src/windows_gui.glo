@@ -12,6 +12,7 @@ user32 :: #library,system "user32";
 kernel32 :: #library,system "kernel32";
 scene :: #library,system "glosso_scene_runtime";
 dwmapi :: #library,system "dwmapi";
+comctl32 :: #library,system "comctl32";
 
 Handle :: usize;
 #public Rect :: struct #c_call {
@@ -38,7 +39,30 @@ Call_Message :: struct #c_call {
     message: u32;
     window: Handle;
 }
+Window_Position :: struct #c_call {
+    window: Handle;
+    after: Handle;
+    x: s32;
+    y: s32;
+    width: s32;
+    height: s32;
+    flags: u32;
+}
+Monitor_Info :: struct #c_call {
+    size: u32;
+    monitor: Rect;
+    work: Rect;
+    flags: u32;
+}
 Hook :: #fn_ptr(code: s32, detail: usize, parameter: ssize) -> ssize #c_call;
+Subclass :: #fn_ptr(
+    window: Handle,
+    message: u32,
+    detail: usize,
+    parameter: ssize,
+    id: usize,
+    data: usize
+) -> ssize #c_call;
 
 // Gui currently exposes an opaque token. Keep the dependency on its pinned
 // Windows backend accessor here until std.Gui offers a public native handle.
@@ -74,6 +98,12 @@ GetSystemMenu :: (window: Handle, revert: s32) -> Handle #foreign user32 "GetSys
 TrackPopupMenuEx :: (menu: Handle, flags: u32, x: s32, y: s32, window: Handle, parameters: usize) -> u32 #foreign user32 "TrackPopupMenuEx";
 EnableMenuItem :: (menu: Handle, item: u32, flags: u32) -> s32 #foreign user32 "EnableMenuItem";
 GetDoubleClickTime :: () -> u32 #foreign user32 "GetDoubleClickTime";
+MonitorFromRect :: (rect: *const Rect, flags: u32) -> Handle #foreign user32 "MonitorFromRect";
+MonitorFromWindow :: (window: Handle, flags: u32) -> Handle #foreign user32 "MonitorFromWindow";
+GetMonitorInfoW :: (monitor: Handle, info: *Monitor_Info) -> s32 #foreign user32 "GetMonitorInfoW";
+SetWindowSubclass :: (window: Handle, procedure: Subclass, id: usize, data: usize) -> s32 #foreign comctl32 "SetWindowSubclass";
+RemoveWindowSubclass :: (window: Handle, procedure: Subclass, id: usize) -> s32 #foreign comctl32 "RemoveWindowSubclass";
+DefSubclassProc :: (window: Handle, message: u32, detail: usize, parameter: ssize) -> ssize #foreign comctl32 "DefSubclassProc";
 DwmSetWindowAttribute :: (window: Handle, attribute: u32, value: *const void, bytes: u32) -> s32 #foreign dwmapi "DwmSetWindowAttribute";
 GetMenu :: (window: Handle) -> Handle #foreign user32 "GetMenu";
 AdjustWindowRectExForDpi :: (rect: *Rect, style: u32, menu: s32, extended: u32, dpi: u32) -> s32 #foreign user32 "AdjustWindowRectExForDpi";
@@ -173,6 +203,60 @@ observe_messages :: (code: s32, detail: usize, parameter: ssize) -> ssize #c_cal
 win_error :: (code: u32, operation: cstr) -> s32 {
     SetLastError(code);
     return P.windows_error(operation);
+}
+
+/// Windows maximizes a window without WS_CAPTION over its whole monitor, and
+/// the shell then treats it as fullscreen and lowers the taskbar. Place a
+/// maximized client-header window like a captioned one instead: the client
+/// fills the monitor work area and the resize frame lies just outside it.
+fit_maximized :: (window: Handle, position: *Window_Position) {
+    if (position.flags & 3) == 3 return; // SWP_NOSIZE | SWP_NOMOVE
+    style := cast(u32) GetWindowLongPtrW(window, -16);
+    // Maximized with a native resize frame and no caption. Borderless
+    // fullscreen drops WS_THICKFRAME and keeps its full-monitor bounds.
+    if (style & 16#01040000) != 16#01040000 || (style & 16#00c00000) == 16#00c00000 return;
+    monitor: Handle;
+    if (position.flags & 3) == 0 {
+        target: Rect = .{
+            position.x,
+            position.y,
+            position.x + position.width,
+            position.y + position.height
+        };
+        monitor = MonitorFromRect(&target, 2); // MONITOR_DEFAULTTONEAREST
+    } else monitor = MonitorFromWindow(window, 2);
+    info: Monitor_Info;
+    info.size = cast(u32) size_of(Monitor_Info);
+    if monitor == 0 || GetMonitorInfoW(monitor, &info) == 0 return;
+    dpi := GetDpiForWindow(window);
+    if dpi == 0 dpi = 96;
+    frame: Rect;
+    menu: s32;
+    if GetMenu(window) != 0 menu = 1;
+    extended := cast(u32) GetWindowLongPtrW(window, -20);
+    if AdjustWindowRectExForDpi(&frame, style, menu, extended, dpi) == 0 return;
+    position.x = info.work.left + frame.left;
+    position.y = info.work.top + frame.top;
+    position.width = info.work.right - info.work.left + frame.right - frame.left;
+    position.height = info.work.bottom - info.work.top + frame.bottom - frame.top;
+    position.flags &= ~cast(u32) 3;
+}
+/// Geometry only: every message still reaches Gui's window procedure first.
+frame_messages :: (
+    window: Handle,
+    message: u32,
+    detail: usize,
+    parameter: ssize,
+    id: usize,
+    data: usize
+) -> ssize #c_call {
+    if message == 16#82 { // WM_NCDESTROY
+        _ := RemoveWindowSubclass(window, frame_messages, id);
+        return DefSubclassProc(window, message, detail, parameter);
+    }
+    result := DefSubclassProc(window, message, detail, parameter);
+    if message == 16#46 fit_maximized(window, cast(*Window_Position) parameter); // WM_WINDOWPOSCHANGING
+    return result;
 }
 
 extended_style :: (window: Handle, value: ssize) -> bool {
@@ -305,11 +389,15 @@ set_window_opacity :: (value: f32) -> s32 {
 }
 
 /// Client-side header with the standard resizable frame and system commands.
-/// The Gui window procedure and event/render ownership are left intact.
+/// Gui keeps event/render ownership; a subclass only corrects maximized bounds.
 configure_chrome :: (background: u32) -> s32 {
     window := platform_window();
     if window == 0 return win_error(1400, "Styling terminal window");
     if chrome_window != window {
+        // Installed before the caption is removed, and kept with that style
+        // until the window is destroyed. Reinstalling only refreshes it.
+        if SetWindowSubclass(window, frame_messages, 1, 0) == 0
+            return win_error(8, "Fitting maximized terminal window");
         style := GetWindowLongPtrW(window, -16);
         // Retain thick resize borders, system menu and native min/max capability.
         replacement := style & ~cast(ssize) 16#00c00000; // WS_CAPTION

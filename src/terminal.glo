@@ -7,6 +7,14 @@ Kitty :: #import "kitty_store.glo";
 
 // An APC carries at most 4096 base64 bytes plus its control keys.
 KITTY_FRAME_LIMIT :: 8192;
+GROUND :: 0;
+ESCAPE :: 1;
+CSI :: 2;
+OSC :: 3;
+OSC_ESC :: 4;
+IGNORE_STRING :: 5;
+IGNORE_STRING_ESC :: 6;
+ESCAPE_INTERMEDIATE :: 7;
 APC_SELECTOR :: 8;
 APC_GRAPHICS :: 9;
 APC_GRAPHICS_ESC :: 10;
@@ -278,7 +286,7 @@ resize :: (t: *Terminal, cols: s32, rows: s32) {
     height := term_clamp(rows, 1, 256);
     if width == t.cols && height == t.rows return;
     t.preceding_x = -1;
-    if height < t.rows                     Kitty.resize(&t.graphics, height);
+    if height < t.rows Kitty.resize(&t.graphics, height);
     next: [..]Cell;
     next_alt: [..]Cell;
     next.reserve(cast(ssize)(width * height));
@@ -548,7 +556,7 @@ term_print :: (t: *Terminal, u: u32, style: u32 = 0) {
     }
     t.preceding_x = -1;
     width := term_width(u);
-    if width == 0 return;
+    if width == 0                return;
     if style == CELL_EMOJI_STYLE width = 2;
     term_write(t, u, width, style);
 }
@@ -955,7 +963,7 @@ term_osc_finish :: (t: *Terminal) {
         }
     }
     t.osc.clear();
-    t.state = 0;
+    t.state = GROUND;
 }
 term_reset :: (t: *Terminal) {
     if t.alternate term_alt(t, false);
@@ -1002,146 +1010,164 @@ term_graphics_finish :: (t: *Terminal) {
         term_move(t, x, t.cursor_y);
     }
     t.osc.clear();
-    t.state = 0;
+    t.state = GROUND;
 }
 term_byte :: (t: *Terminal, b: u8) {
     if b < 32 || b == 127 t.preceding_x = -1;
-    // Store only recognized Kitty APCs. Reuse the OSC buffer because control
-    // strings cannot nest. A cancelled or oversized frame invalidates any
-    // in-progress image upload, and none of its payload reaches the grid.
-    if t.state == APC_SELECTOR {
-        if b == 71 {
+    // Control strings consume their own terminators before ordinary controls.
+    if #partial t.state == {
+    case APC_SELECTOR;
+        if b == {
+        case #char "G";
             t.osc.clear();
             t.state = APC_GRAPHICS;
-        } else if b == 27 t.state = 6;
-        else if b == 24 || b == 26 t.state = 0;
-        else t.state = 5;
+        case 27;
+            t.state = IGNORE_STRING_ESC;
+        case 24, 26;
+            t.state = GROUND;
+        else;
+            t.state = IGNORE_STRING;
+        }
         return;
-    }
-    if t.state == APC_GRAPHICS || t.state == APC_GRAPHICS_ESC {
-        if t.state == APC_GRAPHICS_ESC && b == 92 term_graphics_finish(t);
+    case APC_GRAPHICS, APC_GRAPHICS_ESC;
+        // A cancelled or oversized frame also invalidates the pending upload.
+        if t.state == APC_GRAPHICS_ESC && b == #char "\\" term_graphics_finish(t);
         else if b == 24 || b == 26 {
             Kitty.cancel(&t.graphics);
             t.osc.clear();
-            t.state = 0;
+            t.state = GROUND;
         } else if t.state == APC_GRAPHICS_ESC || (t.osc.count >= KITTY_FRAME_LIMIT && b != 27) {
             Kitty.cancel(&t.graphics);
             t.osc.clear();
-            t.state = 5;
-            if b == 27 t.state = 6;
+            t.state = IGNORE_STRING;
+            if b == 27 t.state = IGNORE_STRING_ESC;
         } else if b == 27 t.state = APC_GRAPHICS_ESC;
         else t.osc.push(b);
         return;
-    }
-    if t.state == 3 {
-        if b == 7 {
+    case OSC;
+        if b == {
+        case 7;
             term_osc_finish(t);
-            return;
-        }
-        if b == 27 {
-            t.state = 4;
-            return;
-        }
-        if b == 24 || b == 26 {
+        case 27;
+            t.state = OSC_ESC;
+        case 24, 26;
             t.osc.clear();
-            t.state = 0;
-            return;
+            t.state = GROUND;
+        else;
+            if t.osc.count < 4096 t.osc.push(b);
         }
-        if t.osc.count < 4096 t.osc.push(b);
         return;
-    }
-    if t.state == 4 {
-        if b == 92 {
-            term_osc_finish(t);
-            return;
+    case OSC_ESC;
+        if b == #char "\\" term_osc_finish(t);
+        else {
+            t.state = OSC;
+            if t.osc.count < 4096 t.osc.push(b);
         }
-        t.state = 3;
-        if t.osc.count < 4096 t.osc.push(b);
         return;
-    }
-    if t.state == 5 {
-        if      b == 27            t.state = 6;
-        else if b == 24 || b == 26 t.state = 0;
+    case IGNORE_STRING;
+        if #partial b == {
+        case 27;
+            t.state = IGNORE_STRING_ESC;
+        case 24, 26;
+            t.state = GROUND;
+        }
         return;
-    }
-    if t.state == 6 {
-        if      b == 92 || b == 24 || b == 26 t.state = 0;
-        else if b != 27                       t.state = 5;
-        return;
-    }
-    if b == 27 {
-        t.state = 1;
-        t.utf_remaining = 0;
-        return;
-    }
-    if b == 24 || b == 26 {
-        t.state = 0;
-        t.utf_remaining = 0;
+    case IGNORE_STRING_ESC;
+        if b == {
+        case #char "\\", 24, 26;
+            t.state = GROUND;
+        case 27;
+        else;
+            t.state = IGNORE_STRING;
+        }
         return;
     }
     if b < 32 || b == 127 {
+        if #partial b == {
+        case 27;
+            t.state = ESCAPE;
+            t.utf_remaining = 0;
+            return;
+        case 24, 26;
+            t.state = GROUND;
+            t.utf_remaining = 0;
+            return;
+        }
         if t.utf_remaining > 0 {
             t.utf_remaining = 0;
             term_print(t, 16#fffd);
         }
-        if      b == 13                       term_move(t, 0, t.cursor_y);
-        else if b == 10 || b == 11 || b == 12 term_newline(t);
-        else if b == 8                        term_move(t, t.cursor_x - 1, t.cursor_y);
-        else if b == 9                        term_move(t, ((t.cursor_x / 8) + 1) * 8, t.cursor_y);
+        if #partial b == {
+        case 8;
+            term_move(t, t.cursor_x - 1, t.cursor_y);
+        case 9;
+            term_move(t, ((t.cursor_x / 8) + 1) * 8, t.cursor_y);
+        case 10, 11, 12;
+            term_newline(t);
+        case 13;
+            term_move(t, 0, t.cursor_y);
+        }
         return;
     }
-    if t.state == 7 {
-        t.state = 0;
+    if #partial t.state == {
+    case ESCAPE_INTERMEDIATE;
+        t.state = GROUND;
         return;
-    }
-    if t.state == 1 {
-        t.state = 0;
-        if b == 91 {
-            t.state = 2;
+    case ESCAPE;
+        t.state = GROUND;
+        if #partial b == {
+        case #char "[";
+            t.state = CSI;
             t.argc = 1;
             t.private_mode = false;
             t.intermediate = false;
-            i: s32 = 0;
-            while i < 32 {
-                t.args[i] = 0;
-                i += 1;
-            }
-        } else if b == 93 {
-            t.state = 3;
+            for i: 0..t.args.count t.args[i] = 0;
+        case #char "]";
+            t.state = OSC;
             t.osc.clear();
-        } else if b == 95 t.state = APC_SELECTOR;
-        else if b == 80 || b == 94 t.state = 5;
-        else if b == 40 || b == 41 || b == 42 || b == 43 || b == 35 || b == 37 t.state = 7;
-        else if b == 55 term_save(t);
-        else if b == 56 term_restore(t);
-        else if b == 68 term_newline(t);
-        else if b == 69 {
+        case #char "_";
+            t.state = APC_SELECTOR;
+        case #char "P", #char "^";
+            t.state = IGNORE_STRING;
+        case #char "(", #char ")", #char "*", #char "+", #char "#", #char "%";
+            t.state = ESCAPE_INTERMEDIATE;
+        case #char "7";
+            term_save(t);
+        case #char "8";
+            term_restore(t);
+        case #char "D";
+            term_newline(t);
+        case #char "E";
             t.cursor_x = 0;
             term_newline(t);
-        } else if b == 77 {
+        case #char "M";
             if t.cursor_y == t.top term_scroll_down(t, t.top, t.bottom, 1);
             else                   term_move(t, t.cursor_x, t.cursor_y - 1);
-        } else if b == 99 term_reset(t);
-        else if b == 90 term_reply(t, "\x1b[?1;2c");
+        case #char "c";
+            term_reset(t);
+        case #char "Z";
+            term_reply(t, "\x1b[?1;2c");
+        }
         return;
-    }
-    if t.state == 2 {
-        if b >= 48 && b <= 57 {
+    case CSI;
+        if #pattern b == {
+        case 48..=57;
             if t.args[t.argc - 1] < 1000000
                 t.args[t.argc - 1] = t.args[t.argc - 1] * 10 + cast(s32)(b - 48);
-        } else if b == 59 || b == 58 {
+        case 58..=59;
             if t.argc < 32 {
                 t.subparam[t.argc] = b == 58;
                 t.argc += 1;
             } else t.intermediate = true; // Discard an oversized CSI as a unit.
-        } else if b == 63 t.private_mode = true;
-        else if b == 60 || b == 61 || b == 62 t.intermediate = true;
-        else if b >= 32 && b <= 47 t.intermediate = true;
-        else if b >= 64 && b <= 126 {
+        case 63;
+            t.private_mode = true;
+        case 32..=47 | 60..=62;
+            t.intermediate = true;
+        case 64..=126;
             if !t.intermediate term_csi(t, b);
-            t.state = 0;
-        } else {
-            t.state = 0;
+            t.state = GROUND;
+        else;
+            t.state = GROUND;
         }
         return;
     }
@@ -1159,18 +1185,22 @@ term_byte :: (t: *Terminal, b: u8) {
         t.utf_remaining = 0;
         term_print(t, 16#fffd);
     }
-    if b < 128 term_print(t, cast(u32) b);
-    else if b >= 194 && b <= 223 {
+    if #pattern b == {
+    case 0..=127;
+        term_print(t, cast(u32) b);
+    case 194..=223;
         t.utf_value = cast(u32)(b & 31);
         t.utf_remaining = 1;
         t.utf_min = 128;
-    } else if b >= 224 && b <= 239 {
+    case 224..=239;
         t.utf_value = cast(u32)(b & 15);
         t.utf_remaining = 2;
         t.utf_min = 2048;
-    } else if b >= 240 && b <= 244 {
+    case 240..=244;
         t.utf_value = cast(u32)(b & 7);
         t.utf_remaining = 3;
         t.utf_min = 65536;
-    } else term_print(t, 16#fffd);
+    else;
+        term_print(t, 16#fffd);
+    }
 }
