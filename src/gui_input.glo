@@ -2,84 +2,101 @@
 G :: #import "Gui";
 T :: #import "platform_types.glo";
 N :: #import "native.glo";
+kernel32 :: #library,system "kernel32";
+GetLastError :: () -> u32 #foreign kernel32;
 #export "platform_types.glo" {
     Event, Key_Binding, Divider_Hit
 };
 
-Text_Prediction :: struct {
+#public Text_Prediction :: struct {
     codepoint: u32;
     alternate: u32;
     suppress: bool;
 }
-window: G.Window;
-events: [..]T.Event;
-event_head: ssize;
-batch_open: bool;
-render_input_ready: bool;
-closed_reported: bool;
-bindings: [128]T.Key_Binding;
-binding_count: s32;
-dividers: [31]T.Divider_Hit;
-divider_count: s32;
-left_down: bool;
-right_down: bool;
-right_alt: bool;
-pointer_known: bool;
-pointer_x: s32;
-pointer_y: s32;
-pointer_in_ui: bool;
-captured_axis: s32;
-wheel_remainder: f32;
-predictions: [..]Text_Prediction;
-prediction_head: ssize;
-last_error: str = "";
+#public Window_State :: struct {
+    window: G.Window;
+    events: [..]T.Event;
+    event_head: ssize;
+    batch_open: bool;
+    render_input_ready: bool;
+    closed_reported: bool;
+    bindings: [128]T.Key_Binding;
+    binding_count: s32;
+    dividers: [31]T.Divider_Hit;
+    divider_count: s32;
+    left_down: bool;
+    right_down: bool;
+    right_alt: bool;
+    pointer_known: bool;
+    pointer_x: s32;
+    pointer_y: s32;
+    pointer_in_ui: bool;
+    captured_axis: s32;
+    wheel_remainder: f32;
+    predictions: [..]Text_Prediction;
+    prediction_head: ssize;
+    last_error: str = "";
+}
+default_state: Window_State;
+selected_state: ?*Window_State;
+
+#public select_state :: (value: ?*Window_State) {
+    selected_state = value;
+}
+
+state :: () -> *Window_State #inline,always {
+    if #pattern ?selected = selected_state return selected;
+    return &default_state;
+}
 
 #public {
 
 bind_window :: (value: G.Window) {
     close();
-    window = value;
+    state().window = value;
 }
 
 close :: () {
-    events.reset();
-    predictions.reset();
-    event_head = 0;
-    prediction_head = 0;
-    batch_open = false;
-    render_input_ready = false;
-    closed_reported = false;
-    binding_count = 0;
-    divider_count = 0;
-    left_down = false;
-    right_down = false;
-    right_alt = false;
-    pointer_known = false;
-    pointer_in_ui = false;
-    captured_axis = 0;
-    wheel_remainder = 0;
-    last_error = "";
+    live := state();
+    live.events.reset();
+    live.predictions.reset();
+    live.event_head = 0;
+    live.prediction_head = 0;
+    live.batch_open = false;
+    live.render_input_ready = false;
+    live.closed_reported = false;
+    live.binding_count = 0;
+    live.divider_count = 0;
+    live.left_down = false;
+    live.right_down = false;
+    live.right_alt = false;
+    live.pointer_known = false;
+    live.pointer_in_ui = false;
+    live.captured_axis = 0;
+    live.wheel_remainder = 0;
+    live.last_error = "";
     empty: G.Window;
-    window = empty;
+    live.window = empty;
 }
 
 error_message :: () -> str {
-    return last_error;
+    return state().last_error;
 }
 /// Latest Gui pointer coordinates in physical pixels, including idle hover.
 pointer_position :: (x: *s32, y: *s32) -> bool {
-    if !pointer_known return false;
-    x.* = pointer_x;
-    y.* = pointer_y;
+    live := state();
+    if !live.pointer_known return false;
+    x.* = live.pointer_x;
+    y.* = live.pointer_y;
     return true;
 }
 pointer_ui :: (enabled: bool) {
-    pointer_in_ui = enabled;
+    state().pointer_in_ui = enabled;
     refresh_cursor();
 }
 
 validate_keybindings :: (items: [*]const T.Key_Binding, count: s32) -> s32 {
-    last_error = "";
+    state().last_error = "";
     if count < 0 || count > 128 || (count > 0 && cast(usize) items == 0)
         return invalid("Invalid keyboard shortcut count or pointer");
     for i: 0..count {
@@ -96,9 +113,10 @@ validate_keybindings :: (items: [*]const T.Key_Binding, count: s32) -> s32 {
 }
 
 set_keybindings :: (items: [*]const T.Key_Binding, count: s32) -> s32 {
+    live := state();
     if validate_keybindings(items, count) == 0 return 0;
-    for i: 0..count bindings[i] = items[i];
-    binding_count = count;
+    for i: 0..count live.bindings[i] = items[i];
+    live.binding_count = count;
     return 1;
 }
 
@@ -107,7 +125,8 @@ notify_resize :: () {
 }
 
 set_dividers :: (items: [*]const T.Divider_Hit, count: s32) -> s32 {
-    last_error = "";
+    live := state();
+    live.last_error = "";
     if count < 0 || count > 31 || (count > 0 && cast(usize) items == 0)
         return invalid("Invalid divider count or pointer");
     for i: 0..count {
@@ -115,16 +134,16 @@ set_dividers :: (items: [*]const T.Divider_Hit, count: s32) -> s32 {
         if item.width <= 0 || item.height <= 0 || (item.axis != 1 && item.axis != 2)
             return invalid("Divider rectangles must be nonempty and have a valid axis");
     }
-    for i: 0..count dividers[i] = items[i];
-    divider_count = count;
+    for i: 0..count live.dividers[i] = items[i];
+    live.divider_count = count;
     refresh_cursor();
     return 1;
 }
 
 cursor_axis :: () -> s32 {
-    if left_down     return captured_axis;
-    if pointer_known return divider_axis(pointer_x, pointer_y);
-    return 0;
+    // Prevent #assert from folding the initial cursor state at compile time.
+    _ := GetLastError();
+    return current_cursor_axis();
 }
 
 cancel_pointer :: () {
@@ -135,44 +154,47 @@ cancel_pointer :: () {
 /// A complete Gui input snapshot must precede each render frame. Copying events
 /// here keeps a smoke-test render or capture from discarding input for next_event.
 ensure_render_input :: () -> bool {
-    if render_input_ready      return true;
-    if !G.window_valid(window) return false;
+    live := state();
+    if live.render_input_ready      return true;
+    if !G.window_valid(live.window) return false;
     pump();
-    return render_input_ready;
+    return live.render_input_ready;
 }
 
 frame_presented :: () {
-    render_input_ready = false;
+    state().render_input_ready = false;
 }
 
 next_event :: (event: *T.Event) -> s32 {
-    if event_head < events.count {
-        event.* = events[event_head];
-        event_head += 1;
+    live := state();
+    if live.event_head < live.events.count {
+        event.* = live.events[live.event_head];
+        live.event_head += 1;
         return 1;
     }
-    if batch_open {
-        events.clear();
-        event_head = 0;
-        batch_open = false;
+    if live.batch_open {
+        live.events.clear();
+        live.event_head = 0;
+        live.batch_open = false;
         return 0;
     }
-    if !G.window_valid(window) return 0;
+    if !G.window_valid(live.window) return 0;
     pump();
-    if event_head < events.count {
-        event.* = events[event_head];
-        event_head += 1;
+    if live.event_head < live.events.count {
+        event.* = live.events[live.event_head];
+        live.event_head += 1;
         return 1;
     }
-    batch_open = false;
+    live.batch_open = false;
     return 0;
 }
 
 /// Conversion is separate from polling so ordered input can be regression-tested
 /// without injecting input into the user's physical keyboard or pointer.
 feed_event :: (event: G.Input_Event) {
+    live := state();
     if event.kind == .Key {
-        if event.key == .RightAlt   right_alt = event.action != .Release;
+        if event.key == .RightAlt   live.right_alt = event.action != .Release;
         if event.action == .Release return;
         key := legacy_key(event);
         if key == 0 || modifier_key(key) return;
@@ -209,7 +231,7 @@ feed_event :: (event: G.Input_Event) {
         }
         // AltGr is text, while ordinary Ctrl/Alt combinations need terminal
         // control bytes because Gui intentionally leaves them out of Text.
-        altgr := right_alt && (mods & 6) == 6;
+        altgr := live.right_alt && (mods & 6) == 6;
         if (mods & 6) != 0 && !altgr {
             codepoints: [8]u32;
             count := N.key_text(
@@ -226,10 +248,10 @@ feed_event :: (event: G.Input_Event) {
         predict_text(key, event.scancode, mods, false);
     } else if event.kind == .Text {
         suppress := false;
-        for i: prediction_head..predictions.count {
-            if predictions[i].codepoint == event.codepoint || predictions[i].alternate == event.codepoint {
-                suppress = predictions[i].suppress;
-                prediction_head = i + 1;
+        for i: live.prediction_head..live.predictions.count {
+            if live.predictions[i].codepoint == event.codepoint || live.predictions[i].alternate == event.codepoint {
+                suppress = live.predictions[i].suppress;
+                live.prediction_head = i + 1;
                 break;
             }
         }
@@ -239,49 +261,49 @@ feed_event :: (event: G.Input_Event) {
     } else if event.kind == .Focus {
         if event.action == .Release {
             cancel_buttons();
-            right_alt = false;
+            live.right_alt = false;
         }
         push(3, 0, 0, 0);
     } else if event.kind == .Close {
         cancel_buttons();
         push_close();
     } else if event.kind == .PointerMove || event.kind == .PointerButton || event.kind == .Scroll {
-        scale := G.content_scale(window);
+        scale := G.content_scale(live.window);
         if scale <= 0 scale = 1;
-        pointer_x = physical(event.x * scale);
-        pointer_y = physical(event.y * scale);
-        pointer_known = true;
+        live.pointer_x = physical(event.x * scale);
+        live.pointer_y = physical(event.y * scale);
+        live.pointer_known = true;
         if event.kind == .PointerMove {
             refresh_cursor();
-            if left_down push(7, pointer_x, pointer_y, 0);
+            if live.left_down push(7, live.pointer_x, live.pointer_y, 0);
         } else if event.kind == .PointerButton {
             if event.action == .Press || event.action == .Repeat {
                 if event.button == .Left {
-                    left_down = true;
-                    captured_axis = divider_axis(pointer_x, pointer_y);
+                    live.left_down = true;
+                    live.captured_axis = divider_axis(live.pointer_x, live.pointer_y);
                     refresh_cursor();
-                    push(6, pointer_x, pointer_y, legacy_modifiers(event.modifiers));
-                } else if event.button == .Right right_down = true;
+                    push(6, live.pointer_x, live.pointer_y, legacy_modifiers(event.modifiers));
+                } else if event.button == .Right live.right_down = true;
             } else if event.action == .Release {
                 reason := N.pointer_release(cast(s32) event.button);
                 if reason == 2 {
                     cancel_buttons();
                     return;
                 }
-                if event.button == .Left && left_down {
-                    left_down = false;
-                    captured_axis = 0;
+                if event.button == .Left && live.left_down {
+                    live.left_down = false;
+                    live.captured_axis = 0;
                     refresh_cursor();
-                    push(8, pointer_x, pointer_y, 0);
-                } else if event.button == .Right && right_down {
-                    right_down = false;
-                    push(10, pointer_x, pointer_y, 0);
+                    push(8, live.pointer_x, live.pointer_y, 0);
+                } else if event.button == .Right && live.right_down {
+                    live.right_down = false;
+                    push(10, live.pointer_x, live.pointer_y, 0);
                 }
             }
         } else if event.dy != 0 {
-            wheel_remainder += event.dy * 120;
-            delta := cast(s32) wheel_remainder;
-            wheel_remainder -= cast(f32) delta;
+            live.wheel_remainder += event.dy * 120;
+            delta := cast(s32) live.wheel_remainder;
+            live.wheel_remainder -= cast(f32) delta;
             if delta != 0 push(5, delta, legacy_modifiers(event.modifiers), N.scroll_lines());
         }
     }
@@ -290,18 +312,19 @@ feed_event :: (event: G.Input_Event) {
 }
 
 invalid :: (message: str) -> s32 {
-    last_error = message;
+    state().last_error = message;
     return 0;
 }
 
 pump :: () {
-    predictions.clear();
-    prediction_head = 0;
-    render_input_ready = G.update_window_events(window);
-    batch_open = true;
-    batch := G.input_events(window);
+    live := state();
+    live.predictions.clear();
+    live.prediction_head = 0;
+    live.render_input_ready = G.update_window_events(live.window);
+    live.batch_open = true;
+    batch := G.input_events(live.window);
     for i: 0..batch.count feed_event(G.input_event(batch, cast(u32) i));
-    if !render_input_ready && !closed_reported {
+    if !live.render_input_ready && !live.closed_reported {
         if N.window_close_requested() push_close();
         else {
             _ := N.set_error(G.last_error().c_string());
@@ -311,23 +334,25 @@ pump :: () {
 }
 
 push_close :: () {
-    if !closed_reported {
+    live := state();
+    if !live.closed_reported {
         push(4, 0, 0, 0);
-        closed_reported = true;
+        live.closed_reported = true;
     }
 }
 
 push :: (kind: s32, a: s32, b: s32, c: s32) {
+    live := state();
     value: T.Event;
     value.kind = kind;
     value.a = a;
     value.b = b;
     value.c = c;
-    if kind == 7 && events.count > event_head && events[events.count - 1].kind == 7 {
-        events[events.count - 1] = value;
+    if kind == 7 && live.events.count > live.event_head && live.events[live.events.count - 1].kind == 7 {
+        live.events[live.events.count - 1] = value;
         return;
     }
-    events.push(value);
+    live.events.push(value);
 }
 
 text :: (cp: u32, alt: bool) {
@@ -359,7 +384,7 @@ text :: (cp: u32, alt: bool) {
         value.text[at + 3] = cast(u8)(128 | scalar & 63);
         value.length += 4;
     }
-    events.push(value);
+    state().events.push(value);
 }
 
 predict_text :: (key: s32, scancode: u32, mods: s32, suppress: bool) {
@@ -375,12 +400,13 @@ predict_text :: (key: s32, scancode: u32, mods: s32, suppress: bool) {
         if alternate_count == count && alternate[i] >= 32 &&
            !(alternate[i] >= 127 && alternate[i] < 160)
             other = alternate[i];
-        predictions.push(.{ points[i], other, suppress });
+        state().predictions.push(.{ points[i], other, suppress });
     }
 }
 
 bound_action :: (key: s32, mods: s32) -> s32 {
-    for i: 0..binding_count if bindings[i].key == key && bindings[i].mods == mods return bindings[i].action;
+    live := state();
+    for i: 0..live.binding_count if live.bindings[i].key == key && live.bindings[i].mods == mods return live.bindings[i].action;
     return 0;
 }
 
@@ -424,8 +450,9 @@ navigation_key :: (key: s32) -> bool {
 }
 
 divider_axis :: (x: s32, y: s32) -> s32 {
-    for i: 0..divider_count {
-        rect := dividers[i];
+    live := state();
+    for i: 0..live.divider_count {
+        rect := live.dividers[i];
         if cast(s64) x >= cast(s64) rect.x && cast(s64) y >= cast(s64) rect.y &&
            cast(s64) x < cast(s64) rect.x + cast(s64) rect.width &&
            cast(s64) y < cast(s64) rect.y + cast(s64) rect.height
@@ -434,17 +461,26 @@ divider_axis :: (x: s32, y: s32) -> s32 {
     return 0;
 }
 
+current_cursor_axis :: () -> s32 {
+    live := state();
+    if live.left_down     return live.captured_axis;
+    if live.pointer_known return divider_axis(live.pointer_x, live.pointer_y);
+    return 0;
+}
+
 refresh_cursor :: () {
-    if !pointer_known return;
-    if pointer_in_ui N.pointer_arrow();
-    else             N.pointer_cursor(cursor_axis());
+    live := state();
+    if !live.pointer_known return;
+    if live.pointer_in_ui N.pointer_arrow();
+    else                  N.pointer_cursor(current_cursor_axis());
 }
 
 cancel_buttons :: () {
-    if left_down || right_down {
-        left_down = false;
-        right_down = false;
-        captured_axis = 0;
+    live := state();
+    if live.left_down || live.right_down {
+        live.left_down = false;
+        live.right_down = false;
+        live.captured_axis = 0;
         push(11, 0, 0, 0);
         refresh_cursor();
     }

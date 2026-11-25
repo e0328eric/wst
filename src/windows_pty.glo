@@ -172,7 +172,8 @@ MsgWaitForMultipleObjectsEx :: (
     flags: u32
 ) -> u32 #foreign user32;
 
-SESSION_LIMIT :: 32;
+INITIAL_SLOTS :: 33;
+WAIT_HANDLES :: 63; // MsgWaitForMultipleObjectsEx also reserves a handle for input.
 IO_CHUNK :: 16384;
 RING_SIZE :: 4 * 1024 * 1024;
 INVALID_HANDLE :: 16#ffff_ffff_ffff_ffff;
@@ -196,6 +197,7 @@ Pty_Session :: struct {
     process: Handle;
     primary_thread: Handle;
     ready: Handle;
+    wake: Handle;
     pseudo: Handle;
     stopping: Atomic(s32);
     queues_ready: bool;
@@ -203,10 +205,15 @@ Pty_Session :: struct {
 Pty_Slot :: struct {
     active: usize;
     pending: usize;
+    retired: usize;
     allocated: bool;
 }
-slots: [SESSION_LIMIT + 1]Pty_Slot;
+initial_slots: [INITIAL_SLOTS]Pty_Slot;
+overflow_slots: usize;
+slot_capacity: s32 = INITIAL_SLOTS;
+slot_count: s32 = 1;
 selected: s32;
+output_wake: Handle;
 error_storage: [2048]u8;
 
 // Recent OpenConsole versions forward Kitty's APC graphics strings. Each
@@ -261,6 +268,27 @@ release :: (memory: usize) {
         _ := HeapFree(GetProcessHeap(), 0, memory);
         SetLastError(code);
     }
+}
+slot_table :: () -> [*]Pty_Slot {
+    if overflow_slots == 0 return cast([*]Pty_Slot) &initial_slots;
+    return cast([*]Pty_Slot) overflow_slots;
+}
+grow_slots :: () -> bool {
+    if slot_capacity > 1073741823 {
+        SetLastError(69);
+        return false;
+    }
+    capacity := 2 * slot_capacity;
+    table := allocate(cast(usize) capacity * cast(usize) size_of(Pty_Slot));
+    if table == 0 {
+        SetLastError(8);
+        return false;
+    }
+    copy(table, cast(usize) slot_table(), cast(usize) slot_count * cast(usize) size_of(Pty_Slot));
+    release(overflow_slots);
+    overflow_slots = table;
+    slot_capacity = capacity;
+    return true;
 }
 copy :: (destination: usize, source: usize, count: usize) {
     if count > 0
@@ -373,8 +401,12 @@ read_output :: (parameter: usize) -> u32 #c_call {
         while session.stopping.load() == 0 && !ensure_space(queue, cast(usize) count)
             _ := SleepConditionVariableCS(&queue.changed, &queue.lock, INFINITE);
         if session.stopping.load() == 0 {
+            was_empty := queue.count == 0;
             append(queue, cast(usize) &buffer, count);
-            _ := SetEvent(session.ready);
+            if was_empty {
+                _ := SetEvent(session.ready);
+                _ := SetEvent(session.wake);
+            }
         }
         LeaveCriticalSection(&queue.lock);
     }
@@ -577,14 +609,24 @@ ticks :: () -> u64 {
     return GetTickCount64();
 }
 wait :: (milliseconds: s32) {
-    handles: [SESSION_LIMIT + 1]Handle;
+    slots := slot_table();
+    handles: [WAIT_HANDLES]Handle;
     count: u32;
-    for i: 0..SESSION_LIMIT + 1 if slots[i].active != 0 {
+    duration: s32 = milliseconds;
+    if duration < 0 duration = 0;
+    for i: 0..slot_count if slots[i].active != 0 {
+        if count == WAIT_HANDLES {
+            // The shared event wakes new output. Check every session first so
+            // output left after a partial read still returns without waiting.
+            for j: 0..slot_count if slots[j].active != 0 {
+                if WaitForSingleObject((cast(*Pty_Session) slots[j].active).ready, 0) == 0 return;
+            }
+            _ := MsgWaitForMultipleObjectsEx(1, cast(usize) &output_wake, cast(u32) duration, 16#4ff, 4);
+            return;
+        }
         handles[count] = (cast(*Pty_Session) slots[i].active).ready;
         count += 1;
     }
-    duration: s32 = milliseconds;
-    if duration < 0 duration = 0;
     _ := MsgWaitForMultipleObjectsEx(count, cast(usize) &handles, cast(u32) duration, 16#4ff, 4);
 }
 file_exists :: (path: cstr) -> s32 {
@@ -634,8 +676,9 @@ file_stamp :: (path: cstr, stamp: *T.File_Stamp) -> s32 {
 }
 pty_discard :: () {
     runtime_only();
-    discarded := slots[selected].pending;
-    slots[selected].pending = 0;
+    slot := &slot_table()[selected];
+    discarded := slot.pending;
+    slot.pending = 0;
     close_session(discarded);
 }
 pty_prepare :: (command: cstr, cols: s32, rows: s32) -> s32 {
@@ -650,12 +693,17 @@ pty_prepare_at :: (command: cstr, directory: cstr, cols: s32, rows: s32) -> s32 
         SetLastError(87);
         return windows_error("Preparing ConPTY shell");
     }
+    if output_wake == 0 {
+        output_wake = CreateEventW(0, 0, 0, 0);
+        if output_wake == 0 return windows_error("Preparing ConPTY output event");
+    }
     value := allocate(cast(usize) size_of(Pty_Session));
     if value == 0 {
         SetLastError(8);
         return windows_error("Preparing ConPTY shell");
     }
     session := cast(*Pty_Session) value;
+    session.wake = output_wake;
     input_read: Handle;
     output_write: Handle;
     attrs: usize;
@@ -687,13 +735,13 @@ pty_prepare_at :: (command: cstr, directory: cstr, cols: s32, rows: s32) -> s32 
         rows
     )
         return windows_error("Starting ConPTY shell");
-    slots[selected].pending = value;
+    slot_table()[selected].pending = value;
     success = true;
     return 1;
 }
 pty_resize_prepared :: (cols: s32, rows: s32) -> s32 {
     runtime_only();
-    value := slots[selected].pending;
+    value := slot_table()[selected].pending;
     if value == 0 || cols < 1 || cols > 512 || rows < 1 || rows > 256 {
         SetLastError(87);
         return windows_error("Resizing prepared ConPTY shell");
@@ -707,7 +755,8 @@ pty_resize_prepared :: (cols: s32, rows: s32) -> s32 {
 }
 pty_commit :: () -> s32 {
     runtime_only();
-    value := slots[selected].pending;
+    slot := &slot_table()[selected];
+    value := slot.pending;
     if value == 0 {
         SetLastError(87);
         return windows_error("Committing ConPTY shell");
@@ -720,21 +769,22 @@ pty_commit :: () -> s32 {
     }
     _ := CloseHandle(session.primary_thread);
     session.primary_thread = 0;
-    previous := slots[selected].active;
-    slots[selected].active = value;
-    slots[selected].pending = 0;
+    previous := slot.active;
+    slot.active = value;
+    slot.pending = 0;
     close_session(previous);
     return 1;
 }
 pty_commit_all :: () -> s32 {
     runtime_only();
+    slots := slot_table();
     // Retain every old session until every replacement can execute. A failed
     // resume discards all staged children, including already resumed ones.
-    for i: 0..SESSION_LIMIT + 1 if slots[i].pending != 0 {
+    for i: 0..slot_count if slots[i].pending != 0 {
         session := cast(*Pty_Session) slots[i].pending;
         if ResumeThread(session.primary_thread) == INFINITE {
             _ := windows_error("Starting prepared ConPTY sessions");
-            for j: 0..SESSION_LIMIT + 1 {
+            for j: 0..slot_count {
                 discarded := slots[j].pending;
                 slots[j].pending = 0;
                 close_session(discarded);
@@ -742,16 +792,18 @@ pty_commit_all :: () -> s32 {
             return 0;
         }
     }
-    retired: [SESSION_LIMIT + 1]usize;
-    for i: 0..SESSION_LIMIT + 1 if slots[i].pending != 0 {
+    for i: 0..slot_count if slots[i].pending != 0 {
         session := cast(*Pty_Session) slots[i].pending;
         _ := CloseHandle(session.primary_thread);
         session.primary_thread = 0;
-        retired[i] = slots[i].active;
+        slots[i].retired = slots[i].active;
         slots[i].active = slots[i].pending;
         slots[i].pending = 0;
     }
-    for value: retired close_session(value);
+    for i: 0..slot_count if slots[i].retired != 0 {
+        close_session(slots[i].retired);
+        slots[i].retired = 0;
+    }
     return 1;
 }
 pty_start :: (command: cstr, cols: s32, rows: s32) -> s32 {
@@ -761,7 +813,7 @@ pty_start :: (command: cstr, cols: s32, rows: s32) -> s32 {
 }
 pty_read :: (data: [*]u8, capacity: s32) -> s32 {
     runtime_only();
-    value := slots[selected].active;
+    value := slot_table()[selected].active;
     if value == 0 || capacity <= 0 return 0;
     session := cast(*Pty_Session) value;
     if !session.queues_ready return 0;
@@ -775,7 +827,7 @@ pty_read :: (data: [*]u8, capacity: s32) -> s32 {
 }
 pty_send :: (data: [*]const u8, length: s32) -> s32 {
     runtime_only();
-    value := slots[selected].active;
+    value := slot_table()[selected].active;
     if value == 0 || length < 0 || (length != 0 && cast(usize) data == 0) return 0;
     session := cast(*Pty_Session) value;
     if !session.queues_ready || session.stopping.load() != 0 return 0;
@@ -790,7 +842,7 @@ pty_send :: (data: [*]const u8, length: s32) -> s32 {
 }
 pty_resize :: (cols: s32, rows: s32) -> s32 {
     runtime_only();
-    value := slots[selected].active;
+    value := slot_table()[selected].active;
     if value == 0 || cols < 1 || cols > 512 || rows < 1 || rows > 256 {
         SetLastError(87);
         return windows_error("Resizing ConPTY shell");
@@ -804,7 +856,7 @@ pty_resize :: (cols: s32, rows: s32) -> s32 {
 }
 pty_status :: (code: *s32) -> s32 {
     runtime_only();
-    value := slots[selected].active;
+    value := slot_table()[selected].active;
     if value == 0 return -1;
     session := cast(*Pty_Session) value;
     if WaitForSingleObject(session.process, 0) != 0 return 0;
@@ -815,14 +867,15 @@ pty_status :: (code: *s32) -> s32 {
 }
 pty_close :: () {
     runtime_only();
-    previous := slots[selected].active;
-    slots[selected].active = 0;
+    slot := &slot_table()[selected];
+    previous := slot.active;
+    slot.active = 0;
     pty_discard();
     close_session(previous);
 }
 pty_select :: (id: s32) -> s32 {
     runtime_only();
-    if id < 0 || id > SESSION_LIMIT || (id != 0 && !slots[id].allocated) {
+    if id < 0 || id >= slot_count || (id != 0 && !slot_table()[id].allocated) {
         SetLastError(87);
         return windows_error("Selecting ConPTY session");
     }
@@ -839,11 +892,13 @@ pty_create :: (command: cstr, cols: s32, rows: s32) -> s32 {
 }
 pty_create_at :: (command: cstr, directory: cstr, cols: s32, rows: s32) -> s32 {
     runtime_only();
+    slots := slot_table();
     id: s32 = 1;
-    while id <= SESSION_LIMIT && slots[id].allocated id += 1;
-    if id > SESSION_LIMIT {
-        SetLastError(69);
-        return windows_error("Creating ConPTY session");
+    while id < slot_count && slots[id].allocated id += 1;
+    if id == slot_count {
+        if slot_count == slot_capacity && !grow_slots() return windows_error("Creating ConPTY session");
+        slot_count += 1;
+        slots = slot_table();
     }
     previous := selected;
     slots[id].allocated = true;
@@ -858,26 +913,37 @@ pty_create_at :: (command: cstr, directory: cstr, cols: s32, rows: s32) -> s32 {
 }
 pty_destroy :: (id: s32) -> s32 {
     runtime_only();
-    if id < 0 || id > SESSION_LIMIT || (id != 0 && !slots[id].allocated) {
+    if id < 0 || id >= slot_count || (id != 0 && !slot_table()[id].allocated) {
         SetLastError(87);
         return windows_error("Destroying ConPTY session");
     }
     previous := selected;
     selected = id;
     pty_close();
-    slots[id].allocated = false;
+    slot_table()[id].allocated = false;
     selected = previous;
     if previous == id selected = 0;
     return 1;
 }
 close_sessions :: () {
     runtime_only();
-    for i: 0..SESSION_LIMIT + 1 {
+    slots := slot_table();
+    for i: 0..slot_count {
         selected = cast(s32) i;
         pty_close();
         slots[i].allocated = false;
     }
+    release(overflow_slots);
+    empty: [INITIAL_SLOTS]Pty_Slot;
+    initial_slots = empty;
+    overflow_slots = 0;
+    slot_count = 1;
+    slot_capacity = INITIAL_SLOTS;
     selected = 0;
+    if output_wake != 0 {
+        _ := CloseHandle(output_wake);
+        output_wake = 0;
+    }
 }
 
 }

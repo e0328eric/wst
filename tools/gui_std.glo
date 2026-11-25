@@ -1,11 +1,11 @@
-//! Backport Gui and Unicode features to an isolated copy of older SDKs.
+//! Stage the Gui multi-window runtime and backport features for older SDKs.
 #import "Glosso/Paths";
 #import "File_System/Copy";
 #import "File_System/Directory";
 #import "File_System/File";
 #import "File_System/Path";
 #import "File_System/Temporary";
-#import "Process/Command";
+#import "Process/Run";
 #import "Strings/Utf8";
 #import "Format";
 #import "Io";
@@ -46,21 +46,24 @@ contains_source :: (file: str, marker: str) -> bool {
 
 apply_patch :: (stage: str, patch: str) -> bool {
     // Keep git apply rooted in our private tree even inside another checkout.
-    arguments := .[
+    if run_command(
+        "git",
         tprint("--git-dir={}/.git", stage),
         tprint("--work-tree={}", stage),
         "apply",
         "--include=std/*",
-        patch
-    ];
-    git := Command.command_make("git", arguments[..]);
-    defer git.destroy();
-    git.set_working_directory(stage);
-    git.no_window = true;
-    if git.run() == {
+        patch,
+        .working_directory = stage,
+        .capture_and_return_output = true,
+        .no_window = true
+    ) == {
     case .Ok(done);
-        return done.status.exited && done.status.code == 0;
+        defer done.free();
+        if done.status.exited && done.status.code == 0 return true;
+        print("wst build: git apply failed for {}\n{}", patch, done.error_string);
+        return false;
     case .Err(error);
+        print("wst build: could not run git apply: {}\n", error.process.kind);
         if error.child.valid _ := error.child.close();
         return false;
     }
@@ -72,7 +75,12 @@ apply_patch :: (stage: str, patch: str) -> bool {
     needs_gpu := !contains_source("Gui/Input_Types.glo", "High_Performance_Gpu ::");
     needs_emoji := !contains_source("Unicode/utilities.glo", "is_unicode_emoji_presentation ::") ||
         !contains_source("Unicode/utilities.glo", "supports_unicode_emoji_variation ::");
-    if !needs_memory && !needs_gpu && !needs_emoji return original;
+    // Each cached glyph reserves one coverage run per bitmap pixel and keeps it.
+    glyph_source := "Gui/native/font.c";
+    needs_glyph_runs := contains_source(glyph_source, "g->runs=malloc(capacity*sizeof(*g->runs));") &&
+        !contains_source(glyph_source, "realloc(g->runs,");
+    needs_windows := !contains_source("Gui/Window.glo", "select_window ::");
+    if !needs_memory && !needs_gpu && !needs_emoji && !needs_glyph_runs && !needs_windows return original;
 
     stage.* = create_stage(root);
     staged := path_join(stage.path, "std");
@@ -83,6 +91,8 @@ apply_patch :: (stage: str, patch: str) -> bool {
     }
     if needs_memory && !apply_patch(stage.path, path_join(root, "vendor/glosso/gui-memory.patch"))
         print("wst build: Gui memory backport unavailable; using the SDK's memory allocation.\n");
+    if needs_glyph_runs && !apply_patch(stage.path, path_join(root, "vendor/glosso/gui-glyph-runs.patch"))
+        print("wst build: Gui glyph memory backport unavailable; using the SDK's glyph cache.\n");
     if needs_gpu && !apply_patch(stage.path, path_join(root, "vendor/glosso/gui-gpu.patch")) {
         print("wst build: could not apply gui-gpu.patch; install Git or select a Gui SDK with High_Performance_Gpu.\n");
         stage.free();
@@ -90,6 +100,11 @@ apply_patch :: (stage: str, patch: str) -> bool {
     }
     if needs_emoji && !apply_patch(stage.path, path_join(root, "vendor/glosso/unicode-emoji.patch")) {
         print("wst build: could not apply unicode-emoji.patch; select a Glosso SDK with Unicode emoji properties.\n");
+        stage.free();
+        exit(1);
+    }
+    if needs_windows && !apply_patch(stage.path, path_join(root, "vendor/glosso/gui-multi-window.patch")) {
+        print("wst build: could not apply gui-multi-window.patch; install Git and select a compatible Glosso SDK.\n");
         stage.free();
         exit(1);
     }

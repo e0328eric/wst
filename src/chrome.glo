@@ -40,6 +40,7 @@ State :: struct {
     menu_scroll: s32;
     selected: s32;
     pressed: s32;
+    drop_index: s32 = -1;
 }
 Hit :: struct {
     kind: s32;
@@ -150,6 +151,17 @@ hit :: (g: *const Geometry, x: s32, y: s32) -> Hit {
         if contains(tab_rect(g, index), x, y)   return .{ Tab, index };
     }
     return .{ Drag };
+}
+
+/// Tab insertion uses the midpoint of each visible tab and the spare rail.
+tab_insertion :: (g: *const Geometry, x: s32, y: s32) -> s32 {
+    h := hit(g, x, y);
+    if x < g.tab_x || (h.kind != Tab && h.kind != Tab_Close && h.kind != Drag) return -1;
+    for index: g.first..g.first + g.visible {
+        rect := tab_rect(g, index);
+        if x < rect.x + rect.width / 2 return index;
+    }
+    return g.first + g.visible;
 }
 menu_rect :: (g: *const Geometry, height: s32, rows: s32) -> Rect {
     width := pixels(264, g.dpi);
@@ -329,6 +341,10 @@ draw_header :: (
                 );
             cross(close, d, muted);
         }
+    }
+    if state.drop_index >= g.first && state.drop_index <= g.first + g.visible {
+        x := g.tab_x + (state.drop_index - g.first) * (g.tab_width + g.tab_gap) - pixels(2, d);
+        P.rounded_rect(x, pixels(5, d), pixels(3, d), g.height - pixels(10, d), pixels(1, d), cfg.accent);
     }
     button(g.new_tab, h.kind == New_Tab, hover, d);
     plus(g.new_tab, d, muted);

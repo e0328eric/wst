@@ -1,0 +1,684 @@
+diff --git a/std/Gui/Window.glo b/std/Gui/Window.glo
+--- a/std/Gui/Window.glo
++++ b/std/Gui/Window.glo
+@@ -21,6 +21,14 @@
+         cast(s64) title.count,
+         flags,
+     );
++}
++/// Select the window for drawing, textures and native operations without a handle.
++select_window :: (window: Window) -> bool {
++    #if OUT.os == .Windows {
++        return N.gui_window_select(window);
++    } else {
++        return N.gui_window_valid(window);
++    }
+ }
+ window_valid :: (window: Window) -> bool {
+     return N.gui_window_valid(window);
+diff --git a/std/Gui/Native.glo b/std/Gui/Native.glo
+--- a/std/Gui/Native.glo
++++ b/std/Gui/Native.glo
+@@ -125,6 +125,9 @@
+ 
+ gui_window_create :: (width: s32, height: s32, title: ?[*]const u8, bytes: s64, flags: Window_Flags) -> Native_Window
+ #foreign scene_runtime "gui_window_create";
++#if OUT.os == .Windows {
++    gui_window_select :: (window: Native_Window) -> bool #foreign scene_runtime "gui_window_select";
++}
+ gui_window_valid :: (window: Native_Window) -> bool #foreign scene_runtime "gui_window_valid";
+ gui_window_destroy :: (window: Native_Window) #foreign scene_runtime "gui_window_destroy";
+ gui_window_update :: (window: Native_Window) -> bool #foreign scene_runtime "gui_window_update";
+diff --git a/std/Gui/native/api.h b/std/Gui/native/api.h
+--- a/std/Gui/native/api.h
++++ b/std/Gui/native/api.h
+@@ -44,6 +44,9 @@
+ 
+ GuiWindow gui_window_create(int32_t width,int32_t height,const uint8_t *title,int64_t bytes,uint32_t flags);
+ bool gui_window_valid(GuiWindow window);
++#ifdef _WIN32
++bool gui_window_select(GuiWindow window);
++#endif
+ void gui_window_destroy(GuiWindow window);
+ bool gui_window_update(GuiWindow window);
+ bool gui_window_render_begin(GuiWindow window);
+diff --git a/std/Gui/native/platform.h b/std/Gui/native/platform.h
+--- a/std/Gui/native/platform.h
++++ b/std/Gui/native/platform.h
+@@ -20,6 +20,10 @@
+ void platform_poll(void);
+ void platform_frame_complete(void);
+ #ifdef _WIN32
++typedef struct GuiPlatform GuiPlatform;
++GuiPlatform *platform_state_create(void);
++void platform_state_select(GuiPlatform *state);
++void platform_state_destroy(GuiPlatform *state);
+ HWND platform_window(void);
+ #else
+ GLFWwindow *platform_window(void);
+@@ -37,6 +41,7 @@
+ void platform_fullscreen(bool enabled);
+ bool platform_clipboard_set(const uint8_t *text,int64_t bytes);
+ const char *platform_clipboard_get(void);
++typedef struct {char **items;uint32_t count,capacity;} DroppedPaths;
+ const char *platform_dropped_path(uint32_t index);
+ bool platform_key_down(uint32_t key);
+ bool platform_key_pressed(uint32_t key);
+diff --git a/std/Gui/native/dropped_files.h b/std/Gui/native/dropped_files.h
+--- a/std/Gui/native/dropped_files.h
++++ b/std/Gui/native/dropped_files.h
+@@ -1,7 +1,8 @@
+ /* Owned file-drop paths follow the same pending/published lifetime as events.
+    Include after the platform's C library headers. */
+-typedef struct {char **items;uint32_t count,capacity;} DroppedPaths;
++#ifndef pending_paths
+ static DroppedPaths pending_paths,published_paths;
++#endif
+ static void dropped_clear(DroppedPaths *paths) {
+     for(uint32_t i=0;i<paths->count;++i) free(paths->items[i]);paths->count=0;
+ }
+diff --git a/std/Gui/native/platform.c b/std/Gui/native/platform.c
+--- a/std/Gui/native/platform.c
++++ b/std/Gui/native/platform.c
+@@ -9,8 +9,6 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <shellapi.h>
+-#include "dropped_files.h"
+-static char *clipboard_copy;
+ 
+ typedef struct {
+     bool held;
+@@ -18,10 +16,9 @@
+     bool released;
+ } Button;
+ 
+-typedef struct {
++struct GuiPlatform {
+     HWND window;
+     HINSTANCE instance;
+-    DPI_AWARENESS_CONTEXT previous_dpi;
+     int32_t width;
+     int32_t height;
+     bool registered;
+@@ -59,22 +56,39 @@
+     uint32_t published_count;
+     uint32_t pending_capacity;
+     uint32_t published_capacity;
+-} Platform;
+-
+-static Platform window_state;
++    uint64_t event_epoch;
++    DroppedPaths pending_drop_paths, published_drop_paths;
++    char *clipboard_text;
++};
++
++static GuiPlatform idle_platform;
++static GuiPlatform *selected_platform = &idle_platform;
++#define window_state (*selected_platform)
++#define pending_paths (window_state.pending_drop_paths)
++#define published_paths (window_state.published_drop_paths)
++#define clipboard_copy (window_state.clipboard_text)
++#include "dropped_files.h"
++
++GuiPlatform *platform_state_create(void) { return calloc(1, sizeof(GuiPlatform)); }
++void platform_state_select(GuiPlatform *state) {
++    selected_platform = state ? state : &idle_platform;
++}
++void platform_state_destroy(GuiPlatform *state) { free(state); }
++
++static ATOM window_class;
++static unsigned window_class_users;
++static DPI_AWARENESS_CONTEXT previous_dpi;
++static bool quit_requested;
+ static LARGE_INTEGER clock_frequency;
+ static LARGE_INTEGER clock_origin;
+ static const wchar_t window_class_name[] = L"GlossoPlatformWindow";
+-/* Kept outside window_state so an old batch cannot survive a close/reopen. */
+-static uint64_t input_epoch;
+-
+ static bool advance_input_epoch(void) {
+-    if (input_epoch == UINT64_MAX) {
++    if (window_state.event_epoch == UINT64_MAX) {
+         window_state.input_ok = false;
+         gui_report("Input batch epoch capacity exhausted");
+         return false;
+     }
+-    ++input_epoch;
++    ++window_state.event_epoch;
+     return true;
+ }
+ 
+@@ -484,7 +498,7 @@
+     install_icons(icons);
+ }
+ 
+-static LRESULT CALLBACK dispatch_window(HWND window, UINT message, WPARAM value, LPARAM detail) {
++static LRESULT dispatch_window_message(HWND window, UINT message, WPARAM value, LPARAM detail) {
+     switch (message) {
+     case WM_DROPFILES: {
+         HDROP drop=(HDROP)value;
+@@ -635,6 +649,64 @@
+     return DefWindowProcW(window, message, value, detail);
+ }
+ 
++/* Win32 may dispatch a message to any window during polling, resizing or
++   activation. Select its input state only for the duration of that call. */
++static LRESULT CALLBACK dispatch_window(HWND window, UINT message, WPARAM value, LPARAM detail) {
++    GuiPlatform *state;
++    if (message == WM_NCCREATE) {
++        const CREATESTRUCTW *creation = (const CREATESTRUCTW *)detail;
++        state = creation->lpCreateParams;
++        if (!state) return FALSE;
++        SetLastError(0);
++        if (!SetWindowLongPtrW(window, GWLP_USERDATA, (LONG_PTR)state) && GetLastError())
++            return FALSE;
++        state->window = window;
++    } else {
++        state = (GuiPlatform *)GetWindowLongPtrW(window, GWLP_USERDATA);
++        if (!state) return DefWindowProcW(window, message, value, detail);
++    }
++
++    GuiPlatform *previous = selected_platform;
++    selected_platform = state;
++    LRESULT result = dispatch_window_message(window, message, value, detail);
++    if (message == WM_NCDESTROY) {
++        SetWindowLongPtrW(window, GWLP_USERDATA, 0);
++        state->window = NULL;
++    }
++    selected_platform = previous;
++    return result;
++}
++
++static bool acquire_window_class(HINSTANCE instance) {
++    if (!window_class_users) {
++        previous_dpi = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
++        WNDCLASSEXW descriptor = {0};
++        descriptor.cbSize = sizeof(descriptor);
++        descriptor.lpfnWndProc = dispatch_window;
++        descriptor.hInstance = instance;
++        descriptor.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
++        descriptor.lpszClassName = window_class_name;
++        window_class = RegisterClassExW(&descriptor);
++        if (!window_class) {
++            report_windows_error("Could not register the Gui window class");
++            if (previous_dpi) SetThreadDpiAwarenessContext(previous_dpi);
++            previous_dpi = NULL;
++            return false;
++        }
++        quit_requested = false;
++    }
++    ++window_class_users;
++    return true;
++}
++
++static void release_window_class(HINSTANCE instance) {
++    if (--window_class_users) return;
++    UnregisterClassW(window_class_name, instance);
++    window_class = 0;
++    if (previous_dpi) SetThreadDpiAwarenessContext(previous_dpi);
++    previous_dpi = NULL;
++}
++
+ bool platform_open(int32_t width, int32_t height, const uint8_t *title,
+                    int64_t bytes, uint32_t flags) {
+     if (window_state.window) {
+@@ -654,17 +726,8 @@
+         return false;
+     }
+     window_state.instance = GetModuleHandleW(NULL);
+-    window_state.previous_dpi = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+-    WNDCLASSEXW descriptor = {0};
+-    descriptor.cbSize = sizeof(descriptor);
+-    descriptor.lpfnWndProc = dispatch_window;
+-    descriptor.hInstance = window_state.instance;
+-    descriptor.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
+-    descriptor.lpszClassName = window_class_name;
+-    if (!RegisterClassExW(&descriptor)) {
+-        report_windows_error("Could not register the Gui window class");
++    if (!acquire_window_class(window_state.instance)) {
+         free(caption);
+-        platform_close();
+         return false;
+     }
+     window_state.registered = true;
+@@ -673,7 +736,7 @@
+     /* Create hidden first so the default placement determines the monitor DPI. */
+     window_state.window = CreateWindowExW(0, window_class_name,
+         bytes ? caption : L"Glosso 3D", style, CW_USEDEFAULT, CW_USEDEFAULT,
+-        width, height, NULL, NULL, window_state.instance, NULL);
++        width, height, NULL, NULL, window_state.instance, selected_platform);
+     free(caption);
+     if (!window_state.window) {
+         report_windows_error("Could not create the Gui window");
+@@ -722,20 +785,17 @@
+ }
+ 
+ void platform_close(void) {
+-    bool existed = window_state.window || window_state.registered;
+     window_state.tearing_down = true;
+     platform_set_mouse_lock(false);
+     if (window_state.window) DestroyWindow(window_state.window);
+     if (window_state.large_icon) DestroyIcon(window_state.large_icon);
+     if (window_state.small_icon) DestroyIcon(window_state.small_icon);
+     free(window_state.icon_path);
+-    if (window_state.registered) UnregisterClassW(window_class_name, window_state.instance);
+-    if (window_state.previous_dpi) SetThreadDpiAwarenessContext(window_state.previous_dpi);
++    if (window_state.registered) release_window_class(window_state.instance);
+     free(window_state.pending_events);
+     free(window_state.published_events);
+     free(clipboard_copy);clipboard_copy=NULL;
+     if (window_state.frame_timer) CloseHandle(window_state.frame_timer);
+-    if (existed) advance_input_epoch();
+     dropped_destroy();
+     memset(&window_state, 0, sizeof(window_state));
+ }
+@@ -744,18 +804,27 @@
+     if (!window_state.window || window_state.snapshot_ready) return;
+     MSG message;
+     while (PeekMessageW(&message, NULL, 0, 0, PM_REMOVE)) {
+-        if (message.message == WM_QUIT) request_close();
+-        else {
+-            uint32_t modifiers = held_modifiers();
+-            bool altgr = window_state.keys[VK_RMENU].held && (modifiers & GUI_MOD_CTRL);
+-            bool command = (modifiers & GUI_MOD_SUPER) || (!altgr && (modifiers & GUI_MOD_CTRL));
+-            bool key_press = message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN;
+-            // TranslateMessage posts text later in the queue. Suppress command text at
+-            // the key press, before a later modifier release can change its meaning.
+-            if (message.hwnd != window_state.window || !key_press || !command)
+-                TranslateMessage(&message);
+-            DispatchMessageW(&message);
+-        }
++        if (message.message == WM_QUIT) {
++            quit_requested = true;
++            continue;
++        }
++        bool command = false;
++        bool key_press = message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN;
++        if (key_press && message.hwnd &&
++            GetClassLongPtrW(message.hwnd, GCW_ATOM) == window_class) {
++            GuiPlatform *target = (GuiPlatform *)GetWindowLongPtrW(message.hwnd, GWLP_USERDATA);
++            if (target) {
++                GuiPlatform *previous = selected_platform;
++                selected_platform = target;
++                uint32_t modifiers = held_modifiers();
++                bool altgr = window_state.keys[VK_RMENU].held && (modifiers & GUI_MOD_CTRL);
++                command = (modifiers & GUI_MOD_SUPER) || (!altgr && (modifiers & GUI_MOD_CTRL));
++                selected_platform = previous;
++            }
++        }
++        // Do not generate text for Ctrl/Super shortcuts.
++        if (!command) TranslateMessage(&message);
++        DispatchMessageW(&message);
+     }
+     advance_input_epoch();
+     dropped_publish();
+@@ -800,7 +869,9 @@
+     return dpi ? (float)dpi / USER_DEFAULT_SCREEN_DPI : 1;
+ }
+ bool platform_minimized(void) { return window_state.minimized; }
+-bool platform_close_requested(void) { return !window_state.window || window_state.close_requested; }
++bool platform_close_requested(void) {
++    return quit_requested || !window_state.window || window_state.close_requested;
++}
+ bool platform_cancel_close(void) {
+     if(!window_state.window) return false;
+     window_state.close_requested=false;return true;
+@@ -892,7 +963,7 @@
+ GuiVec2 platform_mouse_delta(void) { return platform_input_ok() ? window_state.published_delta : (GuiVec2){0, 0}; }
+ uint32_t platform_modifiers(void) { return platform_input_ok() ? window_state.published_modifiers : 0; }
+ uint32_t platform_event_count(void) { return platform_input_ok() ? window_state.published_count : 0; }
+-uint64_t platform_event_epoch(void) { return input_epoch; }
++uint64_t platform_event_epoch(void) { return window_state.event_epoch; }
+ GuiInputEvent platform_event_at(uint32_t index) {
+     if (!platform_input_ok() || index >= window_state.published_count) return (GuiInputEvent){0};
+     return window_state.published_events[index];
+diff --git a/std/Gui/native/renderer_common.h b/std/Gui/native/renderer_common.h
+--- a/std/Gui/native/renderer_common.h
++++ b/std/Gui/native/renderer_common.h
+@@ -21,8 +21,15 @@
+    same bounded GPU buffer when the current overlay layer is composited. */
+ typedef struct { float left,top,right,bottom; GuiColor color; } OverlayRect;
+ enum { OVERLAY_BATCH=8192 };
++#ifdef _WIN32
++static bool *overlay_clip_enabled(void);
++static GuiRect *overlay_clip_bounds(void);
++#define overlay_clipped (*overlay_clip_enabled())
++#define overlay_clip (*overlay_clip_bounds())
++#else
+ static bool overlay_clipped;
+ static GuiRect overlay_clip;
++#endif
+ typedef struct {float x,y,u,v;} TextureVertex;
+ /* 0: invalid; 1: fully clipped; 2: drawable. Clip positions and UVs together. */
+ static int texture_quad(int32_t width,int32_t height,GuiRect destination,GuiRect source,GuiColor tint,TextureVertex vertices[6]) {
+diff --git a/std/Gui/native/texture_d3d.h b/std/Gui/native/texture_d3d.h
+--- a/std/Gui/native/texture_d3d.h
++++ b/std/Gui/native/texture_d3d.h
+@@ -1,12 +1,11 @@
+ /* Direct3D counterpart of texture_gl.h; RGBA bytes are copied at upload. */
+-typedef struct {ID3D11Texture2D *object;ID3D11ShaderResourceView *sample;uint32_t id;int32_t width,height;uint32_t flags;} TextureRecord;
+-static TextureRecord textures[512];
+-static uint32_t texture_generation;
+-static ID3D11VertexShader *texture_vs;
+-static ID3D11PixelShader *texture_ps;
+-static ID3D11InputLayout *texture_layout;
+-static ID3D11Buffer *texture_vertices,*texture_uniform;
+-static ID3D11SamplerState *texture_nearest;
++#define textures (render.image_textures)
++#define texture_vs (render.image_vertex_shader)
++#define texture_ps (render.image_pixel_shader)
++#define texture_layout (render.image_layout)
++#define texture_vertices (render.image_vertices)
++#define texture_uniform (render.image_uniform)
++#define texture_nearest (render.image_sampler)
+ static TextureRecord *texture_get(GuiTexture texture) {
+     if(!render.initialized || !texture.id) return NULL;
+     for(unsigned i=0;i<512;++i) if(textures[i].id==texture.id) return &textures[i];
+diff --git a/std/Gui/native/renderer.c b/std/Gui/native/renderer.c
+--- a/std/Gui/native/renderer.c
++++ b/std/Gui/native/renderer.c
+@@ -24,6 +24,13 @@
+     ID3D11RenderTargetView *target;
+     ID3D11ShaderResourceView *sample;
+ } ColorTarget;
++typedef struct {
++    ID3D11Texture2D *object;
++    ID3D11ShaderResourceView *sample;
++    uint32_t id;
++    int32_t width,height;
++    uint32_t flags;
++} TextureRecord;
+ typedef struct {
+     ID3D11Device *device;
+     ID3D11DeviceContext *commands;
+@@ -55,9 +62,30 @@
+     double previous_time,frame_time;
+     float delta;
+     bool initialized,frame,scene,failed,minimized,input_ready,input_snapshot;
++    bool clip_enabled;
++    GuiRect clip_bounds;
++    TextureRecord image_textures[512];
++    ID3D11VertexShader *image_vertex_shader;
++    ID3D11PixelShader *image_pixel_shader;
++    ID3D11InputLayout *image_layout;
++    ID3D11Buffer *image_vertices,*image_uniform;
++    ID3D11SamplerState *image_sampler;
+ } RenderState;
+ 
+-static RenderState render;
++typedef struct RenderWindow RenderWindow;
++struct RenderWindow {
++    RenderState state;
++    GuiPlatform *platform;
++    RenderWindow *next;
++};
++static RenderWindow idle_window;
++static RenderWindow *windows;
++static RenderWindow *selected_window = &idle_window;
++#define render (selected_window->state)
++
++static bool *overlay_clip_enabled(void) { return &render.clip_enabled; }
++static GuiRect *overlay_clip_bounds(void) { return &render.clip_bounds; }
++static uint32_t texture_generation;
+ static uint16_t mesh_generations[65535];
+ static uint32_t window_generation;
+ static char diagnostic[1024];
+@@ -293,12 +321,43 @@
+     return create_device(NULL, D3D_DRIVER_TYPE_HARDWARE, description);
+ }
+ 
++static void select_window(RenderWindow *window) {
++    selected_window = window ? window : &idle_window;
++    platform_state_select(selected_window->platform);
++}
++static RenderWindow *find_window(GuiWindow window) {
++    if (!window.id) return NULL;
++    if (render.window_id == window.id) return selected_window;
++    for (RenderWindow *entry = windows; entry; entry = entry->next)
++        if (entry->state.window_id == window.id) return entry;
++    return NULL;
++}
++bool gui_window_valid(GuiWindow window) { return find_window(window) != NULL; }
++bool gui_window_select(GuiWindow window) {
++    RenderWindow *entry = find_window(window);
++    if (!entry) return false;
++    if (entry != selected_window) select_window(entry);
++    return true;
++}
++
+ bool gui_open(int32_t width,int32_t height,const uint8_t *title,int64_t bytes,uint32_t flags) {
+-    if(render.initialized || render.device) {gui_report("A renderer is already open");return false;}
+     if(window_generation==UINT32_MAX) {gui_report("Window handle generation capacity exhausted");return false;}
+     diagnostic[0]=0;
+     if(width<=0 || height<=0 || width>16384 || height>16384 || flags&~(GUI_HIDDEN|GUI_VSYNC|GUI_HIGH_DPI|GUI_HIGH_PERFORMANCE_GPU)) {gui_report("Invalid renderer size or window flags");return false;}
+-    if(!platform_open(width,height,title,bytes,flags)) return false;
++    RenderWindow *previous = selected_window;
++    RenderWindow *next = calloc(1, sizeof(*next));
++    if (next) next->platform = platform_state_create();
++    if (!next || !next->platform) {
++        free(next);
++        gui_report("Could not allocate Gui window state");
++        return false;
++    }
++    select_window(next);
++    if (!platform_open(width,height,title,bytes,flags)) {
++        gui_close();
++        select_window(previous);
++        return false;
++    }
+     platform_size(&render.width,&render.height);render.flags=flags;
+     DXGI_SWAP_CHAIN_DESC description={0};description.BufferDesc.Width=render.width;description.BufferDesc.Height=render.height;
+     description.BufferDesc.Format=DXGI_FORMAT_R8G8B8A8_UNORM;description.SampleDesc.Count=1;
+@@ -310,16 +369,24 @@
+         status=create_device(NULL,D3D_DRIVER_TYPE_WARP,&description);
+         software=SUCCEEDED(status);
+     }
+-    if(!hr_ok(status,"Initialize Direct3D 11") || !window_targets_create() || !pipeline_create()) {gui_close();return false;}
++    if(!hr_ok(status,"Initialize Direct3D 11") || !window_targets_create() || !pipeline_create()) {
++        gui_close();
++        select_window(previous);
++        return false;
++    }
+     IDXGIFactory *factory=NULL;
+     if(SUCCEEDED(IDXGISwapChain_GetParent(render.presentation,&IID_IDXGIFactory,(void **)&factory))) {
+         IDXGIFactory_MakeWindowAssociation(factory,platform_window(),DXGI_MWA_NO_ALT_ENTER);RESET_COM(factory);
+     }
+     render.initialized=true;render.window_id=++window_generation;render.previous_time=platform_seconds();
++    next->next = windows;
++    windows = next;
+     if(software) gui_report("Hardware rendering unavailable; Direct3D WARP software rendering is active");
+     return true;
+ }
+ void gui_close(void) {
++    RenderWindow *closing = selected_window;
++    if (closing == &idle_window) return;
+     if(render.commands) {ID3D11DeviceContext_ClearState(render.commands);ID3D11DeviceContext_Flush(render.commands);}
+     texture_cleanup();
+     for(uint32_t i=0;i<render.mesh_capacity;++i) mesh_destroy(&render.meshes[i]);
+@@ -331,7 +398,13 @@
+     RESET_COM(render.instance_buffer);RESET_COM(render.overlay_buffer);RESET_COM(render.linear_sampler);RESET_COM(render.shadow_sampler);
+     RESET_COM(render.surface_raster);RESET_COM(render.shadow_raster);RESET_COM(render.flat_raster);RESET_COM(render.test_depth);RESET_COM(render.ignore_depth);
+     RESET_COM(render.opaque_blend);RESET_COM(render.overlay_blend);RESET_COM(render.presentation);RESET_COM(render.commands);RESET_COM(render.device);
+-    memset(&render,0,sizeof(render));platform_close();
++    platform_close();
++    RenderWindow **link = &windows;
++    while (*link && *link != closing) link = &(*link)->next;
++    if (*link) *link = closing->next;
++    select_window(windows);
++    platform_state_destroy(closing->platform);
++    free(closing);
+ }
+ bool gui_running(void) {
+     if(!render.initialized || render.failed) return false;
+diff --git a/std/Gui/native/renderer_api.h b/std/Gui/native/renderer_api.h
+--- a/std/Gui/native/renderer_api.h
++++ b/std/Gui/native/renderer_api.h
+@@ -15,12 +15,17 @@
+ GuiWindow gui_window_create(int32_t width,int32_t height,const uint8_t *title,int64_t bytes,uint32_t flags) {
+     return gui_open(width,height,title,bytes,flags)?(GuiWindow){render.window_id}:(GuiWindow){0};
+ }
++#ifdef _WIN32
++#define select_window_context gui_window_select
++#else
+ bool gui_window_valid(GuiWindow window) {
+     return render.initialized && window.id && window.id==render.window_id;
+ }
+-void gui_window_destroy(GuiWindow window) {if(gui_window_valid(window)) gui_close();}
++#define select_window_context gui_window_valid
++#endif
++void gui_window_destroy(GuiWindow window) {if(select_window_context(window)) gui_close();}
+ bool gui_window_update(GuiWindow window) {
+-    if(!gui_window_valid(window)) return false;
++    if(!select_window_context(window)) return false;
+     if(render.frame) {gui_report("Window input cannot update during an active render frame");return false;}
+     platform_frame_complete();platform_poll();
+     render.input_snapshot=platform_input_ok();
+@@ -28,7 +33,7 @@
+     return render.input_ready;
+ }
+ bool gui_window_render_begin(GuiWindow window) {
+-    if(!gui_window_valid(window)) return false;
++    if(!select_window_context(window)) return false;
+     if(render.failed || !platform_input_ok()) {
+         render.input_ready=false;return false;
+     }
+@@ -36,46 +41,46 @@
+     if(!gui_begin_frame()) return false;
+     render.input_ready=false;return true;
+ }
+-void gui_window_present(GuiWindow window) {if(gui_window_valid(window)) gui_end_frame();}
++void gui_window_present(GuiWindow window) {if(select_window_context(window)) gui_end_frame();}
+ GuiVec2 gui_window_dimensions(GuiWindow window) {
+-    if(!gui_window_valid(window)) return (GuiVec2){0,0};
++    if(!select_window_context(window)) return (GuiVec2){0,0};
+     int32_t width,height;platform_size(&width,&height);return (GuiVec2){(float)width,(float)height};
+ }
+ GuiVec2 gui_window_screen_dimensions(GuiWindow window) {
+-    if(!gui_window_valid(window)) return (GuiVec2){0,0};
++    if(!select_window_context(window)) return (GuiVec2){0,0};
+     GuiVec2 size=gui_window_dimensions(window);float scale=platform_content_scale();
+     return (GuiVec2){size.x/scale,size.y/scale};
+ }
+-float gui_window_content_scale(GuiWindow window) {return gui_window_valid(window)?platform_content_scale():0;}
+-const char *gui_window_platform(GuiWindow window) {return gui_window_valid(window)?platform_name():"";}
+-float gui_window_seconds(GuiWindow window) {return gui_window_valid(window)?gui_delta_time():0;}
+-void gui_window_frame_rate(GuiWindow window,uint32_t fps) {if(gui_window_valid(window)) gui_frame_limit(fps);}
++float gui_window_content_scale(GuiWindow window) {return select_window_context(window)?platform_content_scale():0;}
++const char *gui_window_platform(GuiWindow window) {return select_window_context(window)?platform_name():"";}
++float gui_window_seconds(GuiWindow window) {return select_window_context(window)?gui_delta_time():0;}
++void gui_window_frame_rate(GuiWindow window,uint32_t fps) {if(select_window_context(window)) gui_frame_limit(fps);}
+ void gui_window_vsync(GuiWindow window,bool enabled) {
+-    if(!gui_window_valid(window)) return;
++    if(!select_window_context(window)) return;
+     if(enabled) render.flags|=GUI_VSYNC;
+     else render.flags&=~GUI_VSYNC;
+ }
+ bool gui_window_save(GuiWindow window,const uint8_t *path,int64_t bytes) {
+-    return gui_window_valid(window) && gui_capture(path,bytes);
++    return select_window_context(window) && gui_capture(path,bytes);
+ }
+ bool gui_window_set_title(GuiWindow window,const uint8_t *title,int64_t bytes) {
+-    return gui_window_valid(window) && platform_set_title(title,bytes);
++    return select_window_context(window) && platform_set_title(title,bytes);
+ }
+ bool gui_window_set_icon(GuiWindow window,const uint8_t *path,int64_t bytes) {
+-    return gui_window_valid(window) && platform_set_icon(path,bytes);
++    return select_window_context(window) && platform_set_icon(path,bytes);
+ }
+ bool gui_window_cancel_close(GuiWindow window) {
+-    if(!gui_window_valid(window) || !platform_cancel_close()) return false;
++    if(!select_window_context(window) || !platform_cancel_close()) return false;
+     render.input_ready=render.input_snapshot && platform_input_ok() && !render.failed;
+     return true;
+ }
+-void gui_window_fullscreen(GuiWindow window,bool enabled) {if(gui_window_valid(window)) platform_fullscreen(enabled);}
++void gui_window_fullscreen(GuiWindow window,bool enabled) {if(select_window_context(window)) platform_fullscreen(enabled);}
+ bool gui_clipboard_set(GuiWindow window,const uint8_t *text,int64_t bytes) {
+-    return gui_window_valid(window) && platform_clipboard_set(text,bytes);
+-}
+-const char *gui_clipboard_get(GuiWindow window) {return gui_window_valid(window)?platform_clipboard_get():"";}
++    return select_window_context(window) && platform_clipboard_set(text,bytes);
++}
++const char *gui_clipboard_get(GuiWindow window) {return select_window_context(window)?platform_clipboard_get():"";}
+ static bool window_input_valid(GuiWindow window) {
+-    return gui_window_valid(window) && render.input_snapshot && platform_input_ok();
++    return select_window_context(window) && render.input_snapshot && platform_input_ok();
+ }
+ GuiInputBatch gui_window_input(GuiWindow window) {
+     if(!window_input_valid(window)) return (GuiInputBatch){0};
+@@ -99,8 +104,8 @@
+ GuiVec2 gui_input_pointer_position(GuiWindow window) {return window_input_valid(window)?platform_mouse_position():(GuiVec2){0,0};}
+ GuiVec2 gui_input_pointer_motion(GuiWindow window) {return window_input_valid(window)?platform_mouse_delta():(GuiVec2){0,0};}
+ uint32_t gui_input_modifiers(GuiWindow window) {return window_input_valid(window)?platform_modifiers():0;}
+-bool gui_input_capture(GuiWindow window,bool captured) {return gui_window_valid(window) && platform_set_mouse_lock(captured);}
+-bool gui_input_captured(GuiWindow window) {return gui_window_valid(window) && platform_mouse_locked();}
++bool gui_input_capture(GuiWindow window,bool captured) {return select_window_context(window) && platform_set_mouse_lock(captured);}
++bool gui_input_captured(GuiWindow window) {return select_window_context(window) && platform_mouse_locked();}
+ 
+ bool gui_mesh_valid(GuiMesh mesh) {return render.initialized && mesh_get(mesh,false)!=NULL;}
+ void gui_mesh_release(GuiMesh mesh) {
+diff --git a/std/Gui/native/font.c b/std/Gui/native/font.c
+--- a/std/Gui/native/font.c
++++ b/std/Gui/native/font.c
+@@ -17,10 +17,11 @@
+     uint32_t id,fallback; uint8_t *data; stbtt_fontinfo info; float scale,height,ascent,pixel_scale;
+     Glyph *glyphs[257];
+ } FontRecord;
+-static FontRecord fonts[32];
++static FontRecord *fonts;
++static size_t font_capacity;
+ static uint32_t next_font;
+ static FontRecord *font_get(GuiFont font) {
+-    for(size_t i=0;i<32;++i) if(font.id && fonts[i].id==font.id) return &fonts[i];
++    for(size_t i=0;i<font_capacity;++i) if(font.id && fonts[i].id==font.id) return &fonts[i];
+     return NULL;
+ }
+ GuiFont gui_font_create(const uint8_t *data,int64_t bytes,float height) {
+@@ -29,9 +30,6 @@
+ GuiFont gui_font_create_scaled(const uint8_t *data,int64_t bytes,float height,float pixel_scale) {
+     if(!data || bytes<12 || bytes>32*1024*1024 || !isfinite(height) || height<4 || height>256 ||
+        !isfinite(pixel_scale) || pixel_scale<=0 || pixel_scale>8 || next_font==UINT32_MAX) return (GuiFont){0};
+-    FontRecord *font=NULL;
+-    for(size_t i=0;i<32;++i) if(!fonts[i].id) {font=&fonts[i];break;}
+-    if(!font) return (GuiFont){0};
+     uint32_t tables=((uint32_t)data[4]<<8)|data[5];
+     if(tables==0 || (uint64_t)12+16*tables>(uint64_t)bytes) return (GuiFont){0};
+     for(uint32_t i=0;i<tables;++i) {
+@@ -40,6 +38,18 @@
+         uint32_t length=((uint32_t)p[12]<<24)|((uint32_t)p[13]<<16)|((uint32_t)p[14]<<8)|p[15];
+         if((uint64_t)offset+length>(uint64_t)bytes) return (GuiFont){0};
+     }
++    size_t slot=0;
++    while(slot<font_capacity && fonts[slot].id) ++slot;
++    if(slot==font_capacity) {
++        if(font_capacity>SIZE_MAX/(2*sizeof(*fonts))) return (GuiFont){0};
++        size_t capacity=font_capacity?2*font_capacity:32;
++        FontRecord *grown=realloc(fonts,capacity*sizeof(*fonts));
++        if(!grown) return (GuiFont){0};
++        fonts=grown;
++        memset(fonts+font_capacity,0,(capacity-font_capacity)*sizeof(*fonts));
++        font_capacity=capacity;
++    }
++    FontRecord *font=&fonts[slot];
+     font->data=malloc((size_t)bytes);if(!font->data) return (GuiFont){0};
+     memcpy(font->data,data,(size_t)bytes);
+     if(!stbtt_InitFont(&font->info,font->data,0)) {free(font->data);memset(font,0,sizeof(*font));return (GuiFont){0};}
+@@ -54,7 +64,7 @@
+     FontRecord *font=font_get(handle),*other=font_get(fallback);
+     if(!font || (fallback.id && !other) || handle.id==fallback.id) return false;
+     /* A fallback is borrowed; reject cycles instead of following freed handles. */
+-    for(unsigned i=0;other && i<32;++i) {
++    for(size_t i=0;other && i<font_capacity;++i) {
+         if(other==font) return false;
+         other=font_get((GuiFont){other->fallback});
+     }
+@@ -127,7 +137,7 @@
+         if(codepoint=='\r') continue;
+         if(codepoint=='\t') {x+=gui_font_advance(handle,' ')*4;continue;}
+         FontRecord *selected=font;
+-        for(unsigned depth=0;depth<32 && !stbtt_FindGlyphIndex(&selected->info,(int)codepoint);++depth) {
++        for(size_t depth=0;depth<font_capacity && !stbtt_FindGlyphIndex(&selected->info,(int)codepoint);++depth) {
+             FontRecord *fallback=font_get((GuiFont){selected->fallback});if(!fallback) break;selected=fallback;
+         }
+         Glyph *g=font_glyph(selected,codepoint);if(!g) continue;

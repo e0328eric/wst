@@ -26,23 +26,17 @@ Terminal :: #import "terminal.glo";
 };
 
 bytes_view :: (data: [*]const u8, count: ssize) -> []const u8 #magic "slice_from_pointer";
+kernel32 :: #library,system "kernel32";
+GetLastError :: () -> u32 #foreign kernel32;
 
-window: G.Window;
-current: Prepared;
-active: bool;
-focused: bool = true;
-ligatures: bool = true;
-background: u32;
-selected_fg: u32 = 16#ffffff;
-selected_bg: u32 = 16#3b506e;
-cursor_ink: u32 = 16#11151c;
-current_context: s32;
-replaying: bool;
-error_storage: [1024]u8;
-error_count: ssize;
+// Glosso can evaluate a read of an initially empty global during #assert.
+// Keep public renderer state queries tied to the running application.
+runtime_only :: () #inline,always {
+    _ := GetLastError();
+}
 
-Command_Kind :: enum { Rectangle; Glyph; Label; Rounded_Rect; Stroke; Image; Powerline; Color_Emoji; }
-Command :: struct {
+#public Command_Kind :: enum { Rectangle; Glyph; Label; Rounded_Rect; Stroke; Image; Powerline; Color_Emoji; }
+#public Command :: struct {
     kind: Command_Kind;
     x: s32;
     y: s32;
@@ -60,36 +54,66 @@ Command :: struct {
     offset_y: f32;
     image_index: ssize;
 }
-commands: [..]Command;
 
 // Snapshots replay immutable GPU textures. The parser can release or replace
 // the source pixels as soon as the grid has been drawn.
-Image_Command :: struct {
+#public Image_Command :: struct {
     texture: G.Texture;
     destination: GN.Native_Rect;
     source: GN.Native_Rect;
     clip: GN.Native_Rect;
 }
-image_commands: [..]Image_Command;
-Image_Texture :: struct {
+#public Image_Texture :: struct {
     token: u64;
     texture: G.Texture;
     context_id: s32;
     in_frame: bool;
 }
-image_textures: [..]Image_Texture;
 
 // Bounded, direct-mapped cache. Entries own their source and shaping buffers;
 // replay commands contain only glyph IDs and positions, never borrowed runs.
-Shape_Cache :: struct {
+#public Shape_Cache :: struct {
     text: str;
     bold: bool;
     valid: bool;
     run: S.Run;
 }
-shape_cache: [256]Shape_Cache;
+
+default_state: Window_State;
+selected_state: ?*Window_State;
+
+state :: () -> *Window_State #inline,always {
+    if #pattern ?selected = selected_state return selected;
+    return &default_state;
+}
 
 #public {
+
+Window_State :: struct {
+    window: G.Window;
+    current: Prepared;
+    active: bool;
+    focused: bool = true;
+    ligatures: bool = true;
+    selected_fg: u32 = 16#ffffff;
+    selected_bg: u32 = 16#3b506e;
+    cursor_ink: u32 = 16#11151c;
+    current_context: s32;
+    replaying: bool;
+    error_storage: [1024]u8;
+    error_count: ssize;
+    commands: [..]Command;
+    image_commands: [..]Image_Command;
+    image_textures: [..]Image_Texture;
+    shape_cache: [256]Shape_Cache;
+    emoji: Emoji_Render.Window_State;
+}
+
+select_state :: (value: ?*Window_State) {
+    selected_state = value;
+    if #pattern ?selected = value Emoji_Render.select_state(?&selected.emoji);
+    else                           Emoji_Render.select_state(null);
+}
 
 Font_Face :: struct {
     face: usize;
@@ -130,44 +154,52 @@ Prepared :: struct {
 }
 
 bind_window :: (value: G.Window) {
-    window = value;
+    state().window = value;
 }
 frame_active :: () -> bool {
-    return active;
+    runtime_only();
+    return state().active;
 }
 font_family :: () -> str {
-    return current.family;
+    runtime_only();
+    return state().current.family;
 }
 font_size :: () -> s32 {
-    return current.size;
+    runtime_only();
+    return state().current.size;
 }
 font_scale :: () -> f32 {
-    return current.scale;
+    runtime_only();
+    return state().current.scale;
 }
 ligatures_enabled :: () -> bool {
-    return ligatures;
+    runtime_only();
+    return state().ligatures;
 }
 set_ligatures :: (value: bool) {
-    if ligatures == value return;
-    ligatures = value;
+    live := state();
+    if live.ligatures == value return;
+    live.ligatures = value;
     invalidate_frame();
 }
 error_message :: () -> str {
-    return cast(str) bytes_view(cast([*]const u8) &error_storage, error_count);
+    live := state();
+    return cast(str) bytes_view(cast([*]const u8) &live.error_storage, live.error_count);
 }
 
 prepare :: (family: str, size: s32, scale: f32, result: *Prepared) -> bool {
+    live := state();
     discard(result);
     remember("");
     if family.count == 0 || !family.string_is_valid() || size < 8 || size > 72 || scale <= 0 || scale > 8 {
         remember("Invalid font family, size, or display scale");
         return false;
     }
-    if current.family == family && current.size == size && current.scale == scale && G.font_valid(
-        current.regular
+    if live.current.family == family && live.current.size == size && live.current.scale == scale && G.font_valid(
+        live.current.regular
     ) {
-        result.cw = current.cw;
-        result.ch = current.ch;
+        result.cw = live.current.cw;
+        result.ch = live.current.ch;
         return true;
     }
     next: Prepared;
@@ -208,11 +240,12 @@ prepare :: (family: str, size: s32, scale: f32, result: *Prepared) -> bool {
 }
 
 commit :: (prepared: *Prepared) {
+    live := state();
     if !prepared.changed return;
     Emoji_Render.clear();
     clear_shape_cache();
-    discard(&current);
-    current = prepared.*;
+    discard(&live.current);
+    live.current = prepared.*;
     empty: Prepared;
     prepared.* = empty;
     invalidate_frame();
@@ -241,16 +274,18 @@ discard :: (prepared: *Prepared) {
 }
 
 metrics :: (cw: *s32, ch: *s32) {
-    cw.* = current.cw;
-    ch.* = current.ch;
+    live := state();
+    cw.* = live.current.cw;
+    ch.* = live.current.ch;
 }
 set_focus :: (value: bool) {
-    focused = value;
+    state().focused = value;
 }
 set_colors :: (selection_fg: u32, selection_bg: u32, cursor_text: u32) {
-    selected_fg = selection_fg;
-    selected_bg = selection_bg;
-    cursor_ink = cursor_text;
+    live := state();
+    live.selected_fg = selection_fg;
+    live.selected_bg = selection_bg;
+    live.cursor_ink = cursor_text;
 }
 
 invalidate_frame :: () {
@@ -261,68 +296,71 @@ grid_context :: (id: s32) -> s32 {
         remember("Invalid terminal render context");
         return 0;
     }
-    current_context = id;
+    state().current_context = id;
     return 1;
 }
 forget_context :: (id: s32) {
+    live := state();
     has_images := false;
-    i := image_textures.count;
+    i := live.image_textures.count;
     while i > 0 {
         i -= 1;
-        if image_textures[i].context_id == id {
-            G.release_texture(image_textures.swap_remove(i).texture);
+        if live.image_textures[i].context_id == id {
+            G.release_texture(live.image_textures.swap_remove(i).texture);
             has_images = true;
         }
     }
-    if id == current_context || has_images invalidate_frame();
+    if id == live.current_context || has_images invalidate_frame();
 }
 
 frame_begin :: (color: u32) -> bool {
-    if !active {
-        if !G.begin_render_frame(window) {
+    live := state();
+    if !live.active {
+        if !G.begin_render_frame(live.window) {
             remember(G.last_error());
             return false;
         }
-        active = true;
+        live.active = true;
     }
     clear_commands();
-    for i: 0..image_textures.count image_textures[i].in_frame = false;
-    background = color;
-    dimensions := G.render_dimensions(window);
+    for i: 0..live.image_textures.count live.image_textures[i].in_frame = false;
+    dimensions := G.render_dimensions(live.window);
     rect(0, 0, cast(s32) dimensions.x, cast(s32) dimensions.y, color);
     return true;
 }
 
 frame_end :: () {
-    if !active return;
-    G.present_frame(window);
-    active = false;
+    live := state();
+    if !live.active return;
+    G.present_frame(live.window);
+    live.active = false;
     _ := discard_unused_textures();
 }
 
 close :: () {
+    live := state();
     frame_end();
     clear_commands();
-    commands.reset();
-    image_commands.reset();
-    for entry: image_textures G.release_texture(entry.texture);
-    image_textures.reset();
+    live.commands.reset();
+    live.image_commands.reset();
+    for entry: live.image_textures G.release_texture(entry.texture);
+    live.image_textures.reset();
     Emoji_Render.close();
     clear_shape_cache();
-    discard(&current);
-    ligatures = true;
+    discard(&live.current);
+    live.ligatures = true;
     empty: G.Window;
-    window = empty;
-    current_context = 0;
+    live.window = empty;
+    live.current_context = 0;
 }
 
 rect :: (x: s32, y: s32, width: s32, height: s32, color: u32) {
-    if !active || width <= 0 || height <= 0 return;
+    if !state().active || width <= 0 || height <= 0 return;
     emit(.{ .kind = .Rectangle, .x = x, .y = y, .width = width, .height = height, .color = color });
 }
 
 rounded_rect :: (x: s32, y: s32, width: s32, height: s32, radius: s32, color: u32) {
-    if !active || width <= 0 || height <= 0 return;
+    if !state().active || width <= 0 || height <= 0 return;
     if radius <= 0 {
         rect(x, y, width, height, color);
         return;
@@ -341,7 +379,7 @@ rounded_rect :: (x: s32, y: s32, width: s32, height: s32, radius: s32, color: u3
 }
 
 line :: (x1: s32, y1: s32, x2: s32, y2: s32, thickness: f32, color: u32) {
-    if !active || !is_finite(thickness) || thickness <= 0 || thickness > 4096 return;
+    if !state().active || !is_finite(thickness) || thickness <= 0 || thickness > 4096 return;
     emit(
         .{
             .kind = .Stroke,
@@ -356,18 +394,19 @@ line :: (x1: s32, y1: s32, x2: s32, y2: s32, thickness: f32, color: u32) {
 }
 
 draw_label :: (x: s32, y: s32, width: s32, height: s32, text: str, color: u32) {
-    label_with_font(current.ui, x, y, width, height, text, color, false);
+    label_with_font(state().current.ui, x, y, width, height, text, color, false);
 }
 
 /// Compact proportional chrome text stays at 13 DIP when the terminal zooms.
 draw_ui_label :: (x: s32, y: s32, width: s32, height: s32, text: str, color: u32) {
-    label_with_font(current.ui_small, x, y, width, height, text, color, true);
+    label_with_font(state().current.ui_small, x, y, width, height, text, color, true);
 }
 
 measure_ui :: (text: str) -> s32 {
+    live := state();
     if text.count == 0 return 0;
-    ensure_text_fonts(current.ui_small, text);
-    return positive_ceil(G.measure_text(current.ui_small, text) * current.scale);
+    ensure_text_fonts(live.current.ui_small, text);
+    return positive_ceil(G.measure_text(live.current.ui_small, text) * live.current.scale);
 }
 
 }
@@ -382,12 +421,13 @@ label_with_font :: (
     color: u32,
     chrome: bool
 ) {
-    if !active || width <= 0 || height <= 0 return;
+    live := state();
+    if !live.active || width <= 0 || height <= 0 return;
     ensure_text_fonts(font, text);
     shown: str;
     if chrome shown = fit_ui_label(text, width);
     else      shown = fit_label(font, text, width);
-    logical_height := G.font_height(font) * current.scale;
+    logical_height := G.font_height(font) * live.current.scale;
     top := y + (height - cast(s32) logical_height) / 2;
     emit(
         .{
@@ -422,7 +462,7 @@ cell :: (
 }
 
 cursor :: (x: s32, y: s32, width: s32, height: s32, color: u32) {
-    if focused rect(x, y, width, height, color);
+    if state().focused rect(x, y, width, height, color);
     else {
         rect(x, y, width, 1, color);
         rect(x, y + height - 1, width, 1, color);
@@ -484,17 +524,18 @@ grid_clipped :: (
 
 /// The facade ensures a readable input frame before calling this when inactive.
 snapshot :: (path: str) -> s32 {
+    live := state();
     opened := false;
-    if !active {
-        if !G.begin_render_frame(window) {
+    if !live.active {
+        if !G.begin_render_frame(live.window) {
             remember(G.last_error());
             return 0;
         }
-        active = true;
+        live.active = true;
         opened = true;
-        replaying = true;
-        for command: commands draw(command);
-        replaying = false;
+        live.replaying = true;
+        for command: live.commands draw(command);
+        live.replaying = false;
     }
     bitmap := path.count >= 4 && (
         path[path.count - 4..path.count] == ".bmp" || path[path.count - 4..path.count] == ".BMP"
@@ -502,11 +543,11 @@ snapshot :: (path: str) -> s32 {
     success := false;
     if bitmap {
         png := tprint("{}.gui.png", path);
-        if G.save_frame(window, png) {
+        if G.save_frame(live.window, png) {
             success = native_bmp(png, path) != 0;
             if !success remember(native_error().to_string());
         } else remember(G.last_error());
-    } else success = G.save_frame(window, path);
+    } else success = G.save_frame(live.window, path);
     if opened              frame_end();
     if !success && !bitmap remember(G.last_error());
     if success             return 1;
@@ -526,9 +567,10 @@ positive_ceil :: (value: f32) -> s32 {
     return result;
 }
 remember :: (message: str) {
-    error_count = message.count;
-    if error_count > 1023 error_count = 1023;
-    for i: 0..error_count error_storage[i] = message[i];
+    live := state();
+    live.error_count = message.count;
+    if live.error_count > 1023 live.error_count = 1023;
+    for i: 0..live.error_count live.error_storage[i] = message[i];
 }
 load_face :: (
     family: str,
@@ -578,21 +620,22 @@ load_face :: (
 }
 
 ensure_glyph_font :: (font: G.Font, cp: u32) {
+    live := state();
     if font.id == 0 return;
-    face := &current.regular_face;
+    face := &live.current.regular_face;
     group: s32;
-    size := current.size;
-    if font.id == current.bold.id face = &current.bold_face;
-    else if font.id == current.ui.id {
-        face = &current.ui_face;
+    size := live.current.size;
+    if font.id == live.current.bold.id face = &live.current.bold_face;
+    else if font.id == live.current.ui.id {
+        face = &live.current.ui_face;
         size = 16;
-        if current.size != 16 group = 1;
-    } else if font.id == current.ui_small.id {
-        face = &current.small_face;
+        if live.current.size != 16 group = 1;
+    } else if font.id == live.current.ui_small.id {
+        face = &live.current.small_face;
         size = 13;
         group = 2;
     }
-    chain := &current.fallback[group];
+    chain := &live.current.fallback[group];
     slot := cp % 128;
     if face.checked[slot] == cp || chain.attempted == 3 return;
     face.checked[slot] = cp;
@@ -603,12 +646,12 @@ ensure_glyph_font :: (font: G.Font, cp: u32) {
         i := chain.attempted;
         chain.attempted += 1;
         width_limit: s32;
-        if group == 0 && i == 2 width_limit = 2 * current.cw;
+        if group == 0 && i == 2 width_limit = 2 * live.current.cw;
         metrics: Font_Data;
         fallback := load_face(
             names[i],
             size,
-            current.scale,
+            live.current.scale,
             0,
             &metrics,
             width_limit,
@@ -618,9 +661,9 @@ ensure_glyph_font :: (font: G.Font, cp: u32) {
         chain.fonts[i] = fallback;
         if G.font_valid(chain.tail) _ := G.set_font_fallback(chain.tail, fallback);
         else if group == 0 {
-            _ := G.set_font_fallback(current.regular, fallback);
-            _ := G.set_font_fallback(current.bold, fallback);
-            if current.size == 16 _ := G.set_font_fallback(current.ui, fallback);
+            _ := G.set_font_fallback(live.current.regular, fallback);
+            _ := G.set_font_fallback(live.current.bold, fallback);
+            if live.current.size == 16 _ := G.set_font_fallback(live.current.ui, fallback);
         } else _ := G.set_font_fallback(font, fallback);
         chain.tail = fallback;
         if native_has_glyph(chain.faces[i], cp) return;
@@ -637,9 +680,10 @@ ensure_text_fonts :: (font: G.Font, text: str) {
     }
 }
 clear_commands :: () {
-    for i: 0..commands.count commands[i].text.free();
-    commands.clear();
-    image_commands.clear();
+    live := state();
+    for i: 0..live.commands.count live.commands[i].text.free();
+    live.commands.clear();
+    live.image_commands.clear();
 }
 color :: (rgb: u32) -> GN.Native_Color {
     return .{
@@ -650,17 +694,19 @@ color :: (rgb: u32) -> GN.Native_Color {
     };
 }
 logical_rect :: (bounds: GN.Native_Rect) -> GN.Native_Rect {
-    scale := current.scale;
+    scale := state().current.scale;
     if scale <= 0 scale = 1;
     return .{ bounds.x / scale, bounds.y / scale, bounds.width / scale, bounds.height / scale };
 }
 emit :: (command: Command) {
-    if !active return;
+    live := state();
+    if !live.active return;
     draw(command);
-    if !replaying commands.push(command);
+    if !live.replaying live.commands.push(command);
 }
 draw :: (command: Command) {
-    scale := current.scale;
+    live := state();
+    scale := live.current.scale;
     if scale <= 0 scale = 1;
     if command.clipped G.set_clip(logical_rect(command.clip));
     else               G.reset_clip();
@@ -679,7 +725,7 @@ draw :: (command: Command) {
         if command.kind == .Color_Emoji {
             if Emoji_Render.draw(
                 command.cp, command.color, command.x, top, command.width, command.height,
-                2 * current.cw, current.ch, scale
+                2 * live.current.cw, live.current.ch, scale
             ) {
                 G.reset_clip();
                 return;
@@ -723,7 +769,7 @@ draw :: (command: Command) {
     } else if command.kind == .Powerline {
         draw_powerline(command);
     } else if command.kind == .Image {
-        placement := image_commands[command.image_index];
+        placement := live.image_commands[command.image_index];
         G.set_clip(logical_rect(placement.clip));
         if !G.draw_texture(placement.texture, logical_rect(placement.destination), placement.source)
             remember(G.last_error());
@@ -735,7 +781,7 @@ draw :: (command: Command) {
 // pixel coverage for smooth edges, then submit through that same Gui renderer.
 paint_rect :: (x: f32, y: f32, width: f32, height: f32, ink: GN.Native_Color) {
     if width <= 0 || height <= 0 || ink.a <= 0 return;
-    scale := current.scale;
+    scale := state().current.scale;
     if scale <= 0 scale = 1;
     G.rectangle(.{ x / scale, y / scale, width / scale, height / scale }, ink);
 }
@@ -926,7 +972,8 @@ draw_cell :: (
     paint_background: bool = true,
     underline_color: u32 = Colors.UNDERLINE_DEFAULT
 ) {
-    if !active || width <= 0 || height <= 0 return;
+    live := state();
+    if !live.active || width <= 0 || height <= 0 return;
     fg := foreground;
     bg := back;
     if (flags & 4) != 0 {
@@ -934,8 +981,8 @@ draw_cell :: (
         bg = foreground;
     }
     if is_selected {
-        fg = selected_fg;
-        bg = selected_bg;
+        fg = live.selected_fg;
+        bg = live.selected_bg;
     }
     bounds: GN.Native_Rect = .{ cast(f32) x, cast(f32) y, cast(f32) width, cast(f32) height };
     if clipped {
@@ -970,8 +1017,8 @@ draw_cell :: (
             }
         );
     } else if cp != 0 && cp != 32 && (flags & 16) == 0 {
-        font := current.regular;
-        if (flags & 1) != 0 font = current.bold;
+        font := live.current.regular;
+        if (flags & 1) != 0 font = live.current.bold;
         kind: Command_Kind = .Glyph;
         top := y;
         if (flags & Terminal.CELL_EMOJI_STYLE) != 0 ||
@@ -979,7 +1026,7 @@ draw_cell :: (
             kind = .Color_Emoji;
         } else {
             ensure_glyph_font(font, cp);
-            top += (height - cast(s32)(G.font_height(font) * current.scale)) / 2;
+            top += (height - cast(s32)(G.font_height(font) * live.current.scale)) / 2;
         }
         emit(
             .{
@@ -993,7 +1040,7 @@ draw_cell :: (
                 .font = font,
                 .clipped = true,
                 .clip = bounds,
-                .double_ink = (flags & 1) != 0 && current.bold_simulated
+                .double_ink = (flags & 1) != 0 && live.current.bold_simulated
             }
         );
     }
@@ -1013,27 +1060,32 @@ draw_cell :: (
 }
 
 clear_shape_cache :: () {
+    live := state();
     for i: 0..256 {
-        shape_cache[i].text.free();
-        S.free_run(&shape_cache[i].run);
+        live.shape_cache[i].text.free();
+        S.free_run(&live.shape_cache[i].run);
         empty: Shape_Cache;
-        shape_cache[i] = empty;
+        live.shape_cache[i] = empty;
     }
 }
 
 cached_shape :: (text: str, bold: bool) -> *S.Run {
-    hash: ssize;
+    live := state();
+    // Mask an unsigned hash so the slot is 0..255 by construction. The -O3
+    // build turned the former signed `% 256` into slot -13, writing a cache
+    // entry over neighbouring renderer globals and corrupting the heap.
+    hash: u32;
     if bold hash = 1;
-    for i: 0..text.count hash = (hash * 33 + cast(ssize) text[i]) % 256;
-    entry := &shape_cache[hash];
+    for i: 0..text.count hash = (hash * 33 + cast(u32) text[i]) & 255;
+    entry := &live.shape_cache[hash];
     if !entry.valid || entry.text != text || entry.bold != bold {
         entry.text.free();
         entry.text = text.clone();
         entry.bold = bold;
         entry.valid = true;
-        shaper := &current.regular_shaper;
-        if bold shaper = &current.bold_shaper;
-        _ := S.shape(shaper, text, cast(f32) current.size, &entry.run);
+        shaper := &live.current.regular_shaper;
+        if bold shaper = &live.current.bold_shaper;
+        _ := S.shape(shaper, text, cast(f32) live.current.size, &entry.run);
     }
     return &entry.run;
 }
@@ -1078,8 +1130,9 @@ shaped_ink :: (
     bold: bool,
     clip: GN.Native_Rect
 ) {
+    live := state();
     if clip.width <= 0 || clip.height <= 0 return;
-    top := y + (ch - cast(s32)(G.font_height(font) * current.scale)) / 2;
+    top := y + (ch - cast(s32)(G.font_height(font) * live.current.scale)) / 2;
     first: ssize;
     while first < run.clusters.count {
         end := cluster_end(run, first);
@@ -1095,7 +1148,7 @@ shaped_ink :: (
         origin := cast(f32)(first * cast(ssize) cw);
         if end - first > 1 {
             width: f32;
-            for i: start_glyph..end_glyph width += run.advances[i] * current.scale;
+            for i: start_glyph..end_glyph width += run.advances[i] * live.current.scale;
             origin += (cast(f32)((end - first) * cast(ssize) cw) - width) * 0.5;
         }
         for i: start_glyph..end_glyph {
@@ -1107,14 +1160,14 @@ shaped_ink :: (
                     .color = fg,
                     .font = font,
                     .cp = Glyph_Font.GLYPH_BASE + cast(u32) run.glyphs[i],
-                    .offset_x = origin + run.offsets[i].advance * current.scale,
-                    .offset_y = -run.offsets[i].ascender * current.scale,
+                    .offset_x = origin + run.offsets[i].advance * live.current.scale,
+                    .offset_y = -run.offsets[i].ascender * live.current.scale,
                     .clipped = true,
                     .clip = clip,
-                    .double_ink = bold && current.bold_simulated
+                    .double_ink = bold && live.current.bold_simulated
                 }
             );
-            origin += run.advances[i] * current.scale;
+            origin += run.advances[i] * live.current.scale;
         }
         first = end;
     }
@@ -1132,8 +1185,9 @@ draw_shaped :: (
     clipped: bool,
     clip: GN.Native_Rect
 ) -> bool {
+    live := state();
     bold := (cells[0].flags & 1) != 0;
-    if !ligatures || count < 2 return false;
+    if !live.ligatures || count < 2 return false;
     storage: [512]u8;
     for i: 0..count storage[i] = cast(u8) cells[i].codepoint;
     text := cast(str) bytes_view(cast([*]const u8) &storage, cast(ssize) count);
@@ -1142,15 +1196,15 @@ draw_shaped :: (
     // The private glyph font has no Unicode fallback chain. Keep missing
     // characters on the ordinary per-cell path instead of drawing .notdef.
     for glyph: run.glyphs if glyph == 0 return false;
-    font := &current.regular_glyphs;
-    tried := &current.regular_glyphs_tried;
-    face := current.regular_face.face;
-    base := current.regular;
+    font := &live.current.regular_glyphs;
+    tried := &live.current.regular_glyphs_tried;
+    face := live.current.regular_face.face;
+    base := live.current.regular;
     if bold {
-        font = &current.bold_glyphs;
-        tried = &current.bold_glyphs_tried;
-        face = current.bold_face.face;
-        base = current.bold;
+        font = &live.current.bold_glyphs;
+        tried = &live.current.bold_glyphs_tried;
+        face = live.current.bold_face.face;
+        base = live.current.bold;
     }
     // The private cmap needs its own copy of the face. Ordinary text only uses
     // the Unicode handle, even with ligatures enabled.
@@ -1159,8 +1213,8 @@ draw_shaped :: (
         data: Font_Data;
         if native_face_data(face, &data) != 0 {
             defer native_free(&data);
-            if current.family == "Segoe UI Emoji" include_vertical_ink(&data);
-            font.* = Glyph_Font.create(&data, G.font_height(base), current.scale);
+            if live.current.family == "Segoe UI Emoji" include_vertical_ink(&data);
+            font.* = Glyph_Font.create(&data, G.font_height(base), live.current.scale);
         }
     }
     if !G.font_valid(font.*) return false;
@@ -1171,7 +1225,7 @@ draw_shaped :: (
         while end < count && ((cells[end].flags & 16#80000000) != 0) == selected end += 1;
         fg := cells[first].fg;
         if (cells[first].flags & 4) != 0 fg = cells[first].bg;
-        if selected                      fg = selected_fg;
+        if selected                      fg = live.selected_fg;
         bounds: GN.Native_Rect = .{
             cast(f32)(x + first * cw),
             cast(f32) y,
@@ -1219,7 +1273,7 @@ draw_shaped :: (
                 .clip = bounds
             }
         );
-        shaped_ink(run, font.*, x, y, cw, ch, cursor_ink, bold, bounds);
+        shaped_ink(run, font.*, x, y, cw, ch, live.cursor_ink, bold, bounds);
         if (cells[cursor_column].flags & 2) != 0
             emit(
                 .{
@@ -1228,7 +1282,7 @@ draw_shaped :: (
                     .y = y + ch - 2,
                     .width = cw,
                     .height = 1,
-                    .color = underline_ink(cells[cursor_column].underline_color, cursor_ink),
+                    .color = underline_ink(cells[cursor_column].underline_color, live.cursor_ink),
                     .clipped = true,
                     .clip = bounds
                 }
@@ -1238,20 +1292,22 @@ draw_shaped :: (
 }
 
 discard_unused_textures :: () -> bool {
-    original := image_textures.count;
-    i := image_textures.count;
+    live := state();
+    original := live.image_textures.count;
+    i := live.image_textures.count;
     while i > 0 {
         i -= 1;
-        if !image_textures[i].in_frame G.release_texture(image_textures.swap_remove(i).texture);
+        if !live.image_textures[i].in_frame G.release_texture(live.image_textures.swap_remove(i).texture);
     }
-    return image_textures.count != original;
+    return live.image_textures.count != original;
 }
 
 image_texture :: (view: *Kitty.View) -> G.Texture {
-    for i: 0..image_textures.count {
-        if image_textures[i].token == view.token {
-            image_textures[i].in_frame = true;
-            return image_textures[i].texture;
+    live := state();
+    for i: 0..live.image_textures.count {
+        if live.image_textures[i].token == view.token {
+            live.image_textures[i].in_frame = true;
+            return live.image_textures[i].texture;
         }
     }
     length := cast(ssize) view.width * cast(ssize) view.height * 4;
@@ -1266,12 +1322,12 @@ image_texture :: (view: *Kitty.View) -> G.Texture {
     if !G.texture_valid(texture) && Emoji_Render.release_textures()
         texture = G.create_texture(view.width, view.height, pixels, .Nearest);
     if G.texture_valid(texture) {
-        image_textures.push(
+        live.image_textures.push(
             .{
                 .token = view.token,
                 .texture = texture,
                 .in_frame = true,
-                .context_id = current_context
+                .context_id = live.current_context
             }
         );
     } else remember(G.last_error());
@@ -1294,7 +1350,8 @@ prepare_images :: (
     ch: s32,
     viewport: GN.Native_Rect
 ) -> Image_Layers {
-    first := image_commands.count;
+    live := state();
+    first := live.image_commands.count;
     layers: Image_Layers = .{ first, first, first, first };
     #pattern ?store := graphics else {
         return layers;
@@ -1318,7 +1375,7 @@ prepare_images :: (
         bounds.height = bottom - top;
         texture := image_texture(&view);
         if !G.texture_valid(texture) continue;
-        image_commands.push(
+        live.image_commands.push(
             .{
                 .texture = texture,
                 .clip = bounds,
@@ -1364,7 +1421,8 @@ draw_grid :: (
     graphics: ?*Kitty.Store = null,
     view_offset: s32 = 0
 ) {
-    if !active || cols <= 0 || cols > 512 || rows <= 0 || rows > 256 || cw <= 0 || ch <= 0 return;
+    live := state();
+    if !live.active || cols <= 0 || cols > 512 || rows <= 0 || rows > 256 || cw <= 0 || ch <= 0 return;
     viewport: GN.Native_Rect = .{
         cast(f32) x,
         cast(f32) y,
@@ -1414,13 +1472,13 @@ draw_grid :: (
         while column < cols {
             c := cells[row * cols + column];
             end := column + 1;
-            if ligatures && shapeable(c) {
+            if live.ligatures && shapeable(c) {
                 while end < cols && shapeable(cells[row * cols + end]) && same_shape_style(
                     c,
                     cells[row * cols + end]
                 ) end += 1;
                 cursor_column: s32 = -1;
-                if focused && visible != 0 && row == cursor_y && cursor_x >= column &&
+                if live.focused && visible != 0 && row == cursor_y && cursor_x >= column &&
                    cursor_x < end
                     cursor_column = cursor_x - column;
                 if draw_shaped(
@@ -1473,7 +1531,7 @@ draw_grid :: (
             c = cells[cursor_y * cols + column];
         }
         if (c.flags & 8) != 0 && column + 1 < cols span = 2;
-        if focused {
+        if live.focused {
             if !shaped_cursor
                 draw_cell(
                     x + column * cw,
@@ -1481,7 +1539,7 @@ draw_grid :: (
                     span * cw,
                     ch,
                     c.codepoint,
-                    cursor_ink,
+                    live.cursor_ink,
                     cursor_color,
                     c.flags & (3 | Terminal.CELL_EMOJI_STYLE | Terminal.CELL_TEXT_STYLE),
                     false,
@@ -1546,10 +1604,11 @@ draw_grid :: (
     draw_images(layers.above_text, layers.end);
 }
 fit_label :: (font: G.Font, text: str, width: s32) -> str {
-    if G.measure_text(font, text) * current.scale <= cast(f32) width return text;
+    live := state();
+    if G.measure_text(font, text) * live.current.scale <= cast(f32) width return text;
     ellipsis: str = "…";
     ensure_text_fonts(font, ellipsis);
-    available := cast(f32) width / current.scale - G.measure_text(font, ellipsis);
+    available := cast(f32) width / live.current.scale - G.measure_text(font, ellipsis);
     offset: ssize;
     used: f32;
     while offset < text.count {
@@ -1568,11 +1627,12 @@ fit_label :: (font: G.Font, text: str, width: s32) -> str {
 // showing a clipped dot or part of a multibyte glyph. Legacy labels keep their
 // existing behavior through fit_label above.
 fit_ui_label :: (text: str, width: s32) -> str {
-    font := current.ui_small;
-    if G.measure_text(font, text) * current.scale <= cast(f32) width return text;
+    live := state();
+    font := live.current.ui_small;
+    if G.measure_text(font, text) * live.current.scale <= cast(f32) width return text;
     ellipsis: str = "…";
     ensure_text_fonts(font, ellipsis);
-    available := cast(f32) width / current.scale - G.measure_text(font, ellipsis);
+    available := cast(f32) width / live.current.scale - G.measure_text(font, ellipsis);
     if available < 0 return "";
     offset: ssize;
     used: f32;

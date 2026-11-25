@@ -1,0 +1,13 @@
+diff --git a/std/Gui/native/font.c b/std/Gui/native/font.c
+--- a/std/Gui/native/font.c
++++ b/std/Gui/native/font.c
+@@ -100,6 +100,9 @@ static Glyph *font_glyph(FontRecord *font,uint32_t codepoint) {
+                 if(alpha) g->runs[g->count++]=(FontRun){(int16_t)(x+start),(int16_t)(y+row),(int16_t)(col-start),(uint8_t)(alpha*17)};
+             }
+         }
++        /* Keep only the runs the glyph uses; the scan reserved one per pixel. */
++        if(!g->count) {free(g->runs);g->runs=NULL;}
++        else if(g->count<capacity) {FontRun *fit=realloc(g->runs,g->count*sizeof(*g->runs));if(fit) g->runs=fit;}
+     }
+     stbtt_FreeBitmap(bitmap,NULL);g->next=font->glyphs[bucket];font->glyphs[bucket]=g;return g;
+ }

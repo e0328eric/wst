@@ -24,6 +24,7 @@ bindings :: () -> str {
 #insert #comptime bindings();
 
 #public composed :: (window: usize) -> s32 #foreign presentation "wst_gui_presentation_composed";
+#public forget :: (window: usize) #foreign presentation "wst_gui_presentation_forget";
 
 /// Borrowed UTF-8 description of the last D3D11 device. The next successful
 /// device creation replaces the contents of the process-wide static buffer.

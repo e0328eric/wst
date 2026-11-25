@@ -17,9 +17,42 @@ Config_Paths :: #import "config_paths.glo";
     pty_close, pty_create, pty_create_at, pty_select, pty_selected
 };
 
-window: G.Window;
-window_discrete_gpu: bool;
+#public Window_Context :: struct {
+    window: G.Window;
+    discrete_gpu: bool;
+    input: I.Window_State;
+    renderer: R.Window_State;
+    native: N.Window_Context = N.Empty_Window_Context;
+}
+
+default_window: Window_Context;
+selected_window: ?*Window_Context;
 config_path_storage: str;
+
+state :: () -> *Window_Context #inline,always {
+    if #pattern ?selected = selected_window return selected;
+    return &default_window;
+}
+
+/// Switch all frontend state together between completed frames. Keep each
+/// context at a stable address until its window is closed. An empty context
+/// is ready for open(), and null restores the default context.
+#public select_window :: (value: ?*Window_Context) -> bool {
+    target := &default_window;
+    if #pattern ?selected = value target = selected;
+    if target.window.id != 0 && !G.select_window(target.window) return false;
+    selected_window = value;
+    if #pattern ?selected = value {
+        I.select_state(?&selected.input);
+        R.select_state(?&selected.renderer);
+        N.select_window(?&selected.native);
+    } else {
+        I.select_state(null);
+        R.select_state(null);
+        N.select_window(null);
+    }
+    return true;
+}
 
 #public open :: (
     family: cstr, size: s32, cols: s32, rows: s32, padding: s32, hidden: s32,
@@ -36,61 +69,63 @@ open_window :: (
     family: cstr, size: s32, cols: s32, rows: s32, padding: s32, hidden: s32,
     opacity: f32, discrete_gpu: bool, placement: ?*N.Window_Placement
 ) -> s32 {
-    if G.window_valid(window) return N.set_error("A wst window is already open");
+    live := state();
+    if G.window_valid(live.window) return N.set_error("A wst window is already open");
     // Prepare the custom frame and font before exposing a visible window.
     flags := G.Window_Flags.High_Dpi | G.Window_Flags.Hidden;
     if discrete_gpu flags |= G.Window_Flags.High_Performance_Gpu;
     // Gui installs the embedded application icon and refreshes it for monitor DPI.
-    window = G.create_window(900, 650, "wst | Glosso terminal", flags);
-    if !G.window_valid(window) return N.set_error(G.last_error().c_string());
+    live.window = G.create_window(900, 650, "wst | Glosso terminal", flags);
+    if !G.window_valid(live.window) return N.set_error(G.last_error().c_string());
     if N.gui_bind() == 0 {
-        G.destroy_window(window);
+        G.destroy_window(live.window);
         empty: G.Window;
-        window = empty;
+        live.window = empty;
         return 0;
     }
     if N.configure_chrome(16#080808) == 0 || N.set_window_opacity(opacity) == 0 {
-        close_window();
+        close_surface();
         return 0;
     }
-    G.set_frame_rate(window, 0);
-    G.set_vsync(window, false);
-    I.bind_window(window);
-    R.bind_window(window);
+    G.set_frame_rate(live.window, 0);
+    G.set_vsync(live.window, false);
+    I.bind_window(live.window);
+    R.bind_window(live.window);
     if #pattern ?saved = placement {
         if N.restore_window_placement(saved) == 0 {
-            close_window();
+            close_surface();
             return 0;
         }
     }
     prepared: R.Prepared;
-    if !R.prepare(family.to_string(), size, G.content_scale(window), &prepared) {
+    if !R.prepare(family.to_string(), size, G.content_scale(live.window), &prepared) {
         _ := N.set_error(R.error_message().c_string());
-        close_window();
+        close_surface();
         return 0;
     }
     if placement == null && !resize_grid_metrics(cols, rows, padding, prepared.cw, prepared.ch) {
         R.discard(&prepared);
-        close_window();
+        close_surface();
         return 0;
     }
     R.commit(&prepared);
     I.notify_resize();
     if hidden == 0 && N.window_show() == 0 {
-        close_window();
+        close_surface();
         return 0;
     }
-    window_discrete_gpu = discrete_gpu;
+    live.discrete_gpu = discrete_gpu;
     return 1;
 }
 
-close_window :: () {
+#public close_surface :: () {
+    live := state();
     R.close();
     I.close();
     N.gui_unbind();
-    if G.window_valid(window) G.destroy_window(window);
+    if G.window_valid(live.window) G.destroy_window(live.window);
     empty: G.Window;
-    window = empty;
+    live.window = empty;
 }
 
 #public {
@@ -104,15 +139,15 @@ recover_window :: () -> s32 {
     size := R.font_size();
     opacity := N.window_opacity();
     ligatures := R.ligatures_enabled();
-    close_window();
-    if open_window(family.c_string(), size, 0, 0, 0, 1, opacity, window_discrete_gpu, ?&placement) == 0 return 0;
+    close_surface();
+    if open_window(family.c_string(), size, 0, 0, 0, 1, opacity, state().discrete_gpu, ?&placement) == 0 return 0;
     R.set_ligatures(ligatures);
     return 1;
 }
 
 close :: () {
     N.close_sessions();
-    close_window();
+    close_surface();
 }
 
 next_event :: (event: *T.Event) -> s32 {
@@ -143,13 +178,13 @@ dpi :: () -> s32 {
 }
 metrics :: (width: *s32, height: *s32, cw: *s32, ch: *s32) {
     update_scale();
-    dimensions := G.render_dimensions(window);
+    dimensions := G.render_dimensions(state().window);
     width.* = cast(s32) dimensions.x;
     height.* = cast(s32) dimensions.y;
     R.metrics(cw, ch);
 }
 title :: (text: cstr) {
-    _ := G.set_window_title(window, text.to_string());
+    _ := G.set_window_title(state().window, text.to_string());
 }
 configure_chrome :: (background: u32) -> s32 {
     return N.configure_chrome(background);
@@ -184,7 +219,7 @@ resize_grid_window :: (cols: s32, rows: s32, padding: s32) -> s32 {
 
 set_font :: (family: cstr, size: s32) -> s32 {
     prepared: R.Prepared;
-    if !R.prepare(family.to_string(), size, G.content_scale(window), &prepared)
+    if !R.prepare(family.to_string(), size, G.content_scale(state().window), &prepared)
         return N.set_error(R.error_message().c_string());
     R.commit(&prepared);
     I.notify_resize();
@@ -214,7 +249,7 @@ apply_all_settings :: (
     if I.validate_keybindings(bindings, count) == 0
         return N.set_error(I.error_message().c_string());
     prepared: R.Prepared;
-    if !R.prepare(family.to_string(), size, G.content_scale(window), &prepared)
+    if !R.prepare(family.to_string(), size, G.content_scale(state().window), &prepared)
         return N.set_error(R.error_message().c_string());
     previous_opacity := N.window_opacity();
     if #pattern ?value = opacity {
@@ -362,7 +397,7 @@ snapshot :: (path: cstr) -> s32 {
 }
 clipboard_get :: (bytes: [*]u8, capacity: s32) -> s32 {
     if capacity <= 0 return 0;
-    text := G.get_clipboard(window);
+    text := G.get_clipboard(state().window);
     defer text.free();
     if text.count > cast(ssize) capacity
         return N.set_error("Clipboard text exceeds the terminal input capacity");
@@ -371,13 +406,14 @@ clipboard_get :: (bytes: [*]u8, capacity: s32) -> s32 {
 }
 clipboard_set :: (bytes: [*]const u8, count: s32) -> s32 {
     if count < 0 return N.set_error("Invalid clipboard text length");
-    if !G.set_clipboard(window, raw_string(bytes, count))
+    if !G.set_clipboard(state().window, raw_string(bytes, count))
         return N.set_error(G.last_error().c_string());
     return 1;
 }
-pty_destroy :: (id: s32) -> s32 {
+pty_destroy :: (id: s32, render_context: ?s32 = null) -> s32 {
     if N.pty_destroy(id) == 0 return 0;
-    R.forget_context(id);
+    if #pattern ?pane = render_context R.forget_context(pane);
+    else                                R.forget_context(id);
     return 1;
 }
 
@@ -393,7 +429,7 @@ valid_geometry :: (cols: s32, rows: s32, padding: s32) -> bool {
     return cols >= 0 && cols <= 512 && rows >= 0 && rows <= 256 && padding >= 0 && padding <= 100;
 }
 resize_grid_metrics :: (cols: s32, rows: s32, padding: s32, cw: s32, ch: s32) -> bool {
-    if !G.window_valid(window) || !valid_geometry(cols, rows, padding) || cw <= 0 || ch <= 0 {
+    if !G.window_valid(state().window) || !valid_geometry(cols, rows, padding) || cw <= 0 || ch <= 0 {
         _ := N.set_error("Invalid terminal grid resize");
         return false;
     }
@@ -407,9 +443,10 @@ resize_grid_metrics :: (cols: s32, rows: s32, padding: s32, cw: s32, ch: s32) ->
     return N.resize_client(width, height) != 0;
 }
 update_scale :: () {
-    if !G.window_valid(window) return;
+    live := state();
+    if !G.window_valid(live.window) return;
     // Font metrics are physical pixels; std.Gui drawing remains in logical pixels.
-    scale := G.content_scale(window);
+    scale := G.content_scale(live.window);
     if scale == R.font_scale() return;
     prepared: R.Prepared;
     if R.prepare(R.font_family(), R.font_size(), scale, &prepared) {

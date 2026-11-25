@@ -12,8 +12,7 @@ typedef HRESULT (WINAPI *CreateDeviceAndSwapChain)(
     const D3D_FEATURE_LEVEL *, UINT, UINT, const DXGI_SWAP_CHAIN_DESC *,
     IDXGISwapChain **, ID3D11Device **, D3D_FEATURE_LEVEL *, ID3D11DeviceContext **);
 
-static HWND presentation_window;
-static int presentation_composed;
+static const WCHAR composed_property[] = L"wst.DwmComposedPresentation";
 static char adapter_name[128 * 4];
 
 static void record_adapter(ID3D11Device *device)
@@ -32,6 +31,20 @@ static void record_adapter(ID3D11Device *device)
         IDXGIAdapter_Release(adapter);
     }
     IDXGIDevice_Release(dxgi_device);
+}
+
+/* std/Gui streams each glyph's coverage runs through one dynamic vertex
+   buffer, rewritten with WRITE_DISCARD many times per frame. The driver keeps
+   every renamed copy alive while its frame is queued; on integrated GPUs those
+   copies are system memory charged to this process, and a pool grown while
+   the GPU was busy is never trimmed. Queue one frame instead of DXGI's three. */
+static void limit_frame_latency(ID3D11Device *device)
+{
+    IDXGIDevice1 *dxgi_device;
+
+    if (FAILED(ID3D11Device_QueryInterface(device, &IID_IDXGIDevice1, (void **)&dxgi_device))) return;
+    IDXGIDevice1_SetMaximumFrameLatency(dxgi_device, 1);
+    IDXGIDevice1_Release(dxgi_device);
 }
 
 HRESULT WINAPI D3D11CreateDeviceAndSwapChain(
@@ -62,12 +75,17 @@ HRESULT WINAPI D3D11CreateDeviceAndSwapChain(
     }
     HRESULT status = create(adapter, type, software, flags, levels, count, sdk,
         selected, swapchain, device, chosen, context);
-    if (SUCCEEDED(status) && device && *device) record_adapter(*device);
-    if (SUCCEEDED(status) && selected && swapchain && *swapchain) {
+    if (SUCCEEDED(status) && device && *device) {
+        record_adapter(*device);
+        limit_frame_latency(*device);
+    }
+    if (SUCCEEDED(status) && selected && selected->OutputWindow && swapchain && *swapchain) {
         DXGI_SWAP_CHAIN_DESC actual;
-        presentation_window = selected->OutputWindow;
-        presentation_composed = SUCCEEDED(IDXGISwapChain_GetDesc(*swapchain, &actual)) &&
-            actual.SwapEffect == DXGI_SWAP_EFFECT_DISCARD;
+        if (SUCCEEDED(IDXGISwapChain_GetDesc(*swapchain, &actual)) &&
+            actual.SwapEffect == DXGI_SWAP_EFFECT_DISCARD)
+            SetPropW(selected->OutputWindow, composed_property, (HANDLE)(ULONG_PTR)1);
+        else
+            RemovePropW(selected->OutputWindow, composed_property);
     }
     return status;
 }
@@ -78,7 +96,12 @@ CreateDeviceAndSwapChain __imp_D3D11CreateDeviceAndSwapChain = D3D11CreateDevice
 
 int wst_gui_presentation_composed(HWND window)
 {
-    return window && window == presentation_window && presentation_composed;
+    return window && GetPropW(window, composed_property) != NULL;
+}
+
+void wst_gui_presentation_forget(HWND window)
+{
+    RemovePropW(window, composed_property);
 }
 
 const char *wst_gui_adapter_name(void)

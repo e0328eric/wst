@@ -4,7 +4,7 @@ G :: #import "Gui";
 GN :: #import "Gui/Native";
 Windows :: #import "windows_emoji.glo";
 
-Glyph :: struct {
+#public Glyph :: struct {
     cp: u32;
     fg: u32;
     width: s32;
@@ -12,17 +12,31 @@ Glyph :: struct {
     pixels: [..]u8;
     texture: G.Texture;
 }
-cache: [64]Glyph;
-next_slot: ssize;
+#public Window_State :: struct {
+    cache: [64]Glyph;
+    next_slot: ssize;
+}
+default_state: Window_State;
+selected_state: ?*Window_State;
+
+#public select_state :: (value: ?*Window_State) {
+    selected_state = value;
+}
+
+state :: () -> *Window_State #inline,always {
+    if #pattern ?selected = selected_state return selected;
+    return &default_state;
+}
 
 // Inline images and emoji share Gui's texture slots. Cached glyph pixels
 // allow images to reclaim the slots even while a snapshot references a glyph.
 #public release_textures :: () -> bool {
+    live := state();
     released := false;
-    for i: 0..cache.count {
-        if cache[i].texture.id != 0 {
-            G.release_texture(cache[i].texture);
-            cache[i].texture = .{};
+    for i: 0..live.cache.count {
+        if live.cache[i].texture.id != 0 {
+            G.release_texture(live.cache[i].texture);
+            live.cache[i].texture = .{};
             released = true;
         }
     }
@@ -30,11 +44,12 @@ next_slot: ssize;
 }
 
 #public clear :: () {
+    live := state();
     _ := release_textures();
-    next_slot = 0;
-    for i: 0..cache.count {
-        cache[i].pixels.reset();
-        cache[i] = .{};
+    live.next_slot = 0;
+    for i: 0..live.cache.count {
+        live.cache[i].pixels.reset();
+        live.cache[i] = .{};
     }
 }
 
@@ -44,13 +59,14 @@ next_slot: ssize;
 }
 
 cached_glyph :: (cp: u32, fg: u32, w: s32, h: s32, slots: ssize) -> *Glyph {
+    live := state();
     for i: 0..slots {
-        entry := &cache[i];
+        entry := &live.cache[i];
         if entry.cp == 0                                                             break;
         if entry.cp == cp && entry.fg == fg && entry.width == w && entry.height == h return entry;
     }
-    glyph := &cache[next_slot];
-    next_slot = (next_slot + 1) % slots;
+    glyph := &live.cache[live.next_slot];
+    live.next_slot = (live.next_slot + 1) % slots;
     G.release_texture(glyph.texture);
     glyph.pixels.reset();
     glyph.* = .{ .cp = cp, .fg = fg, .width = w, .height = h };
@@ -104,6 +120,7 @@ draw_runs :: (glyph: *Glyph, x: s32, y: s32, scale: f32) {
     max_height: s32,
     scale: f32
 ) -> bool {
+    live := state();
     w := width;
     h := height;
     if w > max_width                            w = max_width;
@@ -112,7 +129,7 @@ draw_runs :: (glyph: *Glyph, x: s32, y: s32, scale: f32) {
     // At high DPI, reduce the slot count to keep pixel storage under 4 MiB.
     slots := (1024 * 1024) / (cast(ssize) max_width * cast(ssize) max_height);
     if slots < 1           slots = 1;
-    if slots > cache.count slots = cache.count;
+    if slots > live.cache.count slots = live.cache.count;
     glyph := cached_glyph(cp, fg, w, h, slots);
     if glyph.pixels.count == 0 return false;
     if glyph.texture.id == 0   glyph.texture = G.create_texture(w, h, glyph.pixels[..], .Nearest);

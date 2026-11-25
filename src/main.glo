@@ -1,5 +1,6 @@
 //! wst: a small native Windows terminal, with its terminal model in Glosso.
 P :: #import "platform.glo";
+N :: #import "native.glo";
 Presentation :: #import "gui_presentation.glo";
 T :: #import "terminal.glo";
 C :: #import "config.glo";
@@ -20,6 +21,7 @@ Chrome :: #import "chrome.glo";
 #import "Format";
 #import "Strings/Utf8";
 #import "Context";
+#import "Memory/Object";
 
 #comptime {
     #if OUT.os != .Windows || OUT.cpu != .X86_64 || OUT.abi != .Msvc {
@@ -35,14 +37,50 @@ Divider_Drag :: struct {
     grab: s32;
     pending: bool;
 }
-divider_drag: Divider_Drag;
-chrome: Chrome.State;
+Tab_Drag :: struct {
+    index: s32 = -1;
+    start: N.Point;
+    moving: bool;
+}
+App_Window :: struct {
+    surface: P.Window_Context;
+    hwnd: usize;
+    cfg: C.Config;
+    config_watch: W.Watch;
+    reload_state: R.State;
+    workspace: M.Workspace;
+    book: U.Book;
+    layout: L.Layout;
+    width: s32;
+    height: s32;
+    dpi: s32 = 96;
+    cw: s32;
+    ch: s32;
+    base_font_size: s32;
+    chrome: Chrome.State;
+    divider_drag: Divider_Drag;
+    tab_drag: Tab_Drag;
+    notice_click: bool;
+    dirty: bool = true;
+    failed: bool;
+    previous_title: str;
+    last_blink: u64;
+    output_cursor: s32;
+    next_graphics_retry: u64;
+    reload_notice_storage: [4096]u8;
+    reload_notice_count: ssize;
+    reload_notice_error: bool;
+    discrete_gpu: bool;
+}
+initial_window: App_Window;
+active_window: *App_Window;
+windows: [..]*App_Window;
+drop_window: ?*App_Window;
 // Keep the clipboard buffer off Windows' default one-megabyte thread stack.
 clipboard_storage: [1048576]u8;
 render_cells: [512 * 256]P.Render_Cell;
-reload_notice_storage: [4096]u8;
-reload_notice_count: ssize;
-reload_notice_error: bool;
+output_buffer: [4096]u8;
+performance_frequency: s64;
 clock_library :: #library,system "kernel32";
 clock_counter :: (value: *s64) -> s32 #foreign clock_library "QueryPerformanceCounter";
 clock_frequency :: (value: *s64) -> s32 #foreign clock_library "QueryPerformanceFrequency";
@@ -105,13 +143,13 @@ install_keybindings :: (cfg: *C.Config) -> bool {
     ) != 0;
 }
 reload_notice :: () -> str {
-    return string_from_raw_parts(cast([*]const u8) &reload_notice_storage, reload_notice_count);
+    return string_from_raw_parts(cast([*]const u8) &active_window.reload_notice_storage, active_window.reload_notice_count);
 }
 set_reload_notice :: (message: str, failed: bool) {
-    reload_notice_count = message.count;
-    if reload_notice_count > 4095 reload_notice_count = 4095;
-    for i: 0..reload_notice_count reload_notice_storage[i] = message[i];
-    reload_notice_error = failed;
+    active_window.reload_notice_count = message.count;
+    if active_window.reload_notice_count > 4095 active_window.reload_notice_count = 4095;
+    for i: 0..active_window.reload_notice_count active_window.reload_notice_storage[i] = message[i];
+    active_window.reload_notice_error = failed;
 }
 notice_hit :: (layout: L.Layout, x: s32, y: s32) -> bool {
     g := Chrome.geometry(
@@ -121,7 +159,7 @@ notice_hit :: (layout: L.Layout, x: s32, y: s32) -> bool {
         1,
         0
     );
-    return reload_notice_error && reload_notice_count > 0 && Chrome.contains(g.reset_zoom, x, y);
+    return active_window.reload_notice_error && active_window.reload_notice_count > 0 && Chrome.contains(g.reset_zoom, x, y);
 }
 utf8_append :: (bytes: *[..]u8, cp: u32) {
     if cp < 128 bytes.push(cast(u8) cp);
@@ -314,8 +352,9 @@ refresh_layout :: (
 ) {
     _ := cancel_divider();
     P.metrics(width, height, cw, ch);
+    active_window.dpi = P.dpi();
     if width.* > 0 && height.* > 0 {
-        layout.* = L.compute(width.*, height.*, cfg.padding, cast(f32) P.dpi() / 96.0);
+        layout.* = L.compute(width.*, height.*, cfg.padding, cast(f32) active_window.dpi / 96.0);
         if !U.resize(book, workspace, layout.*, cw.*, ch.*)
             set_reload_notice(tprint("Could not resize a pane: {}", P.error().to_string()), true);
         publish_dividers(workspace, layout.*);
@@ -342,9 +381,9 @@ publish_dividers :: (workspace: *const M.Workspace, base: L.Layout) {
 }
 
 cancel_divider :: () -> bool {
-    if !divider_drag.active return false;
-    divider_drag.active = false;
-    divider_drag.node = -1;
+    if !active_window.divider_drag.active return false;
+    active_window.divider_drag.active = false;
+    active_window.divider_drag.node = -1;
     P.cancel_pointer();
     P.invalidate_frame();
     return true;
@@ -352,22 +391,22 @@ cancel_divider :: () -> bool {
 
 move_divider :: (workspace: *M.Workspace, base: L.Layout, cw: s32, ch: s32, x: s32, y: s32) {
     position := x;
-    if divider_drag.axis == M.Axis_Horizontal position = y;
+    if active_window.divider_drag.axis == M.Axis_Horizontal position = y;
     if M.drag_divider(
         workspace,
-        divider_drag.node,
+        active_window.divider_drag.node,
         U.body_rect(base),
         6 * P.dpi() / 96,
-        position - divider_drag.grab,
+        position - active_window.divider_drag.grab,
         2 * cw + 12 * P.dpi() / 96,
         ch
     )
-        divider_drag.pending = true;
+        active_window.divider_drag.pending = true;
 }
 
 apply_divider :: (book: *U.Book, workspace: *M.Workspace, base: L.Layout, cw: s32, ch: s32) {
-    if !divider_drag.pending return;
-    divider_drag.pending = false;
+    if !active_window.divider_drag.pending return;
+    active_window.divider_drag.pending = false;
     if !U.resize(book, workspace, base, cw, ch)
         set_reload_notice(tprint("Could not resize a pane: {}", P.error().to_string()), true);
     publish_dividers(workspace, base);
@@ -510,7 +549,7 @@ menu_action :: (
     height: *s32,
     base_size: s32
 ) {
-    chrome.menu_open = false;
+    active_window.chrome.menu_open = false;
     U.end_drag(book);
     if row == 0 _ := open_surface(book, workspace, cfg, base.*, cw.*, ch.*, 0);
     else if row <= cfg.profile_count _ := open_surface(
@@ -572,8 +611,8 @@ hover_signature :: (
     );
     h := Chrome.hit(&header, x, y);
     if h.kind != 0 && h.kind != Chrome.Drag return h.kind * 32 + h.index + 1;
-    if chrome.menu_open {
-        row := Chrome.menu_hit(&header, &chrome, height, profiles + 7, x, y);
+    if active_window.chrome.menu_open {
+        row := Chrome.menu_hit(&header, &active_window.chrome, height, profiles + 7, x, y);
         if row >= 0                                                               return 1000 + row;
         if Chrome.contains(Chrome.menu_rect(&header, height, profiles + 7), x, y) return 1100;
     }
@@ -587,7 +626,7 @@ hover_signature :: (
     return 0;
 }
 
-draw_terminal :: (p: *U.Pane, cfg: *C.Config, cw: s32, ch: s32, focused: bool) {
+draw_terminal :: (p: *U.Pane, id: s32, cfg: *C.Config, cw: s32, ch: s32, focused: bool) {
     t := &p.terminal;
     s := &p.selection;
     layout := p.layout;
@@ -613,7 +652,7 @@ draw_terminal :: (p: *U.Pane, cfg: *C.Config, cw: s32, ch: s32, focused: bool) {
     if focused && t.cursor_visible && t.view_offset == 0 && !p.exited &&
        (P.focus() == 0 || (P.ticks() / 550) % 2 == 0)
         show_cursor = 1;
-    _ := P.grid_context(p.handle);
+    _ := P.grid_context(id);
     P.grid_clipped(
         cast(s32) layout.viewport_x,
         cast(s32) layout.viewport_y,
@@ -637,7 +676,7 @@ draw_terminal :: (p: *U.Pane, cfg: *C.Config, cw: s32, ch: s32, focused: bool) {
         thumb_width := clamp(3 * P.dpi() / 96, 2, bar.width);
         color := Chrome.mix(cfg.background, cfg.foreground, 25);
         if t.view_offset > 0 color = Chrome.mix(cfg.background, cfg.accent, 65);
-        if chrome.x >= bar.x && chrome.x < bar.x + bar.width && chrome.y >= bar.y && chrome.y < bar.y + bar.height {
+        if active_window.chrome.x >= bar.x && active_window.chrome.x < bar.x + bar.width && active_window.chrome.y >= bar.y && active_window.chrome.y < bar.y + bar.height {
             thumb_width = clamp(5 * P.dpi() / 96, 2, bar.width);
             color = cfg.accent;
         }
@@ -672,19 +711,20 @@ render_workspace :: (
     );
     Chrome.draw_header(
         &header,
-        &chrome,
+        &active_window.chrome,
         book,
         workspace,
         cfg,
         base_size,
-        reload_notice_error && reload_notice_count > 0
+        active_window.reload_notice_error && active_window.reload_notice_count > 0
     );
     focused := M.focused(workspace);
     ids: [32]s32;
     visible := M.pane_order(workspace, workspace.active, &ids);
     for i: 0..32 if book.panes[i].used && M.pane_tab(workspace, cast(s32) i + 1) == workspace.active {
         rect := book.rects[i];
-        draw_terminal(&book.panes[i], cfg, cw, ch, cast(s32) i + 1 == focused);
+        id := cast(s32) i + 1;
+        draw_terminal(&book.panes[i], id, cfg, cw, ch, id == focused);
         if cast(s32) i + 1 == focused && visible > 1
             P.rounded_rect(
                 rect.x,
@@ -699,8 +739,8 @@ render_workspace :: (
         divider := M.divider_geometry(workspace, cast(s32) node, U.body_rect(base), 6 * unit / 96);
         if divider.node >= 0 {
             rect := divider.rect;
-            hot := Chrome.contains(.{ rect.x, rect.y, rect.width, rect.height }, chrome.x, chrome.y) || (
-                divider_drag.active && divider_drag.node == cast(s32) node
+            hot := Chrome.contains(.{ rect.x, rect.y, rect.width, rect.height }, active_window.chrome.x, active_window.chrome.y) || (
+                active_window.divider_drag.active && active_window.divider_drag.node == cast(s32) node
             );
             ink := Chrome.mix(cfg.background, cfg.foreground, 16);
             if hot ink = cfg.accent;
@@ -713,10 +753,10 @@ render_workspace :: (
     }
     Chrome.draw_menu(
         &header,
-        &chrome,
+        &active_window.chrome,
         cfg,
         cast(s32)(base.viewport_y + base.viewport_height) + cfg.padding * unit / 96,
-        reload_notice_error && reload_notice_count > 0
+        active_window.reload_notice_error && active_window.reload_notice_count > 0
     );
     P.frame_end();
 }
@@ -794,6 +834,7 @@ workspace_smoke :: (
 }
 
 main :: () -> s32 {
+    active_window = &initial_window;
     cfg := C.defaults();
     defer C.release(&cfg);
     args := get_cmdline_args();
@@ -905,630 +946,826 @@ main :: () -> s32 {
         P.error_dialog("--capture requires --smoke-test");
         exit(2);
     }
+    app := &initial_window;
+    app.cfg = C.take(&cfg);
+    app.config_watch = config_watch;
+    config_watch = .{};
+    app.reload_state = reload_state;
+    reload_state = .{};
+    app.base_font_size = app.reload_state.configured_font_size;
+    app.discrete_gpu = discrete_gpu;
+    if !open_window(app, false) {
+        P.error_dialog(P.error());
+        release_window(app);
+        return 1;
+    }
+    if !open_surface(&app.book, &app.workspace, &app.cfg, app.layout, app.cw, app.ch, 0) {
+        P.error_dialog(reload_notice().c_string());
+        release_window(app);
+        return 1;
+    }
+    windows.push(app);
+    defer windows.free();
+    defer N.close_sessions();
+    clock_frequency(&performance_frequency);
+    status: s32;
+    while windows.count > 0 {
+        reset_temporary_storage();
+        index: ssize;
+        while index < windows.count {
+            app = windows[index];
+            if select_window(app) {
+                if step_window(app) {
+                    index += 1;
+                    continue;
+                }
+            } else {
+                app.failed = true;
+            }
+            if app.failed status = 1;
+            _ := windows.swap_remove(index);
+            release_window(app);
+        }
+        if windows.count > 0 P.wait(window_wait());
+    }
+    return status;
+}
+
+select_window :: (app: *App_Window) -> bool {
+    if !P.select_window(?&app.surface) return false;
+    active_window = app;
+    return true;
+}
+
+open_window :: (app: *App_Window, hidden: bool) -> bool {
+    if !select_window(app) return false;
+    cfg := &app.cfg;
     if P.open(
         cfg.font_family.c_string(),
         cfg.font_size,
         cfg.columns,
         cfg.rows,
         cfg.padding,
-        0,
+        cast(s32) hidden,
         cfg.window_opacity,
-        discrete_gpu
-    ) == 0 {
-        P.error_dialog(P.error());
-        exit(1);
-    }
-    defer P.close();
-    if !install_keybindings(&cfg) {
-        P.error_dialog(P.error());
-        exit(1);
-    }
+        app.discrete_gpu
+    ) == 0 return false;
+    app.hwnd = N.gui_window_handle();
+    if !install_keybindings(cfg) return false;
     P.set_colors(cfg.selection_fg, cfg.selection_bg, cfg.cursor_text);
     P.set_ligatures(cfg.font_ligatures);
-    workspace: M.Workspace;
-    book: U.Book;
-    defer U.release(&book);
-    width, height, cw, ch: s32;
-    P.metrics(&width, &height, &cw, &ch);
-    layout := L.compute(width, height, cfg.padding, cast(f32) P.dpi() / 96.0);
-    if !open_surface(&book, &workspace, &cfg, layout, cw, ch, 0) {
-        P.error_dialog(reload_notice().c_string());
-        exit(1);
+    size_window(app);
+    return true;
+}
+
+size_window :: (app: *App_Window) {
+    refresh_layout(&app.book, &app.workspace, &app.cfg, &app.layout, &app.width, &app.height, &app.cw, &app.ch);
+    P.invalidate_frame();
+    app.dirty = true;
+}
+
+release_window :: (app: *App_Window) {
+    if app.tab_drag.index >= 0 || drop_window == ?app set_tab_drop(null, -1);
+    selected := select_window(app);
+    U.release(&app.book);
+    W.close(&app.config_watch);
+    R.close(&app.reload_state);
+    C.release(&app.cfg);
+    app.previous_title.free();
+    if selected P.close_surface();
+    _ := P.select_window(null);
+    active_window = &initial_window;
+    if app != &initial_window delete(?app);
+}
+
+window_wait :: () -> s32 {
+    now := P.ticks();
+    wait_ms := clamp(cast(s32)(550 - now % 550), 0, 100);
+    for app: windows {
+        if app.dirty && app.width > 0 && app.height > 0 return 0;
+        if !app.config_watch.active continue;
+        next_poll := app.config_watch.last_poll + 250;
+        if now >= next_poll return 0;
+        remaining := cast(s32)(next_poll - now);
+        if remaining < wait_ms wait_ms = remaining;
     }
-    base_font_size := reload_state.configured_font_size;
-    notice_click := false;
-    dirty := true;
-    running := true;
-    previous_title: str = "".clone();
-    defer previous_title.free();
-    last_blink: u64;
-    buffer: [65536]u8;
-    performance_frequency: s64;
-    clock_frequency(&performance_frequency);
-    output_cursor: s32;
-    next_graphics_retry: u64;
-    while running {
-        reset_temporary_storage();
-        event: P.Event;
-        while P.next_event(&event) != 0 {
-            if workspace.count == 0 {
-                running = false;
-                break;
-            }
-            if event.kind == P.Gui_Failure {
-                reason := P.error().to_string().clone();
-                defer reason.free();
-                if P.ticks() < next_graphics_retry {
-                    P.error_dialog(tprint(
-                        "The terminal window failed again shortly after reopening. Restart wst.\n\n{}",
-                        reason
-                    ).c_string());
-                    return 1;
-                }
-                if P.recover_window() == 0 || !install_keybindings(&cfg) {
-                    P.error_dialog(tprint(
-                        "Could not restore the terminal window. Restart wst.\n\nWindow update failed\n{}\n\nRecovery failed\n{}",
-                        reason, P.error().to_string()
-                    ).c_string());
-                    return 1;
-                }
-                // A repeatedly failing device must not endlessly recreate the window.
-                next_graphics_retry = P.ticks() + 10000;
-                P.title(previous_title.c_string());
-                chrome = .{};
-                divider_drag = .{};
-                notice_click = false;
-                U.end_drag(&book);
-                dirty = true;
+    return wait_ms;
+}
+
+window_at :: (screen: N.Point) -> ?*App_Window {
+    hwnd := N.window_at(screen);
+    for app: windows if app.hwnd == hwnd return ?app;
+    return null;
+}
+
+tab_drop_index :: (app: *App_Window, screen: N.Point) -> s32 {
+    if app.chrome.menu_open return -1;
+    client := screen;
+    if !N.screen_to_client(app.hwnd, &client) return -1;
+    header := Chrome.geometry(app.width, cast(s32) app.layout.header_height, app.dpi,
+        app.workspace.count, app.workspace.active);
+    return Chrome.tab_insertion(&header, client.x, client.y);
+}
+
+set_tab_drop :: (target: ?*App_Window, index: s32) {
+    if drop_window != target {
+        if #pattern ?previous = drop_window {
+            previous.chrome.drop_index = -1;
+            previous.dirty = true;
+        }
+        drop_window = target;
+    }
+    if #pattern ?app = target {
+        if app.chrome.drop_index != index {
+            app.chrome.drop_index = index;
+            app.dirty = true;
+        }
+    }
+}
+
+cancel_tab_drag :: (app: *App_Window) {
+    if app.tab_drag.index < 0 return;
+    app.tab_drag = .{};
+    set_tab_drop(null, -1);
+    P.cancel_pointer();
+}
+
+detach_tab :: (source: *App_Window, index: s32, screen: N.Point) -> bool {
+    if source.workspace.count == 1 return N.position_window(screen);
+    visible := N.window_visible();
+    if #pattern ?target = new(App_Window) {
+        target.cfg = C.clone(&source.cfg);
+        target.config_watch = source.config_watch;
+        target.config_watch.path = source.config_watch.path.clone();
+        R.start(&target.reload_state, &source.reload_state.file_config);
+        target.base_font_size = source.base_font_size;
+        target.discrete_gpu = source.discrete_gpu;
+        if open_window(target, true) && N.position_window(screen) && (!visible || N.window_show(false) != 0) &&
+           U.transfer_tab(&source.book, &source.workspace, index, &target.book, &target.workspace, 0) {
+            windows.push(target);
+            size_window(target);
+            _ := select_window(source);
+            size_window(source);
+            if visible N.activate_window(target.hwnd);
+            return true;
+        }
+        release_window(target);
+        _ := select_window(source);
+    }
+    return false;
+}
+
+move_tab_drag :: (source: *App_Window, x: s32, y: s32, released: bool) {
+    drag := &source.tab_drag;
+    if !drag.moving {
+        threshold := N.drag_threshold();
+        dx := x - drag.start.x;
+        dy := y - drag.start.y;
+        drag.moving = dx <= -threshold.x || dx >= threshold.x || dy <= -threshold.y || dy >= threshold.y;
+    }
+    index := drag.index;
+    should_drop := drag.moving;
+    if released {
+        source.tab_drag = .{};
+        set_tab_drop(null, -1);
+    }
+    screen: N.Point;
+    if !should_drop || !N.client_to_screen(x, y, &screen) return;
+    if #pattern ?target = window_at(screen) {
+        position := tab_drop_index(target, screen);
+        if position >= 0 {
+            drop_on_rail(source, target, index, position, released);
+            return;
+        }
+        if target != source || y < cast(s32) source.layout.header_height {
+            set_tab_drop(null, -1);
+            return;
+        }
+    }
+    if !released set_tab_drop(null, -1);
+    else if !detach_tab(source, index, screen) {
+        set_reload_notice("Could not open a window for this tab.", true);
+        source.dirty = true;
+    }
+}
+
+drop_on_rail :: (source: *App_Window, target: *App_Window, index: s32, position: s32, released: bool) {
+    if !released {
+        if target == source || U.can_transfer_tab(&source.workspace, index, &target.book, &target.workspace)
+            set_tab_drop(?target, position);
+        else set_tab_drop(null, -1);
+        return;
+    }
+    if target == source {
+        next := position;
+        if next > index next -= 1;
+        if M.move_tab(&source.workspace, index, next) size_window(source);
+        return;
+    }
+    if !U.transfer_tab(&source.book, &source.workspace, index, &target.book, &target.workspace, position) {
+        set_reload_notice("The destination window has no room for this tab.", true);
+        source.dirty = true;
+        return;
+    }
+    U.end_drag(&target.book);
+    if select_window(target) size_window(target);
+    _ := select_window(source);
+    size_window(source);
+    N.activate_window(target.hwnd);
+}
+
+step_window :: (app: *App_Window) -> bool {
+    cfg := &app.cfg;
+    book := &app.book;
+    workspace := &app.workspace;
+    config_watch := &app.config_watch;
+    reload_state := &app.reload_state;
+    if workspace.count == 0 return false;
+    event: P.Event;
+    while P.next_event(&event) != 0 {
+        if workspace.count == 0 return false;
+        if app.tab_drag.index >= 0 {
+            if event.kind == 7 || event.kind == 8 {
+                app.chrome.x = event.a;
+                app.chrome.y = event.b;
+                move_tab_drag(app, event.a, event.b, event.kind == 8);
+                app.dirty = true;
+                if workspace.count == 0 return false;
                 continue;
             }
-            // Coalesce terminal/ConPTY resizing until the pointer batch ends.
-            // Other events must see the latest pane rectangles for hit testing.
-            if divider_drag.pending && event.kind != 7 && event.kind != 8 {
-                apply_divider(&book, &workspace, layout, cw, ch);
-                dirty = true;
-            }
-            if divider_drag.active && event.kind != 7 && event.kind != 8 {
-                _ := cancel_divider();
-                dirty = true;
-                if (event.kind == 1 && event.a == 27) ||
-                   (event.kind == 2 && event.length == 1 && event.text[0] == 27)
-                    continue;
-            }
-            focused := M.focused(&workspace);
-            p := &book.panes[focused - 1];
-            _ := P.pty_select(p.handle);
-            t := &p.terminal;
-            selection := &p.selection;
-            if chrome.menu_open && (event.kind == 1 || event.kind == 2) {
-                header := Chrome.geometry(
-                    width,
-                    cast(s32) layout.header_height,
-                    P.dpi(),
-                    workspace.count,
-                    workspace.active
-                );
-                if event.kind == 1 && (event.a == 38 || event.a == 40) {
-                    if event.a == 38 chrome.selected -= 1;
-                    else             chrome.selected += 1;
-                    Chrome.keep_selected(&chrome, &header, height, cfg.profile_count + 7);
-                    dirty = true;
-                    continue;
-                }
-                if event.kind == 2 {
-                    if event.length == 1 && event.text[0] == 13
-                        menu_action(
-                            chrome.selected,
-                            &book,
-                            &workspace,
-                            &cfg,
-                            &layout,
-                            &cw,
-                            &ch,
-                            &width,
-                            &height,
-                            base_font_size
-                        );
-                    else if event.length == 1 && event.text[0] == 27
-                        chrome.menu_open = false;
-                    dirty = true;
-                    continue;
-                }
-                chrome.menu_open = false;
-                dirty = true;
-            }
-            if event.kind == 4 {
-                running = false;
-                break;
-            } else if event.kind == 3 {
-                chrome.menu_open = false;
-                chrome.pressed = 0;
-                refresh_layout(&book, &workspace, &cfg, &layout, &width, &height, &cw, &ch);
-                U.end_drag(&book);
-                P.invalidate_frame();
-                dirty = true;
-            } else if event.kind == 2 && !p.exited {
-                send(string_from_raw_parts(cast([*]const u8) &event.text, event.length));
-                if t.view_offset != 0 || selection.active dirty = true;
-                t.view_offset = 0;
-                selection.active = false;
-            } else if event.kind == 1 {
-                action := K.lookup(&cfg.keybindings, event.a, event.b);
-                if event.a == 32 && event.b == 4 && action == .None {
-                    _ := P.window_menu(0, cast(s32) layout.header_height);
-                    dirty = true;
-                    continue;
-                }
-                if cast(s32) action >= cast(s32) K.Action.New_Tab {
-                    workspace_action(
-                        action,
-                        &book,
-                        &workspace,
-                        &cfg,
-                        layout,
-                        cw,
-                        ch,
-                        K.profile_for(&cfg.keybindings, event.a, event.b)
-                    );
-                    if workspace.count == 0 {
-                        running = false;
-                        break;
-                    }
-                    dirty = true;
-                    continue;
-                }
-                if action == .Copy copy_selection(t, selection);
-                else if action == .Paste {
-                    if paste_clipboard(t, selection, p.exited) dirty = true;
-                } else if action == .Zoom_In || action == .Zoom_Out || action == .Reset_Zoom {
-                    zoom: s32 = 1;
-                    if action == .Zoom_Out   zoom = -1;
-                    if action == .Reset_Zoom zoom = 2;
-                    set_zoom(&cfg, V.font_size(cfg.font_size, base_font_size, zoom));
-                    refresh_layout(&book, &workspace, &cfg, &layout, &width, &height, &cw, &ch);
-                    dirty = true;
-                } else if action == .Scroll_Page_Up || action == .Scroll_Page_Down || action == .Scroll_Top ||
-                    action == .Scroll_Bottom || action == .Scroll_Line_Up || action == .Scroll_Line_Down {
-                    if action == .Scroll_Page_Up
-                        T.scroll_view(t, clamp(t.rows - 1, 1, 256));
-                    else if action == .Scroll_Page_Down
-                        T.scroll_view(t, -clamp(t.rows - 1, 1, 256));
-                    else if action == .Scroll_Top
-                        T.scroll_view(t, 10000);
-                    else if action == .Scroll_Bottom
-                        t.view_offset = 0;
-                    else if action == .Scroll_Line_Up
-                        T.scroll_view(t, 1);
-                    else
-                        T.scroll_view(t, -1);
-                    selection.active = false;
-                    selection.dragging = false;
-                    p.scroll_dragging = false;
-                    dirty = true;
-                } else if action == .Close_Window {
-                    running = false;
-                    break;
-                } else if !p.exited {
-                    send(I.key_sequence(event.a, event.b, t.application_cursor));
-                    t.view_offset = 0;
-                    selection.active = false;
-                    dirty = true;
-                }
-            } else if event.kind == 5 {
-                wheel_x, wheel_y: s32;
-                if P.pointer_position(&wheel_x, &wheel_y) {
-                    chrome.x = wheel_x;
-                    chrome.y = wheel_y;
-                }
-                if chrome.menu_open {
-                    header := Chrome.geometry(
-                        width,
-                        cast(s32) layout.header_height,
-                        P.dpi(),
-                        workspace.count,
-                        workspace.active
-                    );
-                    chrome.selected += 3;
-                    if event.a > 0 chrome.selected -= 6;
-                    chrome.selected = clamp(chrome.selected, 0, cfg.profile_count + 6);
-                    Chrome.keep_selected(&chrome, &header, height, cfg.profile_count + 7);
-                    dirty = true;
-                    continue;
-                }
-                if chrome.y >= 0 && chrome.y < cast(s32) layout.header_height && (event.b & 2) == 0 {
-                    direction: s32 = 1;
-                    if event.a > 0 direction = -1;
-                    _ := M.cycle_tab(&workspace, direction);
-                    publish_dividers(&workspace, layout);
-                    U.end_drag(&book);
-                    dirty = true;
-                    continue;
-                }
-                wheel := V.wheel(&p.wheel, event.a, event.b, event.c, t.rows - 1);
-                if wheel.zoom_steps != 0 {
-                    set_zoom(&cfg, cfg.font_size + wheel.zoom_steps);
-                    refresh_layout(&book, &workspace, &cfg, &layout, &width, &height, &cw, &ch);
-                }
-                if wheel.scroll_lines != 0 T.scroll_view(t, wheel.scroll_lines);
-                selection.active = false;
-                selection.dragging = false;
-                p.scroll_dragging = false;
-                dirty = true;
-            } else if event.kind == 6 {
-                chrome.x = event.a;
-                chrome.y = event.b;
-                header := Chrome.geometry(
-                    width,
-                    cast(s32) layout.header_height,
-                    P.dpi(),
-                    workspace.count,
-                    workspace.active
-                );
-                h := Chrome.hit(&header, event.a, event.b);
-                if chrome.menu_open {
-                    row := Chrome.menu_hit(
-                        &header,
-                        &chrome,
-                        height,
-                        cfg.profile_count + 7,
-                        event.a,
-                        event.b
-                    );
-                    if row >= 0 {
-                        menu_action(
-                            row,
-                            &book,
-                            &workspace,
-                            &cfg,
-                            &layout,
-                            &cw,
-                            &ch,
-                            &width,
-                            &height,
-                            base_font_size
-                        );
-                        dirty = true;
-                        continue;
-                    }
-                    popup := Chrome.menu_rect(&header, height, cfg.profile_count + 7);
-                    if Chrome.contains(popup, event.a, event.b) {
-                        if reload_notice_error && reload_notice_count > 0 &&
-                           event.b < popup.y + Chrome.pixels(26, P.dpi())
-                            P.error_dialog(reload_notice().c_string());
-                        continue;
-                    }
-                    chrome.menu_open = false;
-                    dirty = true;
-                    if event.b >= header.height || h.kind == Chrome.Menu continue;
-                }
-                if h.kind == Chrome.Tab || h.kind == Chrome.Tab_Close {
-                    if h.kind == Chrome.Tab_Close close_tab(&book, &workspace, h.index, layout);
-                    else                          _ := M.activate(&workspace, h.index);
-                    publish_dividers(&workspace, layout);
-                    U.end_drag(&book);
-                    P.invalidate_frame();
-                    dirty = true;
-                    continue;
-                }
-                if h.kind == Chrome.New_Tab {
-                    _ := open_surface(&book, &workspace, &cfg, layout, cw, ch, 0);
-                    dirty = true;
-                    continue;
-                }
-                if h.kind == Chrome.Menu {
-                    U.end_drag(&book);
-                    chrome.menu_open = true;
-                    chrome.menu_scroll = 0;
-                    chrome.selected = 0;
-                    dirty = true;
-                    continue;
-                }
-                if h.kind == Chrome.Brand {
-                    U.end_drag(&book);
-                    _ := P.window_menu(0, header.height);
-                    dirty = true;
-                    continue;
-                }
-                if h.kind >= Chrome.Minimize && h.kind <= Chrome.Close {
-                    U.end_drag(&book);
-                    chrome.pressed = h.kind;
-                    dirty = true;
-                    continue;
-                }
-                zoom := zoom_action_at(layout, event.a, event.b);
-                notice_click = notice_hit(layout, event.a, event.b);
-                if notice_click {
-                    U.end_drag(&book);
-                    continue;
-                }
-                if zoom != 0 {
-                    set_zoom(&cfg, V.font_size(cfg.font_size, base_font_size, zoom));
-                    refresh_layout(&book, &workspace, &cfg, &layout, &width, &height, &cw, &ch);
-                    dirty = true;
-                    continue;
-                }
-                if h.kind == Chrome.Drag {
-                    U.end_drag(&book);
-                    _ := P.window_drag(event.a, event.b);
-                    continue;
-                }
-                divider := M.divider_at(
-                    &workspace,
-                    U.body_rect(layout),
-                    6 * P.dpi() / 96,
-                    event.a,
-                    event.b
-                );
-                if divider.node >= 0 {
-                    U.end_drag(&book);
-                    divider_drag.active = true;
-                    divider_drag.node = divider.node;
-                    divider_drag.axis = divider.axis;
-                    if divider.axis == M.Axis_Vertical divider_drag.grab = event.a - divider.rect.x;
-                    else                               divider_drag.grab = event.b - divider.rect.y;
-                    P.invalidate_frame();
-                    dirty = true;
-                    continue;
-                }
-                hit := M.pane_at(&workspace, &book.rects, event.a, event.b);
-                if hit == 0 continue;
-                U.end_drag(&book);
-                if M.focus_pane(&workspace, hit) {
-                    P.invalidate_frame();
-                    dirty = true;
-                }
-                p = &book.panes[hit - 1];
-                t = &p.terminal;
-                selection = &p.selection;
-                _ := P.pty_select(p.handle);
-                bar := scrollbar_geometry(t, p.layout);
-                if event.a >= bar.x && event.a < bar.x + bar.width {
-                    if t.history_count > 0 && !t.alternate {
-                        page := S.page_direction(bar, event.b);
-                        if page != 0 T.scroll_view(t, page * clamp(t.rows - 1, 1, 256));
-                        else if bar.thumb_height < bar.height {
-                            p.scroll_dragging = true;
-                            p.scroll_grab = event.b - bar.thumb_y;
-                        }
-                    }
-                    selection.active = false;
-                } else {
-                    selection.start = point_index(t, p.layout, cw, ch, event.a, event.b);
-                    selection.end = selection.start;
-                    selection.active = true;
-                    selection.dragging = true;
-                }
-                dirty = true;
-            } else if event.kind == 7 || event.kind == 8 {
-                chrome.x = event.a;
-                chrome.y = event.b;
-                if chrome.pressed != 0 {
-                    if event.kind == 8 {
-                        header := Chrome.geometry(
-                            width,
-                            cast(s32) layout.header_height,
-                            P.dpi(),
-                            workspace.count,
-                            workspace.active
-                        );
-                        h := Chrome.hit(&header, event.a, event.b);
-                        pressed := chrome.pressed;
-                        chrome.pressed = 0;
-                        if h.kind == pressed _ := P.window_action(h.kind - Chrome.Minimize + 1);
-                    }
-                    dirty = true;
-                    continue;
-                }
-                if divider_drag.active {
-                    move_divider(&workspace, layout, cw, ch, event.a, event.b);
-                    if event.kind == 8 {
-                        _ := cancel_divider();
-                        apply_divider(&book, &workspace, layout, cw, ch);
-                    }
-                    dirty = true;
-                } else if notice_click {
-                    if event.kind == 8 {
-                        if notice_hit(layout, event.a, event.b)
-                            P.error_dialog(reload_notice().c_string());
-                        notice_click = false;
-                    }
-                } else if p.scroll_dragging {
-                    if !t.alternate
-                        t.view_offset = S.offset_at(
-                            scrollbar_geometry(t, p.layout),
-                            t.history_count,
-                            event.b,
-                            p.scroll_grab
-                        );
-                    dirty = true;
-                } else if selection.dragging {
-                    selection.end = point_index(t, p.layout, cw, ch, event.a, event.b);
-                    dirty = true;
-                }
-                if event.kind == 8 {
-                    selection.dragging = false;
-                    p.scroll_dragging = false;
-                }
-            } else if event.kind == 11 {
-                U.end_drag(&book);
-                notice_click = false;
-                chrome.pressed = 0;
-            } else if event.kind == 9 copy_selection(t, selection);
-            else if event.kind == 10 {
-                if chrome.menu_open {
-                    chrome.menu_open = false;
-                    dirty = true;
-                    continue;
-                }
-                if event.b < cast(s32) layout.header_height {
-                    U.end_drag(&book);
-                    chrome.menu_open = false;
-                    _ := P.window_menu(event.a, event.b);
-                    dirty = true;
-                    continue;
-                }
-                hit := M.pane_at(&workspace, &book.rects, event.a, event.b);
-                if hit > 0 {
-                    if M.focus_pane(&workspace, hit) {
-                        U.end_drag(&book);
-                        P.invalidate_frame();
-                        dirty = true;
-                    }
-                    p = &book.panes[hit - 1];
-                    _ := P.pty_select(p.handle);
-                }
-                if paste_clipboard(&p.terminal, &p.selection, p.exited) dirty = true;
-            }
+            cancel_tab_drag(app);
+            if event.kind == 11 || (event.kind == 1 && event.a == 27) ||
+               (event.kind == 2 && event.length == 1 && event.text[0] == 27) continue;
         }
-        if !running || workspace.count == 0 break;
-        hover_x, hover_y: s32;
-        if P.pointer_position(&hover_x, &hover_y) && (hover_x != chrome.x || hover_y != chrome.y) {
-            before := hover_signature(
-                &book,
-                &workspace,
-                layout,
-                height,
-                cfg.profile_count,
-                chrome.x,
-                chrome.y
-            );
-            chrome.x = hover_x;
-            chrome.y = hover_y;
+        if event.kind == P.Gui_Failure {
+            reason := P.error().to_string().clone();
+            defer reason.free();
+            if P.ticks() < app.next_graphics_retry {
+                P.error_dialog(tprint(
+                    "The terminal window failed again shortly after reopening. Restart wst.\n\n{}",
+                    reason
+                ).c_string());
+                app.failed = true;
+                return false;
+            }
+            if P.recover_window() == 0 || !install_keybindings(cfg) {
+                P.error_dialog(tprint(
+                    "Could not restore the terminal window. Restart wst.\n\nWindow update failed\n{}\n\nRecovery failed\n{}",
+                    reason, P.error().to_string()
+                ).c_string());
+                app.failed = true;
+                return false;
+            }
+            // A repeatedly failing device must not endlessly recreate the window.
+            app.next_graphics_retry = P.ticks() + 10000;
+            app.hwnd = N.gui_window_handle();
+            P.title(app.previous_title.c_string());
+            app.chrome = .{};
+            app.divider_drag = .{};
+            app.notice_click = false;
+            U.end_drag(book);
+            app.dirty = true;
+            continue;
+        }
+        // Coalesce terminal/ConPTY resizing until the pointer batch ends.
+        // Other events must see the latest pane rectangles for hit testing.
+        if app.divider_drag.pending && event.kind != 7 && event.kind != 8 {
+            apply_divider(book, workspace, app.layout, app.cw, app.ch);
+            app.dirty = true;
+        }
+        if app.divider_drag.active && event.kind != 7 && event.kind != 8 {
+            _ := cancel_divider();
+            app.dirty = true;
+            if (event.kind == 1 && event.a == 27) ||
+               (event.kind == 2 && event.length == 1 && event.text[0] == 27)
+                continue;
+        }
+        focused := M.focused(workspace);
+        p := &book.panes[focused - 1];
+        _ := P.pty_select(p.handle);
+        t := &p.terminal;
+        selection := &p.selection;
+        if app.chrome.menu_open && (event.kind == 1 || event.kind == 2) {
             header := Chrome.geometry(
-                width,
-                cast(s32) layout.header_height,
+                app.width,
+                cast(s32) app.layout.header_height,
                 P.dpi(),
                 workspace.count,
                 workspace.active
             );
-            row := Chrome.menu_hit(
-                &header,
-                &chrome,
-                height,
-                cfg.profile_count + 7,
-                hover_x,
-                hover_y
-            );
-            if chrome.menu_open && row >= 0 chrome.selected = row;
-            if before != hover_signature(
-                &book,
-                &workspace,
-                layout,
-                height,
-                cfg.profile_count,
-                hover_x,
-                hover_y
-            )
-                dirty = true;
+            if event.kind == 1 && (event.a == 38 || event.a == 40) {
+                if event.a == 38 app.chrome.selected -= 1;
+                else             app.chrome.selected += 1;
+                Chrome.keep_selected(&app.chrome, &header, app.height, cfg.profile_count + 7);
+                app.dirty = true;
+                continue;
+            }
+            if event.kind == 2 {
+                if event.length == 1 && event.text[0] == 13
+                    menu_action(
+                        app.chrome.selected,
+                        book,
+                        workspace,
+                        cfg,
+                        &app.layout,
+                        &app.cw,
+                        &app.ch,
+                        &app.width,
+                        &app.height,
+                        app.base_font_size
+                    );
+                else if event.length == 1 && event.text[0] == 27
+                    app.chrome.menu_open = false;
+                app.dirty = true;
+                continue;
+            }
+            app.chrome.menu_open = false;
+            app.dirty = true;
         }
+        if event.kind == 4 {
+            return false;
+        } else if event.kind == 3 {
+            app.chrome.menu_open = false;
+            app.chrome.pressed = 0;
+            refresh_layout(book, workspace, cfg, &app.layout, &app.width, &app.height, &app.cw, &app.ch);
+            U.end_drag(book);
+            P.invalidate_frame();
+            app.dirty = true;
+        } else if event.kind == 2 && !p.exited {
+            send(string_from_raw_parts(cast([*]const u8) &event.text, event.length));
+            if t.view_offset != 0 || selection.active app.dirty = true;
+            t.view_offset = 0;
+            selection.active = false;
+        } else if event.kind == 1 {
+            action := K.lookup(&cfg.keybindings, event.a, event.b);
+            if event.a == 32 && event.b == 4 && action == .None {
+                _ := P.window_menu(0, cast(s32) app.layout.header_height);
+                app.dirty = true;
+                continue;
+            }
+            if cast(s32) action >= cast(s32) K.Action.New_Tab {
+                workspace_action(
+                    action,
+                    book,
+                    workspace,
+                    cfg,
+                    app.layout,
+                    app.cw,
+                    app.ch,
+                    K.profile_for(&cfg.keybindings, event.a, event.b)
+                );
+                if workspace.count == 0 {
+                    return false;
+                }
+                app.dirty = true;
+                continue;
+            }
+            if action == .Copy copy_selection(t, selection);
+            else if action == .Paste {
+                if paste_clipboard(t, selection, p.exited) app.dirty = true;
+            } else if action == .Zoom_In || action == .Zoom_Out || action == .Reset_Zoom {
+                zoom: s32 = 1;
+                if action == .Zoom_Out   zoom = -1;
+                if action == .Reset_Zoom zoom = 2;
+                set_zoom(cfg, V.font_size(cfg.font_size, app.base_font_size, zoom));
+                refresh_layout(book, workspace, cfg, &app.layout, &app.width, &app.height, &app.cw, &app.ch);
+                app.dirty = true;
+            } else if action == .Scroll_Page_Up || action == .Scroll_Page_Down || action == .Scroll_Top ||
+                action == .Scroll_Bottom || action == .Scroll_Line_Up || action == .Scroll_Line_Down {
+                if action == .Scroll_Page_Up
+                    T.scroll_view(t, clamp(t.rows - 1, 1, 256));
+                else if action == .Scroll_Page_Down
+                    T.scroll_view(t, -clamp(t.rows - 1, 1, 256));
+                else if action == .Scroll_Top
+                    T.scroll_view(t, 10000);
+                else if action == .Scroll_Bottom
+                    t.view_offset = 0;
+                else if action == .Scroll_Line_Up
+                    T.scroll_view(t, 1);
+                else
+                    T.scroll_view(t, -1);
+                selection.active = false;
+                selection.dragging = false;
+                p.scroll_dragging = false;
+                app.dirty = true;
+            } else if action == .Close_Window {
+                return false;
+            } else if !p.exited {
+                send(I.key_sequence(event.a, event.b, t.application_cursor));
+                t.view_offset = 0;
+                selection.active = false;
+                app.dirty = true;
+            }
+        } else if event.kind == 5 {
+            wheel_x, wheel_y: s32;
+            if P.pointer_position(&wheel_x, &wheel_y) {
+                app.chrome.x = wheel_x;
+                app.chrome.y = wheel_y;
+            }
+            if app.chrome.menu_open {
+                header := Chrome.geometry(
+                    app.width,
+                    cast(s32) app.layout.header_height,
+                    P.dpi(),
+                    workspace.count,
+                    workspace.active
+                );
+                app.chrome.selected += 3;
+                if event.a > 0 app.chrome.selected -= 6;
+                app.chrome.selected = clamp(app.chrome.selected, 0, cfg.profile_count + 6);
+                Chrome.keep_selected(&app.chrome, &header, app.height, cfg.profile_count + 7);
+                app.dirty = true;
+                continue;
+            }
+            if app.chrome.y >= 0 && app.chrome.y < cast(s32) app.layout.header_height && (event.b & 2) == 0 {
+                direction: s32 = 1;
+                if event.a > 0 direction = -1;
+                _ := M.cycle_tab(workspace, direction);
+                publish_dividers(workspace, app.layout);
+                U.end_drag(book);
+                app.dirty = true;
+                continue;
+            }
+            wheel := V.wheel(&p.wheel, event.a, event.b, event.c, t.rows - 1);
+            if wheel.zoom_steps != 0 {
+                set_zoom(cfg, cfg.font_size + wheel.zoom_steps);
+                refresh_layout(book, workspace, cfg, &app.layout, &app.width, &app.height, &app.cw, &app.ch);
+            }
+            if wheel.scroll_lines != 0 T.scroll_view(t, wheel.scroll_lines);
+            selection.active = false;
+            selection.dragging = false;
+            p.scroll_dragging = false;
+            app.dirty = true;
+        } else if event.kind == 6 {
+            app.chrome.x = event.a;
+            app.chrome.y = event.b;
+            header := Chrome.geometry(
+                app.width,
+                cast(s32) app.layout.header_height,
+                P.dpi(),
+                workspace.count,
+                workspace.active
+            );
+            h := Chrome.hit(&header, event.a, event.b);
+            if app.chrome.menu_open {
+                row := Chrome.menu_hit(
+                    &header,
+                    &app.chrome,
+                    app.height,
+                    cfg.profile_count + 7,
+                    event.a,
+                    event.b
+                );
+                if row >= 0 {
+                    menu_action(
+                        row,
+                        book,
+                        workspace,
+                        cfg,
+                        &app.layout,
+                        &app.cw,
+                        &app.ch,
+                        &app.width,
+                        &app.height,
+                        app.base_font_size
+                    );
+                    app.dirty = true;
+                    continue;
+                }
+                popup := Chrome.menu_rect(&header, app.height, cfg.profile_count + 7);
+                if Chrome.contains(popup, event.a, event.b) {
+                    if app.reload_notice_error && app.reload_notice_count > 0 &&
+                       event.b < popup.y + Chrome.pixels(26, P.dpi())
+                        P.error_dialog(reload_notice().c_string());
+                    continue;
+                }
+                app.chrome.menu_open = false;
+                app.dirty = true;
+                if event.b >= header.height || h.kind == Chrome.Menu continue;
+            }
+            if h.kind == Chrome.Tab || h.kind == Chrome.Tab_Close {
+                if h.kind == Chrome.Tab_Close close_tab(book, workspace, h.index, app.layout);
+                else {
+                    _ := M.activate(workspace, h.index);
+                    app.tab_drag = .{ h.index, .{ event.a, event.b }, false };
+                }
+                publish_dividers(workspace, app.layout);
+                U.end_drag(book);
+                P.invalidate_frame();
+                app.dirty = true;
+                continue;
+            }
+            if h.kind == Chrome.New_Tab {
+                _ := open_surface(book, workspace, cfg, app.layout, app.cw, app.ch, 0);
+                app.dirty = true;
+                continue;
+            }
+            if h.kind == Chrome.Menu {
+                U.end_drag(book);
+                app.chrome.menu_open = true;
+                app.chrome.menu_scroll = 0;
+                app.chrome.selected = 0;
+                app.dirty = true;
+                continue;
+            }
+            if h.kind == Chrome.Brand {
+                U.end_drag(book);
+                _ := P.window_menu(0, header.height);
+                app.dirty = true;
+                continue;
+            }
+            if h.kind >= Chrome.Minimize && h.kind <= Chrome.Close {
+                U.end_drag(book);
+                app.chrome.pressed = h.kind;
+                app.dirty = true;
+                continue;
+            }
+            zoom := zoom_action_at(app.layout, event.a, event.b);
+            app.notice_click = notice_hit(app.layout, event.a, event.b);
+            if app.notice_click {
+                U.end_drag(book);
+                continue;
+            }
+            if zoom != 0 {
+                set_zoom(cfg, V.font_size(cfg.font_size, app.base_font_size, zoom));
+                refresh_layout(book, workspace, cfg, &app.layout, &app.width, &app.height, &app.cw, &app.ch);
+                app.dirty = true;
+                continue;
+            }
+            if h.kind == Chrome.Drag {
+                U.end_drag(book);
+                _ := P.window_drag(event.a, event.b);
+                continue;
+            }
+            divider := M.divider_at(
+                workspace,
+                U.body_rect(app.layout),
+                6 * P.dpi() / 96,
+                event.a,
+                event.b
+            );
+            if divider.node >= 0 {
+                U.end_drag(book);
+                app.divider_drag.active = true;
+                app.divider_drag.node = divider.node;
+                app.divider_drag.axis = divider.axis;
+                if divider.axis == M.Axis_Vertical app.divider_drag.grab = event.a - divider.rect.x;
+                else                               app.divider_drag.grab = event.b - divider.rect.y;
+                P.invalidate_frame();
+                app.dirty = true;
+                continue;
+            }
+            hit := M.pane_at(workspace, &book.rects, event.a, event.b);
+            if hit == 0 continue;
+            U.end_drag(book);
+            if M.focus_pane(workspace, hit) {
+                P.invalidate_frame();
+                app.dirty = true;
+            }
+            p = &book.panes[hit - 1];
+            t = &p.terminal;
+            selection = &p.selection;
+            _ := P.pty_select(p.handle);
+            bar := scrollbar_geometry(t, p.layout);
+            if event.a >= bar.x && event.a < bar.x + bar.width {
+                if t.history_count > 0 && !t.alternate {
+                    page := S.page_direction(bar, event.b);
+                    if page != 0 T.scroll_view(t, page * clamp(t.rows - 1, 1, 256));
+                    else if bar.thumb_height < bar.height {
+                        p.scroll_dragging = true;
+                        p.scroll_grab = event.b - bar.thumb_y;
+                    }
+                }
+                selection.active = false;
+            } else {
+                selection.start = point_index(t, p.layout, app.cw, app.ch, event.a, event.b);
+                selection.end = selection.start;
+                selection.active = true;
+                selection.dragging = true;
+            }
+            app.dirty = true;
+        } else if event.kind == 7 || event.kind == 8 {
+            app.chrome.x = event.a;
+            app.chrome.y = event.b;
+            if app.chrome.pressed != 0 {
+                if event.kind == 8 {
+                    header := Chrome.geometry(
+                        app.width,
+                        cast(s32) app.layout.header_height,
+                        P.dpi(),
+                        workspace.count,
+                        workspace.active
+                    );
+                    h := Chrome.hit(&header, event.a, event.b);
+                    pressed := app.chrome.pressed;
+                    app.chrome.pressed = 0;
+                    if h.kind == pressed _ := P.window_action(h.kind - Chrome.Minimize + 1);
+                }
+                app.dirty = true;
+                continue;
+            }
+            if app.divider_drag.active {
+                move_divider(workspace, app.layout, app.cw, app.ch, event.a, event.b);
+                if event.kind == 8 {
+                    _ := cancel_divider();
+                    apply_divider(book, workspace, app.layout, app.cw, app.ch);
+                }
+                app.dirty = true;
+            } else if app.notice_click {
+                if event.kind == 8 {
+                    if notice_hit(app.layout, event.a, event.b)
+                        P.error_dialog(reload_notice().c_string());
+                    app.notice_click = false;
+                }
+            } else if p.scroll_dragging {
+                if !t.alternate
+                    t.view_offset = S.offset_at(
+                        scrollbar_geometry(t, p.layout),
+                        t.history_count,
+                        event.b,
+                        p.scroll_grab
+                    );
+                app.dirty = true;
+            } else if selection.dragging {
+                selection.end = point_index(t, p.layout, app.cw, app.ch, event.a, event.b);
+                app.dirty = true;
+            }
+            if event.kind == 8 {
+                selection.dragging = false;
+                p.scroll_dragging = false;
+            }
+        } else if event.kind == 11 {
+            U.end_drag(book);
+            app.notice_click = false;
+            app.chrome.pressed = 0;
+        } else if event.kind == 9 copy_selection(t, selection);
+        else if event.kind == 10 {
+            if app.chrome.menu_open {
+                app.chrome.menu_open = false;
+                app.dirty = true;
+                continue;
+            }
+            if event.b < cast(s32) app.layout.header_height {
+                U.end_drag(book);
+                app.chrome.menu_open = false;
+                _ := P.window_menu(event.a, event.b);
+                app.dirty = true;
+                continue;
+            }
+            hit := M.pane_at(workspace, &book.rects, event.a, event.b);
+            if hit > 0 {
+                if M.focus_pane(workspace, hit) {
+                    U.end_drag(book);
+                    P.invalidate_frame();
+                    app.dirty = true;
+                }
+                p = &book.panes[hit - 1];
+                _ := P.pty_select(p.handle);
+            }
+            if paste_clipboard(&p.terminal, &p.selection, p.exited) app.dirty = true;
+        }
+    }
+    if workspace.count == 0 return false;
+    hover_x, hover_y: s32;
+    if P.pointer_position(&hover_x, &hover_y) && (hover_x != app.chrome.x || hover_y != app.chrome.y) {
+        before := hover_signature(
+            book,
+            workspace,
+            app.layout,
+            app.height,
+            cfg.profile_count,
+            app.chrome.x,
+            app.chrome.y
+        );
+        app.chrome.x = hover_x;
+        app.chrome.y = hover_y;
         header := Chrome.geometry(
-            width,
-            cast(s32) layout.header_height,
+            app.width,
+            cast(s32) app.layout.header_height,
             P.dpi(),
             workspace.count,
             workspace.active
         );
-        in_menu := chrome.menu_open && Chrome.contains(
-            Chrome.menu_rect(&header, height, cfg.profile_count + 7),
-            chrome.x,
-            chrome.y
+        row := Chrome.menu_hit(
+            &header,
+            &app.chrome,
+            app.height,
+            cfg.profile_count + 7,
+            hover_x,
+            hover_y
         );
-        P.pointer_ui((chrome.y >= 0 && chrome.y < header.height) || in_menu);
-        if divider_drag.pending {
-            apply_divider(&book, &workspace, layout, cw, ch);
-            dirty = true;
-        }
-        if W.poll(&config_watch, P.ticks()) {
-            chrome.menu_open = false;
-            _ := cancel_divider();
-            if R.reload_workspace(config_watch.path, &cfg, &book, &workspace, &reload_state) {
-                base_font_size = reload_state.configured_font_size;
-                P.metrics(&width, &height, &cw, &ch);
-                layout = L.compute(width, height, cfg.padding, cast(f32) P.dpi() / 96.0);
-                publish_dividers(&workspace, layout);
-                if reload_state.session_replaced {
-                    previous_title.free();
-                    previous_title = "".clone();
-                }
-                set_reload_notice("Config reloaded", false);
-            } else set_reload_notice(tprint("Config reload failed: {}", R.error_message()), true);
-            notice_click = false;
-            dirty = true;
-        }
-        output_started, output_now: s64;
-        clock_counter(&output_started);
-        // Round-robin output keeps background tabs alive without starving input.
-        for 0..64 {
-            output_cursor = (output_cursor + 1) % 32;
-            p := &book.panes[output_cursor];
-            if !p.used continue;
-            _ := P.pty_select(p.handle);
-            count := P.pty_read(cast([*]u8) &buffer, 4096);
-            if count > 0 {
-                T.feed(&p.terminal, string_from_raw_parts(cast([*]const u8) &buffer, count));
-                if p.selection.active && p.terminal.view_offset == 0 && !p.selection.dragging
-                    p.selection.active = false;
-                p.last_output = P.ticks();
-                dirty = true;
-            }
-            if p.terminal.replies.count > 0 {
-                send(cast(str) p.terminal.replies.view());
-                p.terminal.replies.clear();
-            }
-            clock_counter(&output_now);
-            if output_now - output_started >= performance_frequency / 250 break;
-        }
-        for index: 0..32 if book.panes[index].used {
-            p := &book.panes[index];
-            _ := P.pty_select(p.handle);
-            if !p.exited && P.pty_status(&p.code) == 1 {
-                p.exited = true;
-                p.exit_seen = P.ticks();
-                dirty = true;
-            }
-            if p.exited && cfg.close_on_exit && P.ticks() - p.exit_seen > 250 && P.ticks() - p.last_output > 200 {
-                close_pane(&book, &workspace, cast(s32) index + 1, layout, cw, ch);
-                dirty = true;
-            }
-        }
-        if workspace.count == 0 break;
-        focused := M.focused(&workspace);
-        p := &book.panes[focused - 1];
-        _ := P.pty_select(p.handle);
-        caption: str = p.launch.name;
-        if p.terminal.title.count > 0 {
-            if p.launch.profile_id.count == 0
-                caption = cast(str) p.terminal.title.view();
-            else
-                caption = tprint("{}: {}", p.launch.name, cast(str) p.terminal.title.view());
-        }
-        title := tprint("{} | wst [{}/{}]", caption, workspace.active + 1, workspace.count);
-        if title != previous_title {
-            previous_title.free();
-            previous_title = title.clone();
-            P.title(title.c_string());
-        }
-        blink := P.ticks() / 550;
-        if blink != last_blink {
-            dirty = true;
-            last_blink = blink;
-        }
-        if dirty && width > 0 && height > 0 {
-            render_workspace(&book, &workspace, &cfg, layout, cw, ch, base_font_size);
-            dirty = false;
-        }
-        wait_ms := cast(s32)(550 - P.ticks() % 550);
-        if wait_ms > 100 wait_ms = 100;
-        if config_watch.active {
-            now := P.ticks();
-            watch_wait: s32;
-            if now < config_watch.last_poll + 250
-                watch_wait = cast(s32)(config_watch.last_poll + 250 - now);
-            if watch_wait < wait_ms wait_ms = watch_wait;
-        }
-        P.wait(wait_ms);
+        if app.chrome.menu_open && row >= 0 app.chrome.selected = row;
+        if before != hover_signature(
+            book,
+            workspace,
+            app.layout,
+            app.height,
+            cfg.profile_count,
+            hover_x,
+            hover_y
+        )
+            app.dirty = true;
     }
-    return 0;
+    header := Chrome.geometry(
+        app.width,
+        cast(s32) app.layout.header_height,
+        P.dpi(),
+        workspace.count,
+        workspace.active
+    );
+    in_menu := app.chrome.menu_open && Chrome.contains(
+        Chrome.menu_rect(&header, app.height, cfg.profile_count + 7),
+        app.chrome.x,
+        app.chrome.y
+    );
+    P.pointer_ui((app.chrome.y >= 0 && app.chrome.y < header.height) || in_menu);
+    if app.divider_drag.pending {
+        apply_divider(book, workspace, app.layout, app.cw, app.ch);
+        app.dirty = true;
+    }
+    if W.poll(config_watch, P.ticks()) {
+        cancel_tab_drag(app);
+        app.chrome.menu_open = false;
+        _ := cancel_divider();
+        if R.reload_workspace(config_watch.path, cfg, book, workspace, reload_state) {
+            app.base_font_size = reload_state.configured_font_size;
+            P.metrics(&app.width, &app.height, &app.cw, &app.ch);
+            app.dpi = P.dpi();
+            app.layout = L.compute(app.width, app.height, cfg.padding, cast(f32) app.dpi / 96.0);
+            publish_dividers(workspace, app.layout);
+            if reload_state.session_replaced {
+                app.previous_title.free();
+                app.previous_title = "".clone();
+            }
+            set_reload_notice("Config reloaded", false);
+        } else set_reload_notice(tprint("Config reload failed: {}", R.error_message()), true);
+        app.notice_click = false;
+        app.dirty = true;
+    }
+    output_started, output_now: s64;
+    clock_counter(&output_started);
+    // Round-robin output keeps background tabs alive without starving input.
+    for 0..64 {
+        app.output_cursor = (app.output_cursor + 1) % 32;
+        p := &book.panes[app.output_cursor];
+        if !p.used continue;
+        _ := P.pty_select(p.handle);
+        count := P.pty_read(cast([*]u8) &output_buffer, 4096);
+        if count > 0 {
+            T.feed(&p.terminal, string_from_raw_parts(cast([*]const u8) &output_buffer, count));
+            if p.selection.active && p.terminal.view_offset == 0 && !p.selection.dragging
+                p.selection.active = false;
+            p.last_output = P.ticks();
+            app.dirty = true;
+        }
+        if p.terminal.replies.count > 0 {
+            send(cast(str) p.terminal.replies.view());
+            p.terminal.replies.clear();
+        }
+        clock_counter(&output_now);
+        if output_now - output_started >= performance_frequency / 250 break;
+    }
+    for index: 0..32 if book.panes[index].used {
+        p := &book.panes[index];
+        _ := P.pty_select(p.handle);
+        if !p.exited && P.pty_status(&p.code) == 1 {
+            p.exited = true;
+            p.exit_seen = P.ticks();
+            app.dirty = true;
+        }
+        if p.exited && cfg.close_on_exit && P.ticks() - p.exit_seen > 250 && P.ticks() - p.last_output > 200 {
+            cancel_tab_drag(app);
+            close_pane(book, workspace, cast(s32) index + 1, app.layout, app.cw, app.ch);
+            app.dirty = true;
+        }
+    }
+    if workspace.count == 0 return false;
+    focused := M.focused(workspace);
+    p := &book.panes[focused - 1];
+    _ := P.pty_select(p.handle);
+    caption: str = p.launch.name;
+    if p.terminal.title.count > 0 {
+        if p.launch.profile_id.count == 0
+            caption = cast(str) p.terminal.title.view();
+        else
+            caption = tprint("{}: {}", p.launch.name, cast(str) p.terminal.title.view());
+    }
+    title := tprint("{} | wst [{}/{}]", caption, workspace.active + 1, workspace.count);
+    if title != app.previous_title {
+        app.previous_title.free();
+        app.previous_title = title.clone();
+        P.title(title.c_string());
+    }
+    blink := P.ticks() / 550;
+    if blink != app.last_blink {
+        app.dirty = true;
+        app.last_blink = blink;
+    }
+    if app.dirty && app.width > 0 && app.height > 0 {
+        render_workspace(book, workspace, cfg, app.layout, app.cw, app.ch, app.base_font_size);
+        app.dirty = false;
+    }
+    return true;
 }
 
 string_from_raw_parts :: (data: [*]const u8, count: ssize) -> str #magic "string_from_raw_parts";

@@ -45,9 +45,7 @@ new_tab :: (w: *Workspace, pane: s32) -> bool {
     tab.root = 0;
     tab.focused = pane;
     tab.nodes[0] = .{ .used = true, .pane = pane };
-    w.tabs[w.count] = tab;
-    w.active = w.count;
-    w.count += 1;
+    insert_tab(w, w.count, &tab);
     return true;
 }
 
@@ -126,6 +124,54 @@ close_tab :: (w: *Workspace, index: s32) -> bool {
     if index < w.active    w.active -= 1;
     if w.active >= w.count w.active = w.count - 1;
     if w.count == 0        w.active = 0;
+    return true;
+}
+
+/// Reorder a tab to its final index while retaining the active tab and pane.
+move_tab :: (w: *Workspace, index: s32, position: s32) -> bool {
+    if index < 0 || index >= w.count || position < 0 || position >= w.count || index == position
+        return false;
+    tab := w.tabs[index];
+    step: s32 = 1;
+    if index > position step = -1;
+    i := index;
+    while i != position {
+        w.tabs[i] = w.tabs[i + step];
+        i += step;
+    }
+    w.tabs[position] = tab;
+    if w.active == index                             w.active = position;
+    else if index < w.active && w.active <= position w.active -= 1;
+    else if position <= w.active && w.active < index w.active += 1;
+    return true;
+}
+
+/// Insert a tab into another workspace, remapping its leaves to unused pane ids.
+transfer_tab :: (
+    source: *Workspace,
+    index: s32,
+    destination: *Workspace,
+    position: s32,
+    pane_ids: *const [32]s32
+) -> bool {
+    if source == destination || index < 0 || index >= source.count ||
+        destination.count >= Max_Tabs || position < 0 || position > destination.count
+        return false;
+    tab := source.tabs[index];
+    assigned: u32;
+    for i: 0..63 {
+        leaf := &tab.nodes[i];
+        if !leaf.used || leaf.axis != 0 continue;
+        id := pane_ids.*[leaf.pane - 1];
+        if !available(destination, id) return false;
+        bit := cast(u32) 1 << cast(u32)(id - 1);
+        if (assigned & bit) != 0 return false;
+        assigned |= bit;
+        leaf.pane = id;
+    }
+    tab.focused = pane_ids.*[tab.focused - 1];
+    insert_tab(destination, position, &tab);
+    _ := close_tab(source, index);
     return true;
 }
 
@@ -364,6 +410,17 @@ focus_direction :: (w: *Workspace, rects: *const [32]Rect, dx: s32, dy: s32) -> 
     return focus_pane(w, best);
 }
 
+}
+
+insert_tab :: (w: *Workspace, position: s32, tab: *const Tab) {
+    i := w.count;
+    while i > position {
+        w.tabs[i] = w.tabs[i - 1];
+        i -= 1;
+    }
+    w.tabs[position] = tab.*;
+    w.active = position;
+    w.count += 1;
 }
 
 available :: (w: *const Workspace, pane: s32) -> bool {

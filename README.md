@@ -5,7 +5,7 @@ Command Prompt, or Nushell through Windows ConPTY, uses Glosso's standard
 `Gui` module for windowing, input, and rendering, and uses Clay for the
 surrounding interface layout. Its
 configuration is a Lua program that returns a table. Tabs and nested split
-panes keep independent shell sessions and scrollback in one window.
+panes keep independent shell sessions and scrollback across window moves.
 
 Requires **64-bit Windows 10 version 1809 or later**, a Windows x64 Glosso
 compiler on `PATH`, and the selected shell installed. PowerShell and cmd use
@@ -39,7 +39,9 @@ GUI executable. All build automation is Glosso; no PowerShell scripts are needed
 
 The build uses Git to patch a temporary copy of older Glosso SDKs when needed.
 The memory patch makes `Gui` upload text geometry in batches and allocate
-Direct3D scene resources on first use. The GPU patch adds adapter selection
+Direct3D scene resources on first use. The glyph patch makes each cached `Gui`
+glyph keep only the coverage runs it draws, instead of reserving one for every
+bitmap pixel. The GPU patch adds adapter selection
 to the Windows `Gui` renderer. When the selected SDK lacks emoji presentation
 properties, the build applies the `std/Unicode` portion of `unicode-emoji.patch`.
 
@@ -60,11 +62,8 @@ git -C ../glosso apply (Resolve-Path vendor/glosso/gui-gpu.patch).Path
 $env:GLOSSO_STD = (Resolve-Path ../glosso/std).Path
 ```
 
-With a fixed SDK selected, you can also compile just the executable:
-
-```powershell
-glosso compile src/main.glo -O3 -o build/wst.exe --cache-dir build/cache --linker-arg /subsystem:windows
-```
+The build stages Glosso's GUI runtime with multi-window support. Use `first.glo`
+to build the executable with the required SDK changes.
 
 `glosso compile first.glo --cache-dir=build/cache -- build --console` builds
 the same output path with a diagnostic console.
@@ -340,7 +339,13 @@ last working settings and shell sessions. Tab and pane shortcuts use the same
 reload behavior, including arrays of chords and disabling with `false` or `{}`.
 
 Use the tab bar or `new_tab` to open a tab, and click a tab or use `next_tab`
-and `previous_tab` to switch. `split_horizontal` divides the focused pane into
+and `previous_tab` to switch. Drag a tab along the rail to reorder it, or drop
+it below the source rail or outside the window to detach it. Drop it on the
+tab rail of another window from the same instance to merge it there. Its shell
+sessions, scrollback, and pane layout move with it. Moving the last tab closes
+the source window after a merge. Dragging a sole tab out moves its window.
+
+`split_horizontal` divides the focused pane into
 top and bottom panes; `split_vertical` creates left and right panes. Splits
 can be nested. Drag the divider between panes to resize them; the pointer
 changes to a resize cursor over each divider. Pane sizes update while dragging,

@@ -1,0 +1,24 @@
+//! Drag real terminal tabs between isolated WST windows.
+H :: #import "tab_drag_app_helper.glo";
+C :: #import "../src/chrome.glo";
+#import "Io";
+
+tab_point :: (width: s32, dpi: s32, count: s32, index: s32, x: *s32, y: *s32) -> s32 #c_call {
+    g := C.geometry(width, C.pixels(36, dpi), dpi, count, count - 1);
+    rect := C.tab_rect(&g, index);
+    x.* = rect.x + rect.width * 3 / 5;
+    y.* = rect.y + rect.height / 2;
+    hit := C.hit(&g, x.*, y.*);
+    if hit.kind == C.Tab && hit.index == index return 1;
+    return 0;
+}
+
+main :: () {
+    result := H.run(tab_point);
+    if result == 2 {
+        print("Tab tear-off passed. Windows prevented a hit-testable merge target on the current desktop.\n");
+        return;
+    }
+    #assert result == 1, "dragging a split tab out and back preserves its sessions and closes the empty window";
+    print("Tab drag application test passed.\n");
+}

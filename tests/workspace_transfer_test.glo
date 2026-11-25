@@ -1,0 +1,141 @@
+//! A moved tab retains the runtimes owned by its panes.
+C :: #import "../src/config.glo";
+M :: #import "../src/workspace.glo";
+P :: #import "../src/platform.glo";
+T :: #import "../src/terminal.glo";
+U :: #import "../src/sessions.glo";
+#import "Io";
+#import "Strings/Utf8";
+
+check :: (ok: bool, message: str) {
+    if !ok {
+        print("FAIL: {}\n", message);
+        exit(1);
+    }
+}
+
+main :: () {
+    cfg := C.defaults();
+    defer C.release(&cfg);
+    defer P.close();
+    source, detached, target: M.Workspace;
+    source_book, detached_book, target_book: U.Book;
+    defer U.release(&source_book);
+    defer U.release(&detached_book);
+    defer U.release(&target_book);
+    cmd: str = "cmd.exe /d /q";
+    check(
+        M.new_tab(&source, 1) && M.split(&source, 2, M.Axis_Vertical) && M.new_tab(&source, 3),
+        "create a split tab and a second tab in the source window"
+    );
+    check(M.new_tab(&target, 1), "create a tab with a conflicting pane id in the target window");
+    for i: 1..4 check(
+        U.open(&source_book, cast(s32) i, &cfg, cmd, 40, 4),
+        "open source pane session"
+    );
+    check(U.open(&target_book, 1, &cfg, cmd, 40, 4), "open target pane session");
+    left := source_book.panes[0].handle;
+    right := source_book.panes[1].handle;
+    other := source_book.panes[2].handle;
+    existing := target_book.panes[0].handle;
+
+    check(
+        M.move_tab(&source, 0, 1) && source.active == 0 && M.focused(&source) == 3,
+        "dragging a different tab across the active tab preserves focus"
+    );
+    check(
+        M.move_tab(&source, 0, 1) && source.active == 1 && M.focused(&source) == 3,
+        "reordering the active tab moves focus with it"
+    );
+    term := &source_book.panes[1].terminal;
+    T.feed(term, "\x1b]0;Moved tab\x07first\r\nsecond\r\nthird\r\nfourth\r\nfifth\r\n");
+    history := term.history.data;
+    check(term.history_count > 0, "prepare retained scrollback");
+    source_book.panes[1].selection.dragging = true;
+    source_book.panes[1].scroll_dragging = true;
+    check(P.pty_select(right) != 0, "select the moved shell");
+    command: str = "set WST_MOVE_STATE=RETAINED\r";
+    check(P.pty_send(command.data, cast(s32) command.count) != 0, "save state in the moved shell");
+
+    check(
+        !U.transfer_tab(&source_book, &source, 0, &target_book, &target, 2) &&
+        source.count == 2 && target.count == 1 && source_book.panes[1].handle == right,
+        "invalid destination leaves tab and runtime ownership intact"
+    );
+    full_book: U.Book;
+    for i: 0..31 full_book.panes[i].used = true;
+    check(
+        !U.can_transfer_tab(&source, 0, &full_book, &detached) &&
+        !U.transfer_tab(&source_book, &source, 0, &full_book, &detached, 0) && source.count == 2,
+        "a destination without enough pane slots leaves the source intact"
+    );
+    bounds: M.Rect = .{ 0, 0, 800, 400 };
+    check(
+        M.activate(&source, 0) && M.drag_divider(&source, 0, bounds, 6, 540, 80, 40),
+        "set a non-default split ratio on the moved tab"
+    );
+    ratio := source.tabs[0].nodes[0].ratio;
+    check(
+        U.transfer_tab(&source_book, &source, 0, &detached_book, &detached, 0) &&
+        source.count == 1 && detached.count == 1 && M.focused(&source) == 3 &&
+        !source_book.panes[0].used && !source_book.panes[1].used,
+        "tearing out a tab retains the unrelated tab and removes old ownership"
+    );
+    check(
+        U.transfer_tab(&detached_book, &detached, 0, &target_book, &target, 0) &&
+        detached.count == 0 && target.count == 2 && target.active == 0 &&
+        M.focused(&target) == 3 && target.tabs[0].nodes[0].ratio == ratio,
+        "merging the last tab remaps focus and preserves the split ratio"
+    );
+    order: [32]s32;
+    check(
+        M.pane_order(&target, 0, &order) == 2 && order[0] == 2 && order[1] == 3 &&
+        target_book.panes[0].handle == existing && target_book.panes[1].handle == left &&
+        target_book.panes[2].handle == right,
+        "pane ids change but native handles and split order are retained"
+    );
+    moved := &target_book.panes[2];
+    check(
+        moved.terminal.history.data == history && moved.terminal.history_count > 0 &&
+        cast(str) moved.terminal.title.view() == "Moved tab" &&
+        !moved.selection.dragging && !moved.scroll_dragging,
+        "scrollback, title and terminal buffer survive while pointer capture ends"
+    );
+
+    U.release(&source_book);
+    U.release(&detached_book);
+    check(
+        P.pty_select(other) == 0 && P.pty_select(right) != 0,
+        "closing the old window cannot close a moved shell"
+    );
+    command = "echo WST_MOVED_%WST_MOVE_STATE%_OK\r";
+    check(
+        P.pty_send(command.data, cast(s32) command.count) != 0,
+        "send input after merging the shell"
+    );
+    output: [..]u8;
+    defer output.free();
+    deadline := P.ticks() + 5000;
+    while P.ticks() < deadline {
+        data: [4096]u8;
+        count := P.pty_read(cast([*]u8) &data, 4096);
+        if count > 0 {
+            chunk := data[..cast(ssize) count];
+            output.push(chunk...);
+            T.feed(&moved.terminal, cast(str) chunk);
+            replies := moved.terminal.replies.view();
+            if replies.count > 0 {
+                check(P.pty_send(replies.data, cast(s32) replies.count) != 0, "reply to the live shell");
+                moved.terminal.replies.clear();
+            }
+        }
+        if (cast(str) output.view()).contains("WST_MOVED_RETAINED_OK") {
+            print(
+                "workspace transfer tests passed: reorder, tear-out, merge and retained live sessions.\n"
+            );
+            return;
+        }
+        P.wait(10);
+    }
+    check(false, "the shell retains environment variables across both transfers");
+}

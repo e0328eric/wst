@@ -1,0 +1,80 @@
+//! Exercise two live frontends, including native input routing and GPU replay.
+P :: #import "../src/platform.glo";
+N :: #import "../src/native.glo";
+R :: #import "../src/gui_render.glo";
+#import "File_System/File";
+#import "Io";
+
+user32 :: #library,system "user32";
+IsWindow :: (window: usize) -> s32 #foreign user32;
+PostMessageW :: (window: usize, message: u32, detail: usize, parameter: ssize) -> s32 #foreign user32;
+
+expect_text :: (character: u8) {
+    count: s32;
+    event: P.Event;
+    for 0..2 while P.next_event(&event) != 0 {
+        #assert event.kind != P.Gui_Failure;
+        if event.kind != 2 continue;
+        #assert event.length == 1 && event.text[0] == character;
+        count += 1;
+    }
+    #assert count == 1;
+}
+
+paint :: (color: u32) {
+    P.frame_begin(color);
+    #assert R.frame_active();
+    P.draw_label(10, 10, 160, 34, "Independent window", 16#ffffff);
+    P.frame_end();
+}
+
+pixels :: (path: str) -> str {
+    if read_file(path, 64 * 1024 * 1024) == {
+    case .Ok(data);
+        return data;
+    case .Err(error);
+        print("Could not read window snapshot {}: {}\n", path, error.kind);
+        exit(1);
+    }
+}
+
+main :: () {
+    first, second: P.Window_Context;
+    #assert P.select_window(?&first);
+    #assert P.open("Consolas", 16, 60, 20, 8, 1, 0.8) != 0;
+    defer {
+        if P.select_window(?&first) P.close();
+        _ := P.select_window(null);
+    }
+    first_handle := N.gui_window_handle();
+    P.set_ligatures(false);
+    paint(16#182838);
+    #assert P.snapshot("build/frontend_windows_before.bmp") != 0;
+
+    #assert P.select_window(?&second);
+    #assert P.open("Consolas", 22, 64, 22, 10, 1, 0.9) != 0;
+    second_handle := N.gui_window_handle();
+    #assert first_handle != second_handle && IsWindow(first_handle) != 0 && IsWindow(second_handle) != 0;
+    #assert R.font_size() == 22 && P.window_opacity() == 0.9 && P.ligatures_enabled();
+    #assert PostMessageW(first_handle, 16#102, 65, 1) != 0;  // WM_CHAR 'A'
+    #assert PostMessageW(second_handle, 16#102, 66, 1) != 0; // WM_CHAR 'B'
+    expect_text(66);
+    paint(16#483018);
+
+    #assert P.select_window(?&first);
+    #assert N.gui_window_handle() == first_handle;
+    #assert R.font_size() == 16 && P.window_opacity() == 0.8 && !P.ligatures_enabled();
+    expect_text(65);
+
+    #assert P.select_window(?&second);
+    P.close_surface();
+    #assert IsWindow(second_handle) == 0 && IsWindow(first_handle) != 0;
+    #assert P.select_window(?&first);
+    #assert P.snapshot("build/frontend_windows_after.bmp") != 0;
+    before := pixels("build/frontend_windows_before.bmp");
+    defer before.free();
+    after := pixels("build/frontend_windows_after.bmp");
+    defer after.free();
+    #assert before == after, "Closing the other surface preserves the first surface's GPU replay";
+    print("Frontend windows retained independent input, fonts, opacity, and render frames.\n");
+}

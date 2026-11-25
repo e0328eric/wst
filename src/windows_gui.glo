@@ -94,6 +94,10 @@ SendMessageW :: (window: Handle, message: u32, detail: usize, parameter: ssize) 
 ShowWindow :: (window: Handle, command: s32) -> s32 #foreign user32 "ShowWindow";
 IsZoomed :: (window: Handle) -> s32 #foreign user32 "IsZoomed";
 ClientToScreen :: (window: Handle, point: *Point) -> s32 #foreign user32 "ClientToScreen";
+ScreenToClient :: (window: Handle, point: *Point) -> s32 #foreign user32 "ScreenToClient";
+GetAncestor :: (window: Handle, flags: u32) -> Handle #foreign user32 "GetAncestor";
+GetWindowRect :: (window: Handle, rect: *Rect) -> s32 #foreign user32 "GetWindowRect";
+SetActiveWindow :: (window: Handle) -> Handle #foreign user32 "SetActiveWindow";
 GetSystemMenu :: (window: Handle, revert: s32) -> Handle #foreign user32 "GetSystemMenu";
 TrackPopupMenuEx :: (menu: Handle, flags: u32, x: s32, y: s32, window: Handle, parameters: usize) -> u32 #foreign user32 "TrackPopupMenuEx";
 EnableMenuItem :: (menu: Handle, item: u32, flags: u32) -> s32 #foreign user32 "EnableMenuItem";
@@ -135,24 +139,50 @@ Release_Queue :: struct {
     tail: u32;
     overflow: bool;
 }
-observation_hook: Handle;
-observed_window: Handle;
-held_buttons: u32;
-release_queues: [3]Release_Queue;
-chrome_window: Handle;
-chrome_background: u32;
-chrome_theme_valid: bool;
-opacity_window: Handle;
-opacity_value: f32 = 1;
-opacity_owns_layered: bool;
-opacity_original_key: u32;
-opacity_original_alpha: u8;
-opacity_original_flags: u32;
-drag_tick: u64;
-drag_point: Point;
+#public Window_Context :: struct {
+    #private {
+        observed_window: Handle;
+        next: ?*Window_Context;
+        held_buttons: u32;
+        release_queues: [3]Release_Queue;
+        chrome_window: Handle;
+        chrome_background: u32;
+        chrome_theme_valid: bool;
+        opacity_window: Handle;
+        opacity_value: f32 = 1;
+        opacity_owns_layered: bool;
+        opacity_original_key: u32;
+        opacity_original_alpha: u8;
+        opacity_original_flags: u32;
+        drag_tick: u64;
+        drag_point: Point;
+    }
+}
+#public Empty_Window_Context :: Window_Context.{};
 
-release_push :: (button: u32, kind: u8) {
-    queue := &release_queues[button];
+default_window_context: Window_Context;
+active_window_context: ?*Window_Context;
+observation_hook: Handle;
+observed_windows: ?*Window_Context;
+
+window_context :: () -> *Window_Context {
+    if #pattern ?selected = active_window_context return selected;
+    return &default_window_context;
+}
+
+window_context_for :: (window: Handle) -> ?*Window_Context {
+    next := observed_windows;
+    while next != null {
+        if #pattern ?state = next {
+            if state.observed_window == window return next;
+            next = state.next;
+        }
+    }
+    return null;
+}
+
+release_push :: (state: *Window_Context, button: u32, kind: u8) {
+    queue := &state.release_queues[button];
     next := (queue.head + 1) % 256;
     if next == queue.tail {
         queue.overflow = true;
@@ -161,24 +191,24 @@ release_push :: (button: u32, kind: u8) {
     queue.entries[queue.head] = kind;
     queue.head = next;
 }
-cancelled_buttons :: () {
+cancelled_buttons :: (state: *Window_Context) {
     for button: cast(u32) 0..3 {
-        if (held_buttons & (1 << button)) != 0 release_push(button, 2);
+        if (state.held_buttons & (1 << button)) != 0 release_push(state, button, 2);
     }
-    held_buttons = 0;
+    state.held_buttons = 0;
 }
 observe_messages :: (code: s32, detail: usize, parameter: ssize) -> ssize #c_call {
     if code >= 0 {
         message := cast(*Call_Message) parameter;
-        if message.window == observed_window {
+        if #pattern ?state = window_context_for(message.window) {
             button: u32 = 3;
             if message.message == {
             case 16#201, 16#203;
-                held_buttons |= 1; // left down/double-click
+                state.held_buttons |= 1; // left down/double-click
             case 16#204, 16#206;
-                held_buttons |= 2;
+                state.held_buttons |= 2;
             case 16#207, 16#209;
-                held_buttons |= 4;
+                state.held_buttons |= 4;
             case 16#202;
                 button = 0;
             case 16#205;
@@ -186,14 +216,14 @@ observe_messages :: (code: s32, detail: usize, parameter: ssize) -> ssize #c_cal
             case 16#208;
                 button = 2;
             case 16#215;
-                if cast(Handle) message.parameter != observed_window cancelled_buttons();
+                if cast(Handle) message.parameter != state.observed_window cancelled_buttons(state);
             case 16#1f, 16#08, 16#10, 16#02;
-                cancelled_buttons();
+                cancelled_buttons(state);
             else;
             }
-            if button < 3 && (held_buttons & (1 << button)) != 0 {
-                release_push(button, 1);
-                held_buttons &= ~(1 << button);
+            if button < 3 && (state.held_buttons & (1 << button)) != 0 {
+                release_push(state, button, 1);
+                state.held_buttons &= ~(1 << button);
             }
         }
     }
@@ -251,6 +281,7 @@ frame_messages :: (
     data: usize
 ) -> ssize #c_call {
     if message == 16#82 { // WM_NCDESTROY
+        Presentation.forget(window);
         _ := RemoveWindowSubclass(window, frame_messages, id);
         return DefSubclassProc(window, message, detail, parameter);
     }
@@ -264,67 +295,84 @@ extended_style :: (window: Handle, value: ssize) -> bool {
     previous := SetWindowLongPtrW(window, -20, value);
     return previous != 0 || GetLastError() == 0;
 }
-reset_opacity :: () {
-    if opacity_window != 0 && IsWindow(opacity_window) != 0 &&
-        GetWindowThreadProcessId(opacity_window, null) == GetCurrentThreadId() {
-        if opacity_owns_layered {
-            style := GetWindowLongPtrW(opacity_window, -20);
+reset_opacity :: (state: *Window_Context) {
+    window := state.opacity_window;
+    if window != 0 && IsWindow(window) != 0 &&
+        GetWindowThreadProcessId(window, null) == GetCurrentThreadId() {
+        if state.opacity_owns_layered {
+            style := GetWindowLongPtrW(window, -20);
             if (style & 16#80000) != 0
-                _ := extended_style(opacity_window, style & ~cast(ssize) 16#80000);
-        } else if opacity_original_flags != 0 {
+                _ := extended_style(window, style & ~cast(ssize) 16#80000);
+        } else if state.opacity_original_flags != 0 {
             _ := SetLayeredWindowAttributes(
-                opacity_window,
-                opacity_original_key,
-                opacity_original_alpha,
-                opacity_original_flags
+                window,
+                state.opacity_original_key,
+                state.opacity_original_alpha,
+                state.opacity_original_flags
             );
         }
     }
-    opacity_window = 0;
-    opacity_value = 1;
-    opacity_owns_layered = false;
-    opacity_original_key = 0;
-    opacity_original_alpha = 0;
-    opacity_original_flags = 0;
+    state.opacity_window = 0;
+    state.opacity_value = 1;
+    state.opacity_owns_layered = false;
+    state.opacity_original_key = 0;
+    state.opacity_original_alpha = 0;
+    state.opacity_original_flags = 0;
 }
 
 #public {
+
+/// The context must stay at a stable address until its window is unbound.
+select_window :: (value: ?*Window_Context) {
+    active_window_context = value;
+}
 
 gui_bind :: () -> s32 {
     window := platform_window();
     if window == 0 return win_error(1400, "Attaching Gui window services");
     if Presentation.composed(window) != 1
         return win_error(50, "Attaching opacity-compatible presentation");
-    if observation_hook != 0 && observed_window == window return 1;
+    state := window_context();
+    if state.observed_window == window return 1;
+    if window_context_for(window) != null return win_error(87, "Attaching Gui window services");
     gui_unbind();
-    observed_window = window;
-    observation_hook = SetWindowsHookExW(4, observe_messages, 0, GetCurrentThreadId());
     if observation_hook == 0 {
-        observed_window = 0;
-        return P.windows_error("Observing Gui pointer cancellation");
+        observation_hook = SetWindowsHookExW(4, observe_messages, 0, GetCurrentThreadId());
+        if observation_hook == 0 return P.windows_error("Observing Gui pointer cancellation");
     }
+    state.observed_window = window;
+    state.next = observed_windows;
+    observed_windows = ?state;
     return 1;
 }
 presentation_composed :: () -> bool {
     return Presentation.composed(platform_window()) == 1;
 }
 gui_unbind :: () {
-    reset_opacity();
-    if observation_hook != 0 _ := UnhookWindowsHookEx(observation_hook);
-    observation_hook = 0;
-    observed_window = 0;
-    held_buttons = 0;
-    empty: [3]Release_Queue;
-    release_queues = empty;
-    chrome_window = 0;
-    chrome_theme_valid = false;
-    drag_tick = 0;
+    state := window_context();
+    reset_opacity(state);
+    link := &observed_windows;
+    while link.* != null {
+        if #pattern ?candidate = link.* {
+            if candidate == state {
+                link.* = state.next;
+                break;
+            }
+            link = &candidate.next;
+        }
+    }
+    if observed_windows == null && observation_hook != 0 {
+        _ := UnhookWindowsHookEx(observation_hook);
+        observation_hook = 0;
+    }
+    state.* = .{};
 }
 
 /// Requested opacity of the current window; native alpha is rounded to 8 bits.
 window_opacity :: () -> f32 {
-    if opacity_window != platform_window() return 1;
-    return opacity_value;
+    state := window_context();
+    if state.opacity_window != platform_window() return 1;
+    return state.opacity_value;
 }
 
 /// Whole-window alpha, including text and chrome. Preserve all unrelated style
@@ -333,9 +381,10 @@ set_window_opacity :: (value: f32) -> s32 {
     if !is_finite(value) || value < 0.1 || value > 1 return win_error(87, "Setting window opacity");
     window := platform_window();
     if window == 0 || IsWindow(window) == 0 return win_error(1400, "Setting window opacity");
-    if opacity_window != 0 && opacity_window != window    reset_opacity();
-    if opacity_window == window && opacity_value == value return 1;
-    if opacity_window == 0 && value == 1                  return 1;
+    state := window_context();
+    if state.opacity_window != 0 && state.opacity_window != window reset_opacity(state);
+    if state.opacity_window == window && state.opacity_value == value return 1;
+    if state.opacity_window == 0 && value == 1 return 1;
 
     SetLastError(0);
     style := GetWindowLongPtrW(window, -20);
@@ -347,8 +396,8 @@ set_window_opacity :: (value: f32) -> s32 {
     if layered && GetLayeredWindowAttributes(window, &old_key, &old_alpha, &old_flags) == 0
         return P.windows_error("Reading window opacity");
 
-    owns := opacity_owns_layered;
-    if opacity_window == 0 owns = !layered;
+    owns := state.opacity_owns_layered;
+    if state.opacity_window == 0 owns = !layered;
     // A fully opaque window returns to the ordinary presentation path. Keep
     // a pre-existing layering style, whose original attributes are restored
     // when this service unbinds from the window.
@@ -361,10 +410,10 @@ set_window_opacity :: (value: f32) -> s32 {
         alpha := cast(u8)(value * 255 + 0.5);
         key: u32;
         flags: u32 = 2; // LWA_ALPHA, without click-through or a color key.
-        if opacity_window == window && !owns {
-            key = opacity_original_key;
-            flags |= opacity_original_flags;
-        } else if layered && opacity_window == 0 {
+        if state.opacity_window == window && !owns {
+            key = state.opacity_original_key;
+            flags |= state.opacity_original_flags;
+        } else if layered && state.opacity_window == 0 {
             key = old_key;
             flags |= old_flags;
         }
@@ -375,16 +424,16 @@ set_window_opacity :: (value: f32) -> s32 {
             return win_error(code, "Setting window opacity");
         }
     }
-    if opacity_window == 0 {
-        opacity_window = window;
-        opacity_owns_layered = owns;
+    if state.opacity_window == 0 {
+        state.opacity_window = window;
+        state.opacity_owns_layered = owns;
         if layered {
-            opacity_original_key = old_key;
-            opacity_original_alpha = old_alpha;
-            opacity_original_flags = old_flags;
+            state.opacity_original_key = old_key;
+            state.opacity_original_alpha = old_alpha;
+            state.opacity_original_flags = old_flags;
         }
     }
-    opacity_value = value;
+    state.opacity_value = value;
     return 1;
 }
 
@@ -393,7 +442,8 @@ set_window_opacity :: (value: f32) -> s32 {
 configure_chrome :: (background: u32) -> s32 {
     window := platform_window();
     if window == 0 return win_error(1400, "Styling terminal window");
-    if chrome_window != window {
+    state := window_context();
+    if state.chrome_window != window {
         // Installed before the caption is removed, and kept with that style
         // until the window is destroyed. Reinstalling only refreshes it.
         if SetWindowSubclass(window, frame_messages, 1, 0) == 0
@@ -410,10 +460,10 @@ configure_chrome :: (background: u32) -> s32 {
             SetLastError(code);
             return P.windows_error("Updating terminal frame");
         }
-        chrome_window = window;
-        chrome_theme_valid = false;
+        state.chrome_window = window;
+        state.chrome_theme_valid = false;
     }
-    if chrome_theme_valid && chrome_background == background return 1;
+    if state.chrome_theme_valid && state.chrome_background == background return 1;
     red := (background >> 16) & 255;
     green := (background >> 8) & 255;
     blue := background & 255;
@@ -427,16 +477,18 @@ configure_chrome :: (background: u32) -> s32 {
     _ := DwmSetWindowAttribute(window, 34, cast(*const void) &edge, 4);
     caption := red | (green << 8) | (blue << 16);
     _ := DwmSetWindowAttribute(window, 35, cast(*const void) &caption, 4);
-    chrome_background = background;
-    chrome_theme_valid = true;
+    state.chrome_background = background;
+    state.chrome_theme_valid = true;
     return 1;
 }
-window_show :: () -> s32 {
+window_show :: (startup: bool = true) -> s32 {
     window := platform_window();
     if window == 0 return win_error(1400, "Showing terminal window");
     // SW_SHOWDEFAULT also honors STARTF_USESHOWWINDOW after frame setup. Tests
     // and launchers can request SW_HIDE without the frontend exposing a window.
-    _ := ShowWindow(window, 10);
+    show: s32 = 8; // SW_SHOWNA, retaining the detached window's position.
+    if startup show = 10;
+    _ := ShowWindow(window, show);
     return 1;
 }
 save_window_placement :: (placement: *Window_Placement) -> s32 {
@@ -476,16 +528,18 @@ window_drag :: (x: s32, y: s32) -> s32 {
     if ClientToScreen(window, &point) == 0 return P.windows_error("Locating terminal header");
     now := P.ticks();
     distance := MulDiv(4, window_dpi(), 96);
-    dx := point.x - drag_point.x;
+    state := window_context();
+    dx := point.x - state.drag_point.x;
     if dx < 0 dx = -dx;
-    dy := point.y - drag_point.y;
+    dy := point.y - state.drag_point.y;
     if dy < 0 dy = -dy;
-    double_click := drag_tick != 0 && now - drag_tick <= cast(u64) GetDoubleClickTime() && dx <= distance && dy <= distance;
-    drag_tick = now;
-    drag_point = point;
+    double_click := state.drag_tick != 0 && now - state.drag_tick <= cast(u64) GetDoubleClickTime() &&
+        dx <= distance && dy <= distance;
+    state.drag_tick = now;
+    state.drag_point = point;
     cancel_pointer();
     if double_click {
-        drag_tick = 0;
+        state.drag_tick = 0;
         return window_action(2);
     }
     packed := cast(ssize)((cast(u32) point.x & 65535) | ((cast(u32) point.y & 65535) << 16));
@@ -493,6 +547,60 @@ window_drag :: (x: s32, y: s32) -> s32 {
     if PostMessageW(window, 16#a1, 2, packed) == 0 return P.windows_error("Moving terminal window");
     return 1;
 }
+
+drag_threshold :: () -> Point {
+    dpi := cast(u32) window_dpi();
+    x := GetSystemMetricsForDpi(68, dpi); // SM_CXDRAG
+    y := GetSystemMetricsForDpi(69, dpi); // SM_CYDRAG
+    if x < 1 x = 1;
+    if y < 1 y = 1;
+    return .{ x, y };
+}
+
+client_to_screen :: (x: s32, y: s32, point: *Point) -> bool {
+    point.* = .{ x, y };
+    return ClientToScreen(platform_window(), point) != 0;
+}
+
+screen_to_client :: (window: Handle, point: *Point) -> bool {
+    if window == 0 return false;
+    return ScreenToClient(window, point) != 0;
+}
+
+window_at :: (point: Point) -> Handle {
+    window := WindowFromPoint(point);
+    if window == 0 return 0;
+    return GetAncestor(window, 2); // GA_ROOT
+}
+
+/// Put a newly detached window beside the drop point and keep its title rail visible.
+position_window :: (point: Point) -> bool {
+    window := platform_window();
+    if window == 0 return false;
+    if IsZoomed(window) != 0 _ := ShowWindow(window, 9); // SW_RESTORE
+    bounds: Rect;
+    if GetWindowRect(window, &bounds) == 0 return false;
+    drop: Rect = .{ point.x, point.y, point.x + 1, point.y + 1 };
+    monitor := MonitorFromRect(&drop, 2);
+    info: Monitor_Info;
+    info.size = cast(u32) size_of(Monitor_Info);
+    if monitor == 0 || GetMonitorInfoW(monitor, &info) == 0 return false;
+    dpi := window_dpi();
+    x := point.x - MulDiv(48, dpi, 96);
+    y := point.y - MulDiv(18, dpi, 96);
+    right := info.work.right - (bounds.right - bounds.left);
+    bottom := info.work.bottom - (bounds.bottom - bounds.top);
+    if x > right          x = right;
+    if y > bottom         y = bottom;
+    if x < info.work.left x = info.work.left;
+    if y < info.work.top  y = info.work.top;
+    return SetWindowPos(window, 0, x, y, 0, 0, 16#15) != 0; // NOSIZE | NOZORDER | NOACTIVATE
+}
+
+activate_window :: (window: Handle) {
+    if window != 0 _ := SetActiveWindow(window);
+}
+
 window_menu :: (x: s32, y: s32) -> s32 {
     window := platform_window();
     if window == 0 return win_error(1400, "Opening terminal window menu");
@@ -519,7 +627,7 @@ window_menu :: (x: s32, y: s32) -> s32 {
 }
 pointer_release :: (button: s32) -> s32 {
     if button < 0 || button > 2 return 2;
-    queue := &release_queues[button];
+    queue := &window_context().release_queues[button];
     if queue.overflow {
         queue.head = 0;
         queue.tail = 0;
@@ -557,6 +665,9 @@ window_focus :: () -> s32 {
     window := platform_window();
     if window != 0 && GetFocus() == window return 1;
     return 0;
+}
+window_visible :: () -> bool {
+    return IsWindowVisible(platform_window()) != 0;
 }
 window_dpi :: () -> s32 {
     window := platform_window();

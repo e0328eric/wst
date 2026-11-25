@@ -59,6 +59,60 @@ free_id :: (book: *const Book) -> s32 {
     return 0;
 }
 
+can_transfer_tab :: (
+    source: *const M.Workspace,
+    index: s32,
+    destination_book: *const Book,
+    destination: *const M.Workspace
+) -> bool {
+    if source == destination || destination.count >= M.Max_Tabs return false;
+    ids: [32]s32;
+    count := M.pane_order(source, index, &ids);
+    if count == 0 return false;
+    for i: 0..32 if !destination_book.panes[i].used {
+        count -= 1;
+        if count == 0 return true;
+    }
+    return false;
+}
+
+/// Move pane ownership with the tab. The terminal buffers and active ConPTY
+/// handles stay live and the caller can resize them for the destination.
+transfer_tab :: (
+    source_book: *Book,
+    source: *M.Workspace,
+    index: s32,
+    destination_book: *Book,
+    destination: *M.Workspace,
+    position: s32
+) -> bool {
+    if source_book == destination_book || !can_transfer_tab(source, index, destination_book, destination)
+        return false;
+    ids, pane_ids: [32]s32;
+    count := M.pane_order(source, index, &ids);
+    next: s32;
+    for i: 0..count {
+        slot := ids[i] - 1;
+        if !source_book.panes[slot].used return false;
+        while destination_book.panes[next].used next += 1;
+        pane_ids[slot] = next + 1;
+        next += 1;
+    }
+    if !M.transfer_tab(source, index, destination, position, &pane_ids) return false;
+    for i: 0..count {
+        slot := ids[i] - 1;
+        target := &destination_book.panes[pane_ids[slot] - 1];
+        target.* = source_book.panes[slot];
+        target.selection.dragging = false;
+        target.scroll_dragging = false;
+        empty_pane: Pane;
+        empty_rect: M.Rect;
+        source_book.panes[slot] = empty_pane;
+        source_book.rects[slot] = empty_rect;
+    }
+    return true;
+}
+
 open :: (book: *Book, id: s32, cfg: *const C.Config, command: str, cols: s32, rows: s32) -> bool {
     launch: H.Launch;
     _ := H.resolve(cfg, "", &launch);
@@ -93,7 +147,7 @@ open_launch :: (
 close :: (book: *Book, id: s32) {
     if id < 1 || id > 32 || !book.panes[id - 1].used return;
     p := &book.panes[id - 1];
-    _ := P.pty_destroy(p.handle);
+    _ := P.pty_destroy(p.handle, ?id);
     H.release(&p.launch);
     T.release(&p.terminal);
     fresh: Pane;
